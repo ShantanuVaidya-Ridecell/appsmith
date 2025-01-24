@@ -19,6 +19,7 @@ import { APP_MODE } from "entities/App";
 import { builderURL, viewerURL } from "ee/RouteBuilder";
 import { get } from "lodash";
 import { getAssetUrl } from "ee/utils/airgapHelpers";
+import logo from "./Ridecell_Logo_white.png";
 
 interface NavigationLogoProps {
   logoConfiguration: NavigationSetting["logoConfiguration"];
@@ -43,22 +44,7 @@ function NavigationLogo(props: NavigationLogoProps) {
       basePageId: defaultPage?.basePageId,
     },
   );
-  const logoAssetId = get(
-    currentApplicationDetails,
-    "applicationDetail.navigationSetting.logoAssetId",
-    "",
-  );
   const currentPageId = useSelector(getCurrentPageId);
-
-  if (
-    !logoAssetId?.length ||
-    logoConfiguration ===
-      NAVIGATION_SETTINGS.LOGO_CONFIGURATION.APPLICATION_TITLE_ONLY ||
-    logoConfiguration ===
-      NAVIGATION_SETTINGS.LOGO_CONFIGURATION.NO_LOGO_OR_APPLICATION_TITLE
-  ) {
-    return null;
-  }
 
   return (
     <Link
@@ -71,7 +57,7 @@ function NavigationLogo(props: NavigationLogoProps) {
     >
       <StyledImage
         alt="Application's logo"
-        src={getAssetUrl(`/api/v1/assets/${logoAssetId}`)}
+        src={logo}
       />
     </Link>
   );
