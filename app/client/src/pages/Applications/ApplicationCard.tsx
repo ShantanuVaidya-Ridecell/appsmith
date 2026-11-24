@@ -4,6 +4,7 @@ import React, {
   useContext,
   useCallback,
   useMemo,
+  useRef,
 } from "react";
 import styled, { ThemeContext } from "styled-components";
 import type { ApplicationPayload } from "entities/Application";
@@ -42,7 +43,18 @@ import type {
 import {
   getIsSavingAppName,
   getIsErroredSavingAppName,
+  getIsSavingAppDescription,
 } from "ee/selectors/applicationSelectors";
+import {
+  APP_DESCRIPTION_MAX_LENGTH,
+  isAppDescriptionInputValid,
+  normalizeAppDescription,
+} from "utils/appDescription";
+import {
+  APP_CARD_DESCRIPTION_PLACEHOLDER,
+  GENERAL_SETTINGS_APP_DESCRIPTION_TOO_LONG,
+  createMessage,
+} from "ee/constants/messages";
 import ForkApplicationModal from "./ForkApplicationModal";
 import { getExportAppAPIRoute } from "ee/constants/ApiConstants";
 import { builderURL, viewerURL } from "ee/RouteBuilder";
@@ -50,6 +62,7 @@ import history from "utils/history";
 import urlBuilder from "ee/entities/URLRedirect/URLAssembly";
 import { toast } from "@appsmith/ads";
 import { getCurrentUser } from "actions/authActions";
+import { toggleFavoriteApplication } from "actions/applicationActions";
 import Card, { ContextMenuTrigger } from "components/common/Card";
 import { generateEditedByText } from "./helpers";
 import { noop } from "lodash";
@@ -74,17 +87,50 @@ interface ApplicationCardProps {
   workspaceId: string;
 }
 
+const DescriptionEditorWrapper = styled.div`
+  /* The empty state must read as a placeholder, not as a value. */
+  &&&& .bp3-editable-text-placeholder .bp3-editable-text-content {
+    color: var(--ads-v2-color-fg-muted);
+  }
+
+  /* Read mode wraps to three lines so a description is legible without opening
+     it. Blueprint sets the content height inline and ads-old's TextContainer pins
+     width, min-width and line-height with !important, hence the overrides. */
+  &&&& .bp3-editable-text:not(.bp3-editable-text-editing) {
+    height: auto !important;
+    white-space: normal !important;
+  }
+
+  &&&&
+    .bp3-editable-text:not(.bp3-editable-text-editing)
+    .bp3-editable-text-content {
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    word-break: break-word;
+    white-space: normal !important;
+    width: 100% !important;
+    min-width: 0 !important;
+    height: auto !important;
+    line-height: var(--ads-v2-line-height-4) !important;
+  }
+`;
+
 const IconScrollWrapper = styled.div`
   position: relative;
+
   .t--icon-selected {
     background-color: var(--ads-v2-color-bg-muted);
-    border: var(--ads-v2-border-color);
+    border: var(--ads-v2-color-border);
+
     svg {
       path {
         fill: var(--ads-v2-color-fg);
       }
     }
   }
+
   svg {
     path {
       fill: var(--ads-v2-color-fg);
@@ -98,13 +144,14 @@ export interface ModifiedMenuItemProps extends MenuItemProps {
 }
 
 export function ApplicationCard(props: ApplicationCardProps) {
-  const { isFetchingApplications } = props;
+  const { application, isFetchingApplications } = props;
   const theme = useContext(ThemeContext);
   const isSavingName = useSelector(getIsSavingAppName);
   const isErroredSavingName = useSelector(getIsErroredSavingAppName);
+  const isSavingDescription = useSelector(getIsSavingAppDescription);
   const currentUser = useSelector(getCurrentUserSelector);
   const initialsAndColorCode = getInitialsAndColorCode(
-    props.application.name,
+    application.name,
     theme.colors.appCardColors,
   );
   let initials = initialsAndColorCode[0];
@@ -118,11 +165,32 @@ export function ApplicationCard(props: ApplicationCardProps) {
   const [isForkApplicationModalopen, setForkApplicationModalOpen] =
     useState(false);
   const [lastUpdatedValue, setLastUpdatedValue] = useState("");
+  // Raw draft of the menu's description field (null until the user types),
+  // flushed when the menu closes without the field blurring first.
+  const [lastUpdatedDescription, setLastUpdatedDescription] = useState<
+    string | null
+  >(null);
+  // Last value handed to `update`; blur and menu-close can both fire for one edit.
+  const lastSubmittedDescriptionRef = useRef<string | null>(null);
+  const wasSavingDescriptionRef = useRef(false);
   const dispatch = useDispatch();
 
-  const applicationId = props.application?.id;
-  const baseApplicationId = props.application?.baseId;
-  const showGitBadge = props.application?.gitApplicationMetadata?.branchName;
+  useEffect(
+    function forgetSubmittedDescriptionWhenSaveSettles() {
+      // Once the request has succeeded or failed, the store comparison alone
+      // decides whether a value is new, so the same value can be retried.
+      if (wasSavingDescriptionRef.current && !isSavingDescription) {
+        lastSubmittedDescriptionRef.current = null;
+      }
+
+      wasSavingDescriptionRef.current = isSavingDescription;
+    },
+    [isSavingDescription],
+  );
+
+  const applicationId = application.id;
+  const baseApplicationId = application.baseId;
+  const showGitBadge = application.gitApplicationMetadata?.branchName;
   const [editorParams, setEditorParams] = useState({});
   const isGitPersistBranchEnabled = useFeatureFlag(
     FEATURE_FLAG.release_git_persist_branch_enabled,
@@ -159,14 +227,14 @@ export function ApplicationCard(props: ApplicationCardProps) {
   useEffect(() => {
     let colorCode;
 
-    if (props.application.color) {
-      colorCode = props.application.color;
+    if (application.color) {
+      colorCode = application.color;
     } else {
       colorCode = getRandomPaletteColor(theme.colors.appCardColors);
     }
 
     setSelectedColor(colorCode);
-  }, [props.application.color]);
+  }, [application.color]);
 
   useEffect(() => {
     if (props.share) {
@@ -205,23 +273,25 @@ export function ApplicationCard(props: ApplicationCardProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const appIcon = (props.application?.icon ||
+  const appIcon = (application.icon ||
     getApplicationIcon(applicationId)) as AppIconName;
+
+  // Permissions are enriched upstream (e.g. in FavoritesSagas); no local lookup needed.
+  const userPermissions = application.userPermissions ?? [];
+
   const hasEditPermission = isPermitted(
-    props.application?.userPermissions ?? [],
+    userPermissions,
     PERMISSION_TYPE.MANAGE_APPLICATION,
   );
   const hasReadPermission = isPermitted(
-    props.application?.userPermissions ?? [],
+    userPermissions,
     PERMISSION_TYPE.READ_APPLICATION,
   );
   const hasExportPermission = isPermitted(
-    props.application?.userPermissions ?? [],
+    userPermissions,
     PERMISSION_TYPE.EXPORT_APPLICATION,
   );
-  const hasDeletePermission = hasDeleteApplicationPermission(
-    props.application?.userPermissions,
-  );
+  const hasDeletePermission = hasDeleteApplicationPermission(userPermissions);
 
   const updateColor = (color: string) => {
     props.update &&
@@ -235,6 +305,29 @@ export function ApplicationCard(props: ApplicationCardProps) {
         icon: icon,
       });
   };
+  // Shared by the field's blur and the menu-close flush; both are no-ops when
+  // nothing changed or the value is over the limit.
+  const saveDescription = (value: string | null) => {
+    if (value === null) return;
+
+    const trimmed = normalizeAppDescription(value);
+
+    if (!isAppDescriptionInputValid(trimmed)) return;
+
+    if (
+      trimmed === (application.description || "") ||
+      trimmed === lastSubmittedDescriptionRef.current
+    ) {
+      return;
+    }
+
+    lastSubmittedDescriptionRef.current = trimmed;
+    props.update &&
+      props.update(applicationId, {
+        description: trimmed,
+      });
+    setLastUpdatedDescription(null);
+  };
   const shareApp = () => {
     props.share && props.share(applicationId);
   };
@@ -247,7 +340,7 @@ export function ApplicationCard(props: ApplicationCardProps) {
     existingLink && existingLink.remove();
     const link = document.createElement("a");
 
-    const branchName = props.application.gitApplicationMetadata?.branchName;
+    const branchName = application.gitApplicationMetadata?.branchName;
 
     link.href = getExportAppAPIRoute(applicationId, branchName);
     link.id = id;
@@ -259,7 +352,7 @@ export function ApplicationCard(props: ApplicationCardProps) {
     }
 
     setIsMenuOpen(false);
-    toast.show(`Successfully exported ${props.application.name}`, {
+    toast.show(`Successfully exported ${application.name}`, {
       kind: "success",
     });
   };
@@ -307,8 +400,8 @@ export function ApplicationCard(props: ApplicationCardProps) {
     }
   };
 
-  if (initials.length < 2 && props.application.name.length > 1) {
-    initials += props.application.name[1].toUpperCase() || "";
+  if (initials.length < 2 && application.name.length > 1) {
+    initials += application.name[1].toUpperCase() || "";
   }
 
   const handleMenuOnClose = (open: boolean) => {
@@ -317,12 +410,14 @@ export function ApplicationCard(props: ApplicationCardProps) {
       setShowOverlay(false);
       addDeleteOption();
 
-      if (lastUpdatedValue && props.application.name !== lastUpdatedValue) {
+      if (lastUpdatedValue && application.name !== lastUpdatedValue) {
         props.update &&
           props.update(applicationId, {
             name: lastUpdatedValue,
           });
       }
+
+      saveDescription(lastUpdatedDescription);
     } else {
       setIsMenuOpen(true);
       setIsDeleting(false);
@@ -353,7 +448,7 @@ export function ApplicationCard(props: ApplicationCardProps) {
             >
               <EditableText
                 className="px-3 pt-2 pb-2 t--application-name"
-                defaultValue={props.application.name}
+                defaultValue={application.name}
                 editInteractionKind={EditInteractionKind.SINGLE}
                 fill
                 hideEditIcon={false}
@@ -380,6 +475,34 @@ export function ApplicationCard(props: ApplicationCardProps) {
                 }
                 underline
               />
+              <DescriptionEditorWrapper data-testid="t--application-description-editor">
+                <EditableText
+                  className="px-3 pb-2 t--application-description"
+                  defaultValue={application.description || ""}
+                  editInteractionKind={EditInteractionKind.SINGLE}
+                  fill
+                  hideEditIcon={false}
+                  isInvalid={(value: string) =>
+                    isAppDescriptionInputValid(normalizeAppDescription(value))
+                      ? false
+                      : createMessage(
+                          GENERAL_SETTINGS_APP_DESCRIPTION_TOO_LONG,
+                          APP_DESCRIPTION_MAX_LENGTH,
+                        )
+                  }
+                  maxLines={3}
+                  multiline
+                  onBlurEverytime={saveDescription}
+                  onDraftChange={setLastUpdatedDescription}
+                  placeholder={createMessage(APP_CARD_DESCRIPTION_PLACEHOLDER)}
+                  savingState={
+                    isSavingDescription
+                      ? SavingState.STARTED
+                      : SavingState.NOT_STARTED
+                  }
+                  underline
+                />
+              </DescriptionEditorWrapper>
             </div>
           )}
           {hasEditPermission && (
@@ -435,68 +558,96 @@ export function ApplicationCard(props: ApplicationCardProps) {
   );
 
   const editedByText = generateEditedByText({
-    modifiedAt: props.application.modifiedAt,
-    modifiedBy: props.application.modifiedBy,
+    modifiedAt: application.modifiedAt,
+    modifiedBy: application.modifiedBy,
   });
 
-  function setURLParams() {
-    const page: ApplicationPagePayload | undefined =
-      props.application.pages.find(
-        (page) => page.id === props.application.defaultPageId,
-      );
+  const setURLParams = useCallback(() => {
+    const page: ApplicationPagePayload | undefined = application.pages.find(
+      (page) => page.id === application.defaultPageId,
+    );
 
     if (!page) return;
 
     urlBuilder.updateURLParams(
       {
-        applicationSlug: props.application.slug,
-        applicationVersion: props.application.applicationVersion,
-        baseApplicationId: props.application.baseId,
+        applicationSlug: application.slug,
+        applicationVersion: application.applicationVersion,
+        baseApplicationId: application.baseId,
       },
-      props.application.pages.map((page) => ({
+      application.pages.map((page) => ({
         pageSlug: page.slug,
         customSlug: page.customSlug,
         basePageId: page.baseId,
       })),
     );
-  }
+  }, [
+    application.applicationVersion,
+    application.baseId,
+    application.defaultPageId,
+    application.pages,
+    application.slug,
+  ]);
 
   const editModeURL = useMemo(() => {
-    const basePageId = props.application.defaultBasePageId;
+    const basePageId = application.defaultBasePageId;
 
     if (!basePageId) return "";
 
     return builderURL({ basePageId, params: editorParams });
-  }, [props.application.defaultBasePageId, editorParams]);
+  }, [application.defaultBasePageId, editorParams]);
 
   const viewModeURL = useMemo(() => {
-    const basePageId = props.application.defaultBasePageId;
+    const basePageId = application.defaultBasePageId;
 
     if (!basePageId) return "";
 
     return viewerURL({ basePageId, params: viewerParams });
-  }, [props.application.defaultBasePageId, viewerParams]);
+  }, [application.defaultBasePageId, viewerParams]);
 
-  const launchApp = useCallback(() => {
-    setURLParams();
-    dispatch(getCurrentUser());
-  }, []);
+  const launchApp = useCallback(
+    (e: React.MouseEvent) => {
+      if (e.ctrlKey || e.metaKey) {
+        window.open(viewModeURL, "_blank");
 
-  const editApp = useCallback(() => {
-    setURLParams();
-    dispatch(getCurrentUser());
-  }, []);
+        return;
+      }
+
+      setURLParams();
+      history.push(viewModeURL);
+      dispatch(getCurrentUser());
+    },
+    [dispatch, setURLParams, viewModeURL],
+  );
+
+  const editApp = useCallback(
+    (e: React.MouseEvent) => {
+      if (e.ctrlKey || e.metaKey) {
+        window.open(editModeURL, "_blank");
+
+        return;
+      }
+
+      setURLParams();
+      history.push(editModeURL);
+      dispatch(getCurrentUser());
+    },
+    [dispatch, editModeURL, setURLParams],
+  );
 
   const launchMobileApp = useCallback(() => {
     setURLParams();
-    history.push(
-      viewerURL({
-        basePageId: props.application.defaultBasePageId,
-        params: viewerParams,
-      }),
-    );
+    history.push(viewModeURL);
     dispatch(getCurrentUser());
-  }, [dispatch, props.application.defaultBasePageId, viewerParams]);
+  }, [setURLParams, viewModeURL, dispatch]);
+
+  const handleToggleFavorite = useCallback(
+    (e: React.MouseEvent) => {
+      e.stopPropagation();
+      dispatch(toggleFavoriteApplication(application.baseId || application.id));
+    },
+    [application.baseId, application.id, dispatch],
+  );
 
   return (
     <Card
@@ -507,21 +658,23 @@ export function ApplicationCard(props: ApplicationCardProps) {
       hasReadPermission={hasReadPermission}
       icon={appIcon}
       isContextMenuOpen={isMenuOpen}
+      isFavorited={application.isFavorited}
       isFetching={isFetchingApplications}
       isMobile={props.isMobile}
       moreActionItems={moreActionItems}
+      onToggleFavorite={handleToggleFavorite}
       primaryAction={props.isMobile ? launchMobileApp : noop}
       setShowOverlay={setShowOverlay}
       showGitBadge={Boolean(showGitBadge)}
       showOverlay={showOverlay}
-      testId={`t--application-card ${props.application.name}`}
-      title={props.application.name}
+      subtitle={application.description}
+      testId={`t--application-card ${application.name}`}
+      title={application.name}
       titleTestId="t--app-card-name"
     >
       {hasEditPermission && !isMenuOpen && (
         <Button
           className="t--application-edit-link"
-          href={editModeURL}
           onClick={editApp}
           renderAs="a"
           size="md"
@@ -533,7 +686,6 @@ export function ApplicationCard(props: ApplicationCardProps) {
       {!isMenuOpen && (
         <Button
           className="t--application-view-link"
-          href={viewModeURL}
           kind="secondary"
           onClick={launchApp}
           renderAs="a"

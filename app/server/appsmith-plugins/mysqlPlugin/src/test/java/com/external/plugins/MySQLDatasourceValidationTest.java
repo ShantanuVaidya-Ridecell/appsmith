@@ -1,5 +1,6 @@
 package com.external.plugins;
 
+import com.appsmith.external.configurations.connectionpool.ConnectionPoolConfig;
 import com.appsmith.external.models.Connection;
 import com.appsmith.external.models.DBAuth;
 import com.appsmith.external.models.DatasourceConfiguration;
@@ -9,7 +10,12 @@ import com.appsmith.external.models.SSHConnection;
 import com.appsmith.external.models.SSHPrivateKey;
 import com.appsmith.external.models.SSLDetails;
 import com.appsmith.external.models.UploadedFile;
+import com.external.utils.MySqlDatasourceUtils;
+import io.micrometer.observation.ObservationRegistry;
+import io.r2dbc.spi.ConnectionFactoryOptions;
 import org.junit.jupiter.api.Test;
+import org.mariadb.r2dbc.MariadbConnectionConfiguration;
+import org.mariadb.r2dbc.util.HostAddress;
 import reactor.core.publisher.Mono;
 import reactor.test.StepVerifier;
 
@@ -22,10 +28,28 @@ import static com.appsmith.external.exceptions.pluginExceptions.BasePluginErrorM
 import static com.appsmith.external.exceptions.pluginExceptions.BasePluginErrorMessages.DS_MISSING_SSH_KEY_ERROR_MSG;
 import static com.appsmith.external.exceptions.pluginExceptions.BasePluginErrorMessages.DS_MISSING_SSH_USERNAME_ERROR_MSG;
 import static com.appsmith.external.models.Connection.Mode.READ_WRITE;
+import static io.r2dbc.spi.ConnectionFactoryOptions.DRIVER;
+import static io.r2dbc.spi.ConnectionFactoryOptions.PROTOCOL;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class MySQLDatasourceValidationTest {
-    static MySqlPlugin.MySqlPluginExecutor pluginExecutor = new MySqlPlugin.MySqlPluginExecutor();
+    private static class MockConnectionPoolConfig implements ConnectionPoolConfig {
+        @Override
+        public Mono<Integer> getMaxConnectionPoolSize() {
+            return Mono.just(5);
+        }
+
+        @Override
+        public Mono<Integer> getSocketTimeoutSeconds() {
+            return Mono.just(600);
+        }
+    }
+
+    static MySqlPlugin.MySqlPluginExecutor pluginExecutor =
+            new MySqlPlugin.MySqlPluginExecutor(new MockConnectionPoolConfig(), ObservationRegistry.NOOP);
 
     private DatasourceConfiguration getDatasourceConfigurationWithStandardConnectionMethod() {
         DatasourceConfiguration datasourceConfiguration = new DatasourceConfiguration();
@@ -171,6 +195,49 @@ public class MySQLDatasourceValidationTest {
         dsConfig.getEndpoints().get(0).setHost(hostname);
         Set<String> output = pluginExecutor.validateDatasource(dsConfig);
         assertTrue(output.contains("Host value cannot contain `/` or `:` characters. Found `" + hostname + "`."));
+    }
+
+    @Test
+    public void testStandardConnectionOptionsAreCompatibleWithMariaDbDriver() {
+        DatasourceConfiguration dsConfig = getDatasourceConfigurationWithStandardConnectionMethod();
+        ConnectionFactoryOptions options =
+                MySqlDatasourceUtils.getBuilder(dsConfig, null).build();
+
+        assertEquals("mariadb", options.getValue(DRIVER));
+        assertNull(options.getValue(PROTOCOL));
+        assertDoesNotThrow(
+                () -> MariadbConnectionConfiguration.fromOptions(options).build());
+    }
+
+    @Test
+    public void testStoredPoolUrlIsCompatibleWithMariaDbDriver() {
+        DatasourceConfiguration dsConfig = getDatasourceConfigurationWithStandardConnectionMethod();
+        dsConfig.setEndpoints(List.of());
+        dsConfig.setUrl("r2dbc:pool:mariadb://mysqlHost:3306/dbname");
+        ConnectionFactoryOptions options =
+                MySqlDatasourceUtils.getBuilder(dsConfig, null).build();
+
+        MariadbConnectionConfiguration configuration = assertDoesNotThrow(
+                () -> MariadbConnectionConfiguration.fromOptions(options).build());
+        assertEquals("mariadb", options.getValue(DRIVER));
+        assertNull(options.getValue(PROTOCOL));
+        assertEquals(List.of(new HostAddress("mysqlHost", 3306)), configuration.getHostAddresses());
+    }
+
+    @Test
+    public void testMultipleEndpointsAreCompatibleWithMariaDbDriver() {
+        DatasourceConfiguration dsConfig = getDatasourceConfigurationWithStandardConnectionMethod();
+        dsConfig.setEndpoints(List.of(new Endpoint("primaryHost", 3306L), new Endpoint("replicaHost", 3307L)));
+        ConnectionFactoryOptions options =
+                MySqlDatasourceUtils.getBuilder(dsConfig, null).build();
+
+        MariadbConnectionConfiguration configuration = assertDoesNotThrow(
+                () -> MariadbConnectionConfiguration.fromOptions(options).build());
+        assertEquals("mariadb", options.getValue(DRIVER));
+        assertNull(options.getValue(PROTOCOL));
+        assertEquals(
+                List.of(new HostAddress("primaryHost", 3306), new HostAddress("replicaHost", 3307)),
+                configuration.getHostAddresses());
     }
 
     @Test

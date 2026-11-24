@@ -14,6 +14,7 @@ import com.appsmith.external.models.OAuth2;
 import com.appsmith.external.models.PluginType;
 import com.appsmith.external.models.Policy;
 import com.appsmith.external.models.Property;
+import com.appsmith.external.models.RunBehaviourEnum;
 import com.appsmith.external.models.SSLDetails;
 import com.appsmith.external.models.UploadedFile;
 import com.appsmith.server.acl.AclPermission;
@@ -284,7 +285,7 @@ public class ApplicationForkingServiceTests {
         ActionDTO action = new ActionDTO();
         action.setName("forkActionTest");
         action.setPageId(app1.getPages().get(0).getId());
-        action.setExecuteOnLoad(true);
+        action.setRunBehaviour(RunBehaviourEnum.ON_PAGE_LOAD);
         ActionConfiguration actionConfiguration = new ActionConfiguration();
         actionConfiguration.setHttpMethod(HttpMethod.GET);
         action.setActionConfiguration(actionConfiguration);
@@ -610,6 +611,7 @@ public class ApplicationForkingServiceTests {
                 .filter(policy -> !policy.getPermission()
                         .equals(workspacePermission
                                 .getDatasourceCreatePermission()
+                                .block()
                                 .getValue()))
                 .collect(Collectors.toSet());
         targetWorkspace.setPolicies(newPoliciesWithoutCreateDatasource);
@@ -1155,7 +1157,7 @@ public class ApplicationForkingServiceTests {
             ActionDTO action = new ActionDTO();
             action.setName("forkActionTest");
             action.setPageId(srcApp.getPages().get(0).getId());
-            action.setExecuteOnLoad(true);
+            action.setRunBehaviour(RunBehaviourEnum.ON_PAGE_LOAD);
             ActionConfiguration actionConfiguration = new ActionConfiguration();
             actionConfiguration.setHttpMethod(HttpMethod.GET);
             action.setActionConfiguration(actionConfiguration);

@@ -7,7 +7,7 @@ import type {
 import type {
   CanvasWidgetStructure,
   FlattenedWidgetProps,
-} from "WidgetProvider/constants";
+} from "WidgetProvider/types";
 import { WIDGET_DSL_STRUCTURE_PROPS } from "constants/WidgetConstants";
 
 interface DenormalizeOptions {
@@ -27,7 +27,7 @@ export const compareAndGenerateImmutableCanvasStructure = (
   return newStructure;
 };
 
-const getCanvasStructureFromDSL = (dsl: DSL): CanvasStructure => {
+export const getCanvasStructureFromDSL = (dsl: DSL): CanvasStructure => {
   let children = dsl.children;
   let structureChildren: CanvasStructure[] | undefined = undefined;
 

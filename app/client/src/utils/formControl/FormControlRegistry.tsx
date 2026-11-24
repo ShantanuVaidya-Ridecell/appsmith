@@ -8,6 +8,8 @@ import type { DropDownControlProps } from "components/formControls/DropDownContr
 import DropDownControl from "components/formControls/DropDownControl";
 import type { SwitchControlProps } from "components/formControls/SwitchControl";
 import SwitchControl from "components/formControls/SwitchControl";
+import type { SwitchWithConfirmationControlProps } from "components/formControls/SwitchWithConfirmationControl";
+import SwitchWithConfirmationControl from "components/formControls/SwitchWithConfirmationControl";
 import type { KeyValueArrayControlProps } from "components/formControls/KeyValueArrayControl";
 import KeyValueArrayControl from "components/formControls/KeyValueArrayControl";
 import type { FilePickerControlProps } from "components/formControls/FilePickerControl";
@@ -37,7 +39,27 @@ import MultiFilePickerControl from "components/formControls/MultiFilePickerContr
 import type { MultipleFilePickerControlProps } from "components/formControls/MultiFilePickerControl";
 import type { RadioButtonControlProps } from "components/formControls/RadioButtonControl";
 import RadioButtonControl from "components/formControls/RadioButtonControl";
-import { RagDocuments } from "ee/components/formControls/RagDocuments";
+import {
+  RagIntegrations,
+  RagDocumentsSelector,
+} from "ee/components/formControls/Rag";
+import {
+  SliderControl,
+  type SliderControlProps,
+} from "components/formControls/SliderControl";
+import { HybridSearchControl } from "components/formControls/HybridSearch";
+import FunctionCallingConfigControl from "components/formControls/FunctionCallingConfigControl";
+import {
+  DatasourceLinkControl,
+  type DatasourceLinkControlProps,
+} from "components/formControls/DatasourceLinkControl";
+import { CustomActionsControl } from "components/formControls/CustomActionControls/CustomActionsConfigControl";
+import { CustomGraphQLActionsControl } from "components/formControls/CustomActionControls/CustomGraphQLActionsConfigControl";
+import {
+  AiChatSystemInstructionsControl,
+  type AiChatSystemInstructionsControlProps,
+} from "components/formControls/AIChatSystemInstructionsControl";
+import AIChatIntegrationsControl from "ee/components/formControls/AIChatIntegrationsControl";
 
 /**
  * NOTE: If you are adding a component that uses FormControl
@@ -79,6 +101,16 @@ class FormControlRegistry {
         return <SwitchControl {...controlProps} />;
       },
     });
+    FormControlFactory.registerControlBuilder(
+      formControlTypes.SWITCH_WITH_CONFIRMATION,
+      {
+        buildPropertyControl(
+          controlProps: SwitchWithConfirmationControlProps,
+        ): JSX.Element {
+          return <SwitchWithConfirmationControl {...controlProps} />;
+        },
+      },
+    );
     FormControlFactory.registerControlBuilder(formControlTypes.KEYVALUE_ARRAY, {
       buildPropertyControl(
         controlProps: KeyValueArrayControlProps,
@@ -191,16 +223,86 @@ class FormControlRegistry {
         return <RadioButtonControl {...controlProps} />;
       },
     });
-    FormControlFactory.registerControlBuilder(formControlTypes.RAG_DOCUMENTS, {
-      buildPropertyControl(controlProps): JSX.Element {
-        return (
-          <RagDocuments
-            datasourceId={controlProps.datasourceId}
-            workspaceId={controlProps.workspaceId}
-          />
-        );
+    FormControlFactory.registerControlBuilder(
+      formControlTypes.RAG_INTEGRATIONS,
+      {
+        buildPropertyControl(controlProps): JSX.Element {
+          return <RagIntegrations {...controlProps} />;
+        },
+      },
+    );
+    FormControlFactory.registerControlBuilder(formControlTypes.SLIDER, {
+      buildPropertyControl(controlProps: SliderControlProps): JSX.Element {
+        return <SliderControl {...controlProps} />;
       },
     });
+    FormControlFactory.registerControlBuilder(
+      formControlTypes.RAG_DOCUMENTS_SELECTOR,
+      {
+        buildPropertyControl(controlProps): JSX.Element {
+          return <RagDocumentsSelector {...controlProps} />;
+        },
+      },
+    );
+    FormControlFactory.registerControlBuilder(formControlTypes.HYBRID_SEARCH, {
+      buildPropertyControl(controlProps: SliderControlProps): JSX.Element {
+        return <HybridSearchControl {...controlProps} />;
+      },
+    });
+    FormControlFactory.registerControlBuilder(
+      formControlTypes.AI_CHAT_SYSTEM_INSTRUCTIONS,
+      {
+        buildPropertyControl(
+          controlProps: AiChatSystemInstructionsControlProps,
+        ): JSX.Element {
+          return <AiChatSystemInstructionsControl {...controlProps} />;
+        },
+      },
+    );
+    FormControlFactory.registerControlBuilder(
+      formControlTypes.FUNCTION_CALLING_CONFIG_FORM,
+      {
+        buildPropertyControl(controlProps): JSX.Element {
+          return <FunctionCallingConfigControl {...controlProps} />;
+        },
+      },
+    );
+    FormControlFactory.registerControlBuilder(
+      formControlTypes.AI_CHAT_INTEGRATIONS_FORM,
+      {
+        buildPropertyControl(controlProps): JSX.Element {
+          return <AIChatIntegrationsControl {...controlProps} />;
+        },
+      },
+    );
+    FormControlFactory.registerControlBuilder(
+      formControlTypes.DATASOURCE_LINK,
+      {
+        buildPropertyControl(
+          controlProps: DatasourceLinkControlProps,
+        ): JSX.Element {
+          return <DatasourceLinkControl {...controlProps} />;
+        },
+      },
+    );
+
+    FormControlFactory.registerControlBuilder(
+      formControlTypes.CUSTOM_ACTIONS_CONFIG_FORM,
+      {
+        buildPropertyControl(controlProps): JSX.Element {
+          return <CustomActionsControl {...controlProps} />;
+        },
+      },
+    );
+
+    FormControlFactory.registerControlBuilder(
+      formControlTypes.CUSTOM_GRAPHQL_ACTIONS_CONFIG_FORM,
+      {
+        buildPropertyControl(controlProps): JSX.Element {
+          return <CustomGraphQLActionsControl {...controlProps} />;
+        },
+      },
+    );
   }
 }
 

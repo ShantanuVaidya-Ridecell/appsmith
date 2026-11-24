@@ -8,7 +8,7 @@ import type { TextSize } from "constants/WidgetConstants";
 import type { ValidationResponse } from "constants/WidgetValidation";
 import { ValidationTypes } from "constants/WidgetValidation";
 import type { SetterConfig, Stylesheet } from "entities/AppTheming";
-import { EvaluationSubstitutionType } from "entities/DataTree/dataTreeFactory";
+import { EvaluationSubstitutionType } from "constants/EvaluationConstants";
 import { AutocompleteDataType } from "utils/autocomplete/AutocompleteDataType";
 import {
   isAutoHeightEnabledForWidget,
@@ -23,13 +23,13 @@ import { isAutoLayout } from "layoutSystems/autolayout/utils/flexWidgetUtils";
 import type {
   AnvilConfig,
   AutocompletionDefinitions,
-} from "WidgetProvider/constants";
+} from "WidgetProvider/types";
 import IconSVG from "../icon.svg";
 import ThumbnailSVG from "../thumbnail.svg";
 import type {
   SnipingModeProperty,
   PropertyUpdates,
-} from "WidgetProvider/constants";
+} from "WidgetProvider/types";
 import { WIDGET_TAGS } from "constants/WidgetConstants";
 import { FlexVerticalAlignment } from "layoutSystems/common/utils/constants";
 
@@ -717,6 +717,11 @@ class RadioGroupWidget extends BaseWidget<RadioGroupWidgetProps, WidgetState> {
         setData: {
           path: "options",
           type: "array",
+        },
+        setValue: {
+          path: "defaultOptionValue",
+          type: "string",
+          accessor: "selectedOptionValue",
         },
       },
     };

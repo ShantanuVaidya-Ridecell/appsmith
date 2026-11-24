@@ -26,7 +26,10 @@ import { Button, Classes, InputGroup } from "@blueprintjs/core";
 import { labelMargin, WidgetContainerDiff } from "widgets/WidgetUtils";
 import { Icon } from "@design-system/widgets-old";
 import { Colors } from "constants/Colors";
-import type { LabelPosition } from "components/constants";
+import {
+  type LabelPosition,
+  SELECT_DROPDOWN_LIST_ITEM_HEIGHT_PX,
+} from "components/constants";
 import useDropdown from "widgets/useDropdown";
 import LabelWithTooltip from "widgets/components/LabelWithTooltip";
 
@@ -51,6 +54,7 @@ export interface TreeSelectProps
   labelTextSize?: TextSize;
   labelStyle?: string;
   labelTooltip?: string;
+  isRequired?: boolean;
   compactMode: boolean;
   dropDownWidth: number;
   width: number;
@@ -70,6 +74,7 @@ export const NoDataFoundContainer = styled.div`
   text-align: center;
 `;
 
+/** Returns the expand/collapse chevron for a tree node switcher. */
 const getSvg = (expanded: boolean) => (
   <i
     style={{
@@ -89,6 +94,7 @@ const getSvg = (expanded: boolean) => (
   </i>
 );
 
+/** Renders the tree switcher icon while keeping leaf rows aligned. */
 const switcherIcon = (treeNode: TreeNodeProps) => {
   if (treeNode.isLeaf) {
     return (
@@ -106,6 +112,7 @@ const switcherIcon = (treeNode: TreeNodeProps) => {
   return getSvg(treeNode.expanded);
 };
 
+/** Tree-based multi-select widget view with optional filtering and required-label support. */
 function MultiTreeSelectComponent({
   accentColor,
   allowClear,
@@ -119,6 +126,7 @@ function MultiTreeSelectComponent({
   filterText,
   isDynamicHeightEnabled,
   isFilterable,
+  isRequired,
   isValid,
   labelAlignment,
   labelPosition,
@@ -258,6 +266,7 @@ function MultiTreeSelectComponent({
           fontStyle={labelStyle}
           helpText={labelTooltip}
           isDynamicHeightEnabled={isDynamicHeightEnabled}
+          isRequired={isRequired}
           loading={loading}
           position={labelPosition}
           ref={labelRef}
@@ -292,6 +301,7 @@ function MultiTreeSelectComponent({
             />
           }
           key={key}
+          listItemHeight={SELECT_DROPDOWN_LIST_ITEM_HEIGHT_PX}
           loading={loading}
           maxTagCount={"responsive"}
           maxTagPlaceholder={(e) => `+${e.length} more`}

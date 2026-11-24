@@ -68,15 +68,21 @@ describe("Admin settings page", { tags: ["@tag.Settings"] }, function () {
       cy.wait("@getEnvVariables");
       agHelper.GetNClick(adminsSettings.generalTab);
       agHelper.AssertURL(adminSettingsHelper.routes.GENERAL);
-      agHelper.GetNClick(adminsSettings.advancedTab);
-      agHelper.AssertURL(adminSettingsHelper.routes.ADVANCED);
-      agHelper.GetNClick(adminsSettings.authenticationTab);
-      agHelper.AssertURL(adminSettingsHelper.routes.AUTHENTICATION);
       agHelper.GetNClick(adminsSettings.emailTab);
       agHelper.AssertURL(adminSettingsHelper.routes.EMAIL);
-      agHelper.AssertElementAbsence(adminsSettings.developerSettingsTab);
+      agHelper.GetNClick(adminsSettings.authenticationTab);
+      agHelper.AssertURL(adminSettingsHelper.routes.AUTHENTICATION);
+      agHelper.GetNClick(adminsSettings.instanceSettingsTab);
+      agHelper.AssertURL(adminSettingsHelper.routes.INSTANCE_SETTINGS);
+      agHelper.AssertElementAbsence(adminSettingsHelper._googleMapsAPIField);
+      agHelper.GetNClick(adminsSettings.configurationTab);
+      agHelper.AssertURL(adminSettingsHelper.routes.CONFIGURATION);
       agHelper.GetNClick(adminsSettings.versionTab);
       agHelper.AssertURL(adminSettingsHelper.routes.VERSION);
+      agHelper.GetNClick(adminsSettings.userSettingsTab);
+      agHelper.AssertURL(adminSettingsHelper.routes.USER_SETTINGS);
+      agHelper.GetNClick(adminsSettings.branding);
+      agHelper.AssertURL(adminSettingsHelper.routes.BRANDING);
     },
   );
 
@@ -113,16 +119,14 @@ describe("Admin settings page", { tags: ["@tag.Settings"] }, function () {
       cy.get(adminsSettings.readMoreLink).within(() => {
         cy.get("a")
           .should("have.attr", "target", "_blank")
-          .invoke("removeAttr", "target")
-          .click();
-        agHelper.AssertURL(GOOGLE_SIGNUP_SETUP_DOC);
+          .and("have.attr", "href", GOOGLE_SIGNUP_SETUP_DOC);
       });
     },
   );
 
   it("7. Should test save and clear buttons disabled state", () => {
     agHelper.VisitNAssert(
-      adminSettingsHelper.routes.GENERAL,
+      adminSettingsHelper.routes.INSTANCE_SETTINGS,
       "getEnvVariables",
     );
     const assertVisibilityAndDisabledState = () => {
@@ -144,7 +148,7 @@ describe("Admin settings page", { tags: ["@tag.Settings"] }, function () {
 
   it("8. Should test saving a setting value", () => {
     agHelper.VisitNAssert(
-      adminSettingsHelper.routes.GENERAL,
+      adminSettingsHelper.routes.INSTANCE_SETTINGS,
       "getEnvVariables",
     );
 
@@ -169,7 +173,7 @@ describe("Admin settings page", { tags: ["@tag.Settings"] }, function () {
 
   it("9.Should test saving settings value from different tabs", () => {
     agHelper.VisitNAssert(
-      adminSettingsHelper.routes.GENERAL,
+      adminSettingsHelper.routes.INSTANCE_SETTINGS,
       "getEnvVariables",
     );
     agHelper.AssertElementAbsence(adminsSettings.restartNotice);
@@ -213,6 +217,7 @@ describe("Admin settings page", { tags: ["@tag.Settings"] }, function () {
     agHelper.WaitUntilEleAppear(adminSettingsHelper._adminSettingsBtn);
     agHelper.GetNClick(adminSettingsHelper._adminSettingsBtn);
     agHelper.AssertURL(adminSettingsHelper.routes.GENERAL);
+    agHelper.GetNClick(adminsSettings.instanceSettingsTab);
     cy.wait("@getEnvVariables");
     agHelper
       .GetText(adminSettingsHelper._instanceName, "val")
@@ -233,14 +238,16 @@ describe("Admin settings page", { tags: ["@tag.Settings"] }, function () {
       cy.wait("@getEnvVariables");
       agHelper.GetNClick(adminsSettings.generalTab);
       agHelper.AssertURL(adminSettingsHelper.routes.GENERAL);
-      agHelper.GetNClick(adminsSettings.advancedTab);
-      agHelper.AssertURL(adminSettingsHelper.routes.ADVANCED);
-      agHelper.GetNClick(adminsSettings.authenticationTab);
-      agHelper.AssertURL(adminSettingsHelper.routes.AUTHENTICATION);
       agHelper.GetNClick(adminsSettings.emailTab);
       agHelper.AssertURL(adminSettingsHelper.routes.EMAIL);
-      agHelper.GetNClick(adminsSettings.developerSettingsTab);
-      agHelper.AssertURL(adminSettingsHelper.routes.DEVELOPER_SETTINGS);
+      agHelper.GetNClick(adminsSettings.authenticationTab);
+      agHelper.AssertURL(adminSettingsHelper.routes.AUTHENTICATION);
+      agHelper.GetNClick(adminsSettings.instanceSettingsTab);
+      agHelper.AssertURL(adminSettingsHelper.routes.INSTANCE_SETTINGS);
+      agHelper.GetNClick(adminsSettings.configurationTab);
+      agHelper.AssertURL(adminSettingsHelper.routes.CONFIGURATION);
+      agHelper.GetNClick(adminsSettings.userSettingsTab);
+      agHelper.AssertURL(adminSettingsHelper.routes.USER_SETTINGS);
       agHelper.GetNClick(adminsSettings.versionTab);
       agHelper.AssertURL(adminSettingsHelper.routes.VERSION);
       agHelper.GetNClick(adminsSettings.branding);

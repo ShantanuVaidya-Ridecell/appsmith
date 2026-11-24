@@ -17,6 +17,7 @@ import {
 import { useDispatch, useSelector } from "react-redux";
 import {
   getCurrentApplicationId,
+  getCurrentBasePageId,
   getPageList,
   getPagePermissions,
 } from "selectors/editorSelectors";
@@ -25,8 +26,8 @@ import { useFeatureFlag } from "utils/hooks/useFeatureFlag";
 import { FEATURE_FLAG } from "ee/entities/FeatureFlag";
 import { getHasManagePagePermission } from "ee/utils/BusinessFeatures/permissionPageHelpers";
 import { getWidgets } from "sagas/selectors";
-import type { FlattenedWidgetProps } from "reducers/entityReducers/canvasWidgetsStructureReducer";
-import { WDS_V2_WIDGET_MAP } from "modules/ui-builder/ui/wds/constants";
+import type { FlattenedWidgetProps } from "ee/reducers/entityReducers/canvasWidgetsStructureReducer";
+import { WDS_V2_WIDGET_MAP } from "widgets/wds/constants";
 import { getNextWidgetName } from "sagas/WidgetOperationUtils";
 import AnalyticsUtil from "ee/utils/AnalyticsUtil";
 import { addSuggestedWidget } from "actions/widgetActions";
@@ -38,6 +39,8 @@ import chartWidgetIconSvg from "widgets/ChartWidget/icon.svg";
 import selectWidgetIconSvg from "widgets/SelectWidget/icon.svg";
 import textWidgetIconSvg from "widgets/TextWidget/icon.svg";
 import inputWidgetIconSvg from "widgets/InputWidgetV2/icon.svg";
+import cardWidgetIconSvg from "widgets/CardWidget/icon.svg";
+import { CARD_DATA_PROPERTY } from "widgets/CardWidget/constants";
 import { generateReactKey } from "utils/generators";
 import type { WidgetType } from "constants/WidgetConstants";
 import { bindDataOnCanvas } from "actions/pluginActionActions";
@@ -52,7 +55,11 @@ interface BindDataButtonProps {
   hasResponse: boolean;
 }
 
-const SUPPORTED_SUGGESTED_WIDGETS = ["TABLE_WIDGET_V2", "WDS_TABLE_WIDGET"];
+const SUPPORTED_SUGGESTED_WIDGETS = [
+  "TABLE_WIDGET_V2",
+  "WDS_TABLE_WIDGET",
+  "CARD_WIDGET",
+];
 
 const connectExistingWidgetLabel = createMessage(CONNECT_EXISTING_WIDGET_LABEL);
 const addNewWidgetLabel = createMessage(ADD_NEW_WIDGET);
@@ -102,6 +109,12 @@ export const WIDGET_DATA_FIELD_MAP: Record<string, WidgetBindingInfo> = {
     image: `${ASSETS_CDN_URL}/widgetSuggestion/table.svg`,
     existingImage: `${ASSETS_CDN_URL}/widgetSuggestion/existing_table.svg`,
     icon: tableWidgetIconSvg,
+  },
+  CARD_WIDGET: {
+    label: CARD_DATA_PROPERTY.toLowerCase(),
+    propertyName: CARD_DATA_PROPERTY,
+    widgetName: "Card",
+    icon: cardWidgetIconSvg,
   },
   CHART_WIDGET: {
     label: "chart-series-data-control",
@@ -159,15 +172,13 @@ function getWidgetProps(
         parentRowSpace: 10,
       };
     case "TABLE_WIDGET_V2":
+    case "WDS_TABLE_WIDGET":
       return {
-        type: "TABLE_WIDGET_V2",
+        type: suggestedWidget.type,
         props: {
           [fieldName]: `{{${actionName}.${suggestedWidget.bindingQuery}}}`,
           dynamicBindingPathList: [{ key: "tableData" }],
-          dynamicPropertyPathList:
-            suggestedWidget.bindingQuery === "data"
-              ? []
-              : [{ key: "tableData" }],
+          dynamicPropertyPathList: [{ key: "tableData" }],
         },
         parentRowSpace: 10,
       };
@@ -250,11 +261,11 @@ function BindDataButton(props: BindDataButtonProps) {
   const pagePermissions = useSelector(getPagePermissions);
 
   const params = useParams<{
-    basePageId: string;
     baseApiId?: string;
     baseQueryId?: string;
     moduleInstanceId?: string;
   }>();
+  const currentBasePageId = useSelector(getCurrentBasePageId);
 
   const isFeatureEnabled = useFeatureFlag(FEATURE_FLAG.license_gac_enabled);
 
@@ -278,11 +289,16 @@ function BindDataButton(props: BindDataButtonProps) {
   const isAnvilLayout = useSelector(getIsAnvilLayout);
   // The purpose of this filter is to make sure that if Anvil is enabled
   // only those widgets which have an alternative in Anvil are listed
-  // for selection for adding a new suggested widget
+  // for selection for adding a new suggested widget. A suggestion survives
+  // the filter if it is a legacy type with a WDS counterpart (a map key,
+  // e.g. TABLE_WIDGET_V2) or already a WDS type (a map value, e.g.
+  // WDS_TABLE_WIDGET).
   const filteredSuggestedWidgets =
     isAnvilLayout && suggestedWidgets
-      ? suggestedWidgets.filter((each) =>
-          Object.keys(WDS_V2_WIDGET_MAP).includes(each.type),
+      ? suggestedWidgets.filter(
+          (each) =>
+            Object.keys(WDS_V2_WIDGET_MAP).includes(each.type) ||
+            Object.values(WDS_V2_WIDGET_MAP).includes(each.type),
         )
       : suggestedWidgets;
 
@@ -296,7 +312,7 @@ function BindDataButton(props: BindDataButtonProps) {
     setIsWidgetSelectionOpen(true);
   }, []);
 
-  const isTableWidgetPresentOnCanvas = () => {
+  const isSupportedWidgetPresentOnCanvas = () => {
     const canvasWidgetLength = Object.keys(canvasWidgets).length;
 
     return (
@@ -349,7 +365,7 @@ function BindDataButton(props: BindDataButtonProps) {
           params.baseQueryId ||
           params.moduleInstanceId) as string,
         applicationId: applicationId as string,
-        basePageId: params.basePageId,
+        basePageId: currentBasePageId,
       }),
     );
 
@@ -390,7 +406,7 @@ function BindDataButton(props: BindDataButtonProps) {
         side={"top"}
         width="235px"
       >
-        {isTableWidgetPresentOnCanvas() && (
+        {isSupportedWidgetPresentOnCanvas() && (
           <div data-testid="t--suggested-widget-existing">
             {renderHeading(connectExistingWidgetLabel)}
             {Object.keys(canvasWidgets).map((widgetKey) => {

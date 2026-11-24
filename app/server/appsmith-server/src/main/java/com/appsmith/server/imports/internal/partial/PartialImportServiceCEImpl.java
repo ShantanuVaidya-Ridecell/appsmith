@@ -6,7 +6,6 @@ import com.appsmith.external.models.ActionDTO;
 import com.appsmith.external.models.CreatorContextType;
 import com.appsmith.external.models.Datasource;
 import com.appsmith.server.acl.AclPermission;
-import com.appsmith.server.actioncollections.base.ActionCollectionService;
 import com.appsmith.server.applications.base.ApplicationService;
 import com.appsmith.server.constants.FieldName;
 import com.appsmith.server.datasources.base.DatasourceService;
@@ -17,7 +16,6 @@ import com.appsmith.server.domains.Layout;
 import com.appsmith.server.domains.NewAction;
 import com.appsmith.server.domains.NewPage;
 import com.appsmith.server.domains.Plugin;
-import com.appsmith.server.domains.User;
 import com.appsmith.server.domains.Workspace;
 import com.appsmith.server.dtos.ApplicationImportDTO;
 import com.appsmith.server.dtos.ApplicationJson;
@@ -42,7 +40,6 @@ import com.appsmith.server.repositories.PermissionGroupRepository;
 import com.appsmith.server.services.AnalyticsService;
 import com.appsmith.server.services.ApplicationPageService;
 import com.appsmith.server.services.ApplicationTemplateService;
-import com.appsmith.server.services.SessionUserService;
 import com.appsmith.server.services.WorkspaceService;
 import com.appsmith.server.solutions.ActionPermission;
 import com.appsmith.server.solutions.ApplicationPermission;
@@ -55,16 +52,20 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.codec.multipart.Part;
 import org.springframework.transaction.reactive.TransactionalOperator;
+import org.springframework.util.CollectionUtils;
 import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.util.MultiValueMap;
+import org.springframework.util.StringUtils;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
@@ -83,7 +84,6 @@ public class PartialImportServiceCEImpl implements PartialImportServiceCE {
     private final ApplicationPermission applicationPermission;
     private final PagePermission pagePermission;
     private final ActionPermission actionPermission;
-    private final SessionUserService sessionUserService;
     private final TransactionalOperator transactionalOperator;
     private final PermissionGroupRepository permissionGroupRepository;
     private final ImportableService<Plugin> pluginImportableService;
@@ -98,7 +98,6 @@ public class PartialImportServiceCEImpl implements PartialImportServiceCE {
     private final WidgetRefactorUtil widgetRefactorUtil;
     private final ApplicationPageService applicationPageService;
     private final NewActionService newActionService;
-    private final ActionCollectionService actionCollectionService;
     private final ArtifactBasedImportService<Application, ApplicationImportDTO, ApplicationJson>
             applicationImportService;
     private final DatasourceService datasourceService;
@@ -107,39 +106,73 @@ public class PartialImportServiceCEImpl implements PartialImportServiceCE {
     private final DryOperationRepository dryOperationRepository;
 
     @Override
-    public Mono<Application> importResourceInPage(
-            String workspaceId, String applicationId, String pageId, String branchName, Part file) {
-        Mono<User> currUserMono = sessionUserService.getCurrentUser();
+    public Mono<Application> importResourceInPage(String workspaceId, String applicationId, String pageId, Part file) {
+        // File upload is the only path that emits PARTIAL_IMPORT (Segment + EE audit).
+        // The String overload is shared by BulkNewActionCreator and workflow HITL.
         return importService
-                .extractArtifactExchangeJson(file)
-                .flatMap(artifactExchangeJson -> {
-                    if (artifactExchangeJson instanceof ApplicationJson
-                            && isImportableResource((ApplicationJson) artifactExchangeJson)) {
-                        return importResourceInPage(
-                                        workspaceId, applicationId, pageId, (ApplicationJson) artifactExchangeJson)
-                                .zipWith(currUserMono);
-                    } else {
-                        return Mono.error(
-                                new AppsmithException(
-                                        AppsmithError.GENERIC_JSON_IMPORT_ERROR,
-                                        "The file is not compatible with the current partial import operation. Please check the file and try again."));
-                    }
-                })
-                .flatMap(tuple -> {
-                    final BuildingBlockImportDTO buildingBlockImportDTO = tuple.getT1();
-                    final User user = tuple.getT2();
-                    final Map<String, Object> eventData =
-                            Map.of(FieldName.APPLICATION, buildingBlockImportDTO.getApplication());
-                    final Map<String, Object> data = Map.of(
-                            FieldName.APPLICATION_ID, applicationId,
-                            FieldName.WORKSPACE_ID,
-                                    buildingBlockImportDTO.getApplication().getWorkspaceId(),
-                            FieldName.EVENT_DATA, eventData);
+                .readFilePartToString(file)
+                .flatMap(fileContents ->
+                        importResourceInPageFromContents(workspaceId, applicationId, pageId, fileContents, true));
+    }
 
-                    return analyticsService
-                            .sendEvent(AnalyticsEvents.PARTIAL_IMPORT.getEventName(), user.getUsername(), data)
-                            .thenReturn(buildingBlockImportDTO.getApplication());
-                });
+    @Override
+    public Mono<Application> importResourceInPage(
+            String workspaceId, String applicationId, String pageId, String fileContents) {
+        return importResourceInPageFromContents(workspaceId, applicationId, pageId, fileContents, false);
+    }
+
+    private Mono<Application> importResourceInPageFromContents(
+            String workspaceId,
+            String applicationId,
+            String pageId,
+            String fileContents,
+            boolean emitPartialImportAnalytics) {
+        return importService.extractArtifactExchangeJson(fileContents).flatMap(artifactExchangeJson -> {
+            if (!(artifactExchangeJson instanceof ApplicationJson applicationJson)
+                    || !isImportableResource(applicationJson)) {
+                return Mono.error(
+                        new AppsmithException(
+                                AppsmithError.GENERIC_JSON_IMPORT_ERROR,
+                                "The file is not compatible with the current partial import operation. Please check the file and try again."));
+            }
+            // Capture counts before import mutates/consumes the JSON lists.
+            final Map<String, Object> resourceCounts = buildPartialResourceCounts(applicationJson);
+            return importResourceInPage(workspaceId, applicationId, pageId, applicationJson)
+                    .flatMap(buildingBlockImportDTO -> {
+                        Application application = buildingBlockImportDTO.getApplication();
+                        if (!emitPartialImportAnalytics) {
+                            return Mono.just(application);
+                        }
+
+                        final Map<String, Object> eventData = new HashMap<>();
+                        eventData.put(FieldName.APPLICATION, application);
+                        eventData.put(FieldName.PARTIAL_RESOURCE_COUNTS, resourceCounts);
+
+                        final Map<String, Object> data = new HashMap<>();
+                        data.put(FieldName.APPLICATION_ID, applicationId);
+                        data.put(FieldName.WORKSPACE_ID, application.getWorkspaceId());
+                        data.put(FieldName.PAGE_ID, pageId);
+                        data.put(FieldName.EVENT_DATA, eventData);
+
+                        return analyticsService
+                                .sendObjectEvent(AnalyticsEvents.PARTIAL_IMPORT, application, data)
+                                .thenReturn(application);
+                    });
+        });
+    }
+
+    private static Map<String, Object> buildPartialResourceCounts(ApplicationJson applicationJson) {
+        Map<String, Object> counts = new HashMap<>();
+        counts.put(FieldName.ACTION_COUNT, collectionSize(applicationJson.getActionList()));
+        counts.put(FieldName.ACTION_COLLECTION_COUNT, collectionSize(applicationJson.getActionCollectionList()));
+        counts.put(FieldName.DATASOURCE_COUNT, collectionSize(applicationJson.getDatasourceList()));
+        counts.put(FieldName.JS_LIB_COUNT, collectionSize(applicationJson.getCustomJSLibList()));
+        counts.put(FieldName.HAS_WIDGETS, StringUtils.hasText(applicationJson.getWidgets()));
+        return counts;
+    }
+
+    private static int collectionSize(Collection<?> collection) {
+        return CollectionUtils.isEmpty(collection) ? 0 : collection.size();
     }
 
     private boolean isImportableResource(ApplicationJson artifactExchangeJson) {
@@ -205,8 +238,12 @@ public class PartialImportServiceCEImpl implements PartialImportServiceCE {
                                 importingMetaDTO.setRefName(page.getRefName());
                                 Layout layout =
                                         page.getUnpublishedPage().getLayouts().get(0);
+                                // isFQN=false so the collision set includes action-collection (JS object)
+                                // and widget names, not just action names. These are plain entity names
+                                // (not dotted FQNs), so an imported JS object named "JSObject1" is correctly
+                                // detected against an existing "JSObject1" and renamed rather than duplicated.
                                 return refactoringService.getAllExistingEntitiesMono(
-                                        page.getId(), CreatorContextType.PAGE, layout.getId(), true);
+                                        page.getId(), CreatorContextType.PAGE, layout.getId(), false);
                             })
                             .flatMap(nameSet -> {
                                 // Fetch name of the existing resources in the page to avoid name clashing
@@ -403,13 +440,15 @@ public class PartialImportServiceCEImpl implements PartialImportServiceCE {
             }
 
             applicationJson.getActionList().forEach(action -> {
-                action.getPublishedAction().setPageId(pageName);
                 action.getUnpublishedAction().setPageId(pageName);
-                if (action.getPublishedAction().getCollectionId() != null) {
-                    String collectionName =
-                            action.getPublishedAction().getCollectionId().split("_")[1];
-                    action.getPublishedAction().setCollectionId(pageName + "_" + collectionName);
-                    action.getUnpublishedAction().setCollectionId(pageName + "_" + collectionName);
+                if (Objects.nonNull(action.getPublishedAction())) {
+                    action.getPublishedAction().setPageId(pageName);
+                    if (action.getPublishedAction().getCollectionId() != null) {
+                        String collectionName =
+                                action.getPublishedAction().getCollectionId().split("_")[1];
+                        action.getPublishedAction().setCollectionId(pageName + "_" + collectionName);
+                        action.getUnpublishedAction().setCollectionId(pageName + "_" + collectionName);
+                    }
                 }
 
                 String actionName = action.getId().split("_")[1];

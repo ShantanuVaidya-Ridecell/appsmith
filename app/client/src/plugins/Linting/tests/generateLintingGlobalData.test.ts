@@ -44,6 +44,17 @@ describe("generateLintingGlobalData", () => {
       moment: "readonly",
       _: "readonly",
       fetch: "readonly",
+      Intl: "readonly",
+      Blob: "readonly",
+      File: "readonly",
+      FileReader: "readonly",
+      FormData: "readonly",
+      URL: "readonly",
+      URLSearchParams: "readonly",
+      TextEncoder: "readonly",
+      TextDecoder: "readonly",
+      atob: "readonly",
+      btoa: "readonly",
     });
 
     expect(result.asyncFunctions).toEqual([
@@ -65,6 +76,17 @@ describe("generateLintingGlobalData", () => {
       moment: "readonly",
       _: "readonly",
       fetch: "readonly",
+      Intl: "readonly",
+      Blob: "readonly",
+      File: "readonly",
+      FileReader: "readonly",
+      FormData: "readonly",
+      URL: "readonly",
+      URLSearchParams: "readonly",
+      TextEncoder: "readonly",
+      TextDecoder: "readonly",
+      atob: "readonly",
+      btoa: "readonly",
     });
 
     expect(result.asyncFunctions).toEqual([]);
@@ -89,6 +111,17 @@ describe("generateLintingGlobalData", () => {
       moment: "readonly",
       _: "readonly",
       fetch: "readonly",
+      Intl: "readonly",
+      Blob: "readonly",
+      File: "readonly",
+      FileReader: "readonly",
+      FormData: "readonly",
+      URL: "readonly",
+      URLSearchParams: "readonly",
+      TextEncoder: "readonly",
+      TextDecoder: "readonly",
+      atob: "readonly",
+      btoa: "readonly",
     });
 
     expect(result.asyncFunctions).toEqual([]);

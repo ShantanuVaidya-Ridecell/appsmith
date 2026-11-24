@@ -3,6 +3,8 @@ import * as backup from ".";
 import * as Constants from "../constants";
 import * as utils from "../utils";
 import readlineSync from "readline-sync";
+import { BackupState } from "./BackupState";
+import { ManifestLink } from "./links/ManifestLink";
 import {
   checkAvailableBackupSpace,
   encryptBackupArchive,
@@ -101,22 +103,39 @@ describe("Backup Tests", () => {
     expect(res).toBe("v0.0.0-SNAPSHOT");
   });
 
-  test("If MONGODB and Encryption env values are being removed", () => {
+  test("If MONGODB, Encryption, and Redis env values are being removed", () => {
     expect(
-      removeSensitiveEnvData(`APPSMITH_REDIS_URL=redis://127.0.0.1:6379\nAPPSMITH_DB_URL=mongodb://appsmith:pass@localhost:27017/appsmith\nAPPSMITH_MONGODB_USER=appsmith\nAPPSMITH_MONGODB_PASSWORD=pass\nAPPSMITH_INSTANCE_NAME=Appsmith\n
+      removeSensitiveEnvData(`APPSMITH_REDIS_URL=redis://:secret@127.0.0.1:6379\nAPPSMITH_REDIS_PASSWORD=secret\nAPPSMITH_DB_URL=mongodb://appsmith:pass@localhost:27017/appsmith\nAPPSMITH_MONGODB_USER=appsmith\nAPPSMITH_MONGODB_PASSWORD=pass\nAPPSMITH_INSTANCE_NAME=Appsmith\n
   `),
-    ).toMatch(
-      `APPSMITH_REDIS_URL=redis://127.0.0.1:6379\nAPPSMITH_INSTANCE_NAME=Appsmith\n`,
-    );
+    ).toMatch(`APPSMITH_INSTANCE_NAME=Appsmith\n`);
   });
 
-  test("If MONGODB and Encryption env values are being removed", () => {
+  test("If MONGODB, Encryption, and Redis env values are being removed (with encryption keys)", () => {
     expect(
-      removeSensitiveEnvData(`APPSMITH_REDIS_URL=redis://127.0.0.1:6379\nAPPSMITH_ENCRYPTION_PASSWORD=dummy-pass\nAPPSMITH_ENCRYPTION_SALT=dummy-salt\nAPPSMITH_DB_URL=mongodb://appsmith:pass@localhost:27017/appsmith\nAPPSMITH_MONGODB_USER=appsmith\nAPPSMITH_MONGODB_PASSWORD=pass\nAPPSMITH_INSTANCE_NAME=Appsmith\n
+      removeSensitiveEnvData(`APPSMITH_REDIS_URL=redis://:secret@127.0.0.1:6379\nAPPSMITH_REDIS_PASSWORD=secret\nAPPSMITH_ENCRYPTION_PASSWORD=dummy-pass\nAPPSMITH_ENCRYPTION_SALT=dummy-salt\nAPPSMITH_DB_URL=mongodb://appsmith:pass@localhost:27017/appsmith\nAPPSMITH_MONGODB_USER=appsmith\nAPPSMITH_MONGODB_PASSWORD=pass\nAPPSMITH_INSTANCE_NAME=Appsmith\n
   `),
-    ).toMatch(
-      `APPSMITH_REDIS_URL=redis://127.0.0.1:6379\nAPPSMITH_INSTANCE_NAME=Appsmith\n`,
+    ).toMatch(`APPSMITH_INSTANCE_NAME=Appsmith\n`);
+  });
+
+  test("removeSensitiveEnvData does not leak the Redis password", () => {
+    const cleaned = removeSensitiveEnvData(
+      `APPSMITH_REDIS_URL=redis://:my-redis-pass@127.0.0.1:6379\nAPPSMITH_REDIS_PASSWORD=my-redis-pass\nAPPSMITH_INSTANCE_NAME=Appsmith\n`,
     );
+
+    expect(cleaned).not.toContain("my-redis-pass");
+    expect(cleaned).not.toContain("APPSMITH_REDIS_URL");
+    expect(cleaned).not.toContain("APPSMITH_REDIS_PASSWORD");
+  });
+
+  test("removeSensitiveEnvData strips the backup archive password but keeps the archive limit", () => {
+    const cleaned = removeSensitiveEnvData(
+      `APPSMITH_BACKUP_ARCHIVE_PASSWORD=archive-pass\nAPPSMITH_BACKUP_ARCHIVE_LIMIT=4\nAPPSMITH_INSTANCE_NAME=Appsmith\n`,
+    );
+
+    expect(cleaned).not.toContain("archive-pass");
+    expect(cleaned).not.toContain("APPSMITH_BACKUP_ARCHIVE_PASSWORD=");
+    expect(cleaned).toContain("APPSMITH_BACKUP_ARCHIVE_LIMIT=4");
+    expect(cleaned).toContain("APPSMITH_INSTANCE_NAME=Appsmith");
   });
 
   test("Backup Archive Limit when env APPSMITH_BACKUP_ARCHIVE_LIMIT is null", () => {
@@ -276,3 +295,85 @@ test("Get DB name from Mongo URI 4", async () => {
 
   expect(dbName).toEqual(expectedDBName);
 });
+
+describe("Excluded collections", () => {
+  const dbUrl = "mongodb://username:password@host:27017/appsmith";
+  const originalDbUrl = process.env.APPSMITH_DB_URL;
+  const originalExclude = process.env.APPSMITH_BACKUP_EXCLUDE_COLLECTIONS;
+
+  afterEach(() => {
+    restoreEnv("APPSMITH_DB_URL", originalDbUrl);
+    restoreEnv("APPSMITH_BACKUP_EXCLUDE_COLLECTIONS", originalExclude);
+    jest.restoreAllMocks();
+  });
+
+  test("mongodump adds one --excludeCollection per resolved name", async () => {
+    const state = backupStateWithExclusions();
+    const res = await executeMongoDumpCMD(
+      "/dest",
+      dbUrl,
+      state.excludedCollections,
+    );
+
+    expect(res).toBe(
+      "mongodump --uri=mongodb://username:password@host:27017/appsmith --archive=/dest/mongodb-data.gz --gzip --excludeCollection=auditLog --excludeCollection=other",
+    );
+  });
+
+  test("manifest records the resolved excluded collections", async () => {
+    const writeFile = mockManifestWrite("1.2.3");
+    const state = backupStateWithExclusions();
+
+    state.backupRootPath = "/dest";
+    await new ManifestLink(state).doBackup();
+
+    expect(JSON.parse(String(writeFile.mock.calls[0][1]))).toMatchObject({
+      appsmithVersion: "1.2.3",
+      dbName: "appsmith",
+      excludedCollections: ["auditLog", "other"],
+    });
+  });
+
+  test("manifest records an empty exclusion list when none are configured", async () => {
+    const writeFile = mockManifestWrite("1.2.3");
+
+    process.env.APPSMITH_DB_URL = dbUrl;
+    delete process.env.APPSMITH_BACKUP_EXCLUDE_COLLECTIONS;
+    const state = new BackupState([]);
+
+    state.backupRootPath = "/dest";
+    await new ManifestLink(state).doBackup();
+
+    expect(
+      JSON.parse(String(writeFile.mock.calls[0][1])).excludedCollections,
+    ).toEqual([]);
+  });
+
+  function backupStateWithExclusions() {
+    process.env.APPSMITH_DB_URL = dbUrl;
+    process.env.APPSMITH_BACKUP_EXCLUDE_COLLECTIONS =
+      "auditLog, appsmith.other, reports.events, appsmith. auditLog";
+
+    return new BackupState([]);
+  }
+});
+
+function mockManifestWrite(version: string) {
+  jest.spyOn(fsPromises, "readFile").mockImplementation(async (filePath) => {
+    if (filePath === "/opt/appsmith/info.json") {
+      return `{"version": "${version}"}`;
+    }
+
+    throw new Error("Unexpected file to read: " + filePath);
+  });
+
+  return jest.spyOn(fsPromises, "writeFile").mockResolvedValue(undefined);
+}
+
+function restoreEnv(name: string, value: string | undefined) {
+  if (value === undefined) {
+    delete process.env[name];
+  } else {
+    process.env[name] = value;
+  }
+}

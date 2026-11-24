@@ -9,13 +9,14 @@ import { PAGE_ENTITY_NAME } from "../../../src/ce/constants/messages";
 class PageList {
   private locators = {
     pageListItem: (pageName: string) =>
-      `.t--entity.page:contains('${pageName}')`,
+      `.t--entity-item.page:contains('${pageName}')`,
     newButton: ".pages .t--entity-add-btn",
     newPageOption: ".ads-v2-menu__menu-item-children",
     switcher: `.t--pages-switcher`,
   };
 
   public DefaultPageName = PAGE_ENTITY_NAME + "1";
+  public numberOfPages = `.pages > .ads-v2-text`;
 
   public AddNewPage(
     option:
@@ -48,7 +49,7 @@ class PageList {
 
   public SelectedPageItem(): Cypress.Chainable {
     this.ShowList();
-    return cy.get(".t--entity.page > .active");
+    return cy.get(".t--entity-item.page > .active");
     this.HideList();
   }
 

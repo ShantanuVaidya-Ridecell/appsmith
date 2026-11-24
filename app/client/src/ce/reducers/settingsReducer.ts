@@ -4,8 +4,8 @@ import {
   ReduxActionTypes,
 } from "ee/constants/ReduxActionConstants";
 import { createReducer } from "utils/ReducerUtils";
-import type { TenantReduxState } from "ee/reducers/tenantReducer";
-import { tenantConfigConnection } from "ee/constants/tenantConstants";
+import type { OrganizationReduxState } from "ee/reducers/organizationReducer";
+import { flattenOrganizationConfigForSettingsForm } from "ee/utils/adminSettingsHelpers";
 
 export const initialState: SettingsReduxState = {
   isLoading: true,
@@ -43,23 +43,17 @@ export const handlers = {
       ...action.payload,
     },
   }),
-  [ReduxActionTypes.FETCH_CURRENT_TENANT_CONFIG_SUCCESS]: (
+  [ReduxActionTypes.FETCH_CURRENT_ORGANIZATION_CONFIG_SUCCESS]: (
     // TODO: Fix this the next time the file is edited
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    state: SettingsReduxState & TenantReduxState<any>,
+    state: SettingsReduxState & OrganizationReduxState<any>,
     // TODO: Fix this the next time the file is edited
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    action: ReduxAction<TenantReduxState<any>>,
+    action: ReduxAction<OrganizationReduxState<any>>,
   ) => {
-    // TODO: Fix this the next time the file is edited
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const configs: any = {};
-
-    tenantConfigConnection.forEach((key: string) => {
-      if (action.payload?.tenantConfiguration?.hasOwnProperty(key)) {
-        configs[key] = action.payload?.tenantConfiguration?.[key];
-      }
-    });
+    const configs = flattenOrganizationConfigForSettingsForm(
+      action.payload?.organizationConfiguration,
+    );
 
     return {
       ...state,
@@ -70,23 +64,17 @@ export const handlers = {
       },
     };
   },
-  [ReduxActionTypes.UPDATE_TENANT_CONFIG_SUCCESS]: (
+  [ReduxActionTypes.UPDATE_ORGANIZATION_CONFIG_SUCCESS]: (
     // TODO: Fix this the next time the file is edited
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    state: SettingsReduxState & TenantReduxState<any>,
+    state: SettingsReduxState & OrganizationReduxState<any>,
     // TODO: Fix this the next time the file is edited
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    action: ReduxAction<TenantReduxState<any>>,
+    action: ReduxAction<OrganizationReduxState<any>>,
   ) => {
-    // TODO: Fix this the next time the file is edited
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const configs: any = {};
-
-    tenantConfigConnection.forEach((key: string) => {
-      if (action.payload?.tenantConfiguration?.hasOwnProperty(key)) {
-        configs[key] = action.payload?.tenantConfiguration?.[key];
-      }
-    });
+    const configs = flattenOrganizationConfigForSettingsForm(
+      action.payload?.organizationConfiguration,
+    );
 
     return {
       ...state,

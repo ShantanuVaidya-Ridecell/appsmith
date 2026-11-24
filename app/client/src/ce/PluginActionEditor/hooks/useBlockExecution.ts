@@ -7,7 +7,7 @@ import { SQL_DATASOURCES } from "constants/QueryEditorConstants";
 import { usePluginActionContext } from "PluginActionEditor/PluginActionContext";
 
 const useBlockExecution = () => {
-  const { action, plugin } = usePluginActionContext();
+  const { action, datasource, plugin } = usePluginActionContext();
   const isFeatureEnabled = useFeatureFlag(FEATURE_FLAG.license_gac_enabled);
   const isExecutePermitted = getHasExecuteActionPermission(
     isFeatureEnabled,
@@ -21,9 +21,10 @@ const useBlockExecution = () => {
   // this gets the url of the current action's datasource
   const actionDatasourceUrl =
     action.datasource.datasourceConfiguration?.url || "";
-  const actionDatasourceUrlPath = action.actionConfiguration.path || "";
+  const actionDatasourceUrlPath = action.actionConfiguration?.path || "";
   // this gets the name of the current action's datasource
-  const actionDatasourceName = action.datasource.name || "";
+  const actionDatasourceName =
+    datasource?.name || action?.datasource?.name || "";
 
   // Query Editor Constants
   if (!!action.actionConfiguration) {

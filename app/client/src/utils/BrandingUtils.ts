@@ -13,8 +13,11 @@ import { ASSETS_CDN_URL } from "constants/ThirdPartyConstants";
 import { getAssetUrl } from "ee/utils/airgapHelpers";
 import { LightModeTheme } from "@appsmith/wds-theming";
 
-const FAVICON_MAX_WIDTH = 32;
-const FAVICON_MAX_HEIGHT = 32;
+/** MIME types allowed for the instance branding logo. The server rejects SVG. */
+export const LOGO_IMAGE_TYPES = ["image/jpeg", "image/png"];
+
+const FAVICON_MAX_WIDTH = 48;
+const FAVICON_MAX_HEIGHT = 48;
 const DEFAULT_BRANDING_PRIMARY_COLOR = "#E15615";
 
 export const APPSMITH_BRAND_PRIMARY_COLOR =
@@ -119,9 +122,7 @@ export const logoImageValidator = (
   }
 
   // case 3: check image type
-  const validTypes = ["image/jpeg", "image/png"];
-
-  if (!validTypes.includes(file.type)) {
+  if (!LOGO_IMAGE_TYPES.includes(file.type)) {
     toast.show(createMessage(ADMIN_BRANDING_LOGO_FORMAT_ERROR), {
       kind: "error",
     });
@@ -209,13 +210,13 @@ export const faivconImageValidator = (
 
 // NOTE: the reason why the json parsing is out of selector is we don't
 // want to do the parsing everytime selector is called
-let cachedTenantConfigParsed = {};
-const cachedTenantConfig = localStorage.getItem("tenantConfig");
+let cachedOrganizationConfigParsed = {};
+const cachedOrganizationConfig = localStorage.getItem("organizationConfig");
 
 try {
-  if (cachedTenantConfig) {
-    cachedTenantConfigParsed = JSON.parse(cachedTenantConfig);
+  if (cachedOrganizationConfig) {
+    cachedOrganizationConfigParsed = JSON.parse(cachedOrganizationConfig);
   }
 } catch (e) {}
 
-export { cachedTenantConfigParsed };
+export { cachedOrganizationConfigParsed };

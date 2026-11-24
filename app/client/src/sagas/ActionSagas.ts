@@ -51,14 +51,17 @@ import {
   ERROR_ACTION_MOVE_FAIL,
   ERROR_ACTION_RENAME_FAIL,
 } from "ee/constants/messages";
-import type { ReduxAction } from "actions/ReduxActionTypes";
+import type {
+  ReduxAction,
+  ReduxActionWithCallbacks,
+} from "actions/ReduxActionTypes";
 import {
   ReduxActionErrorTypes,
   ReduxActionTypes,
 } from "ee/constants/ReduxActionConstants";
 import { ENTITY_TYPE } from "ee/entities/AppsmithConsole/utils";
 import { CreateNewActionKey } from "ee/entities/Engine/actionHelpers";
-import { EditorViewMode, IDE_TYPE } from "ee/entities/IDE/constants";
+import { EditorViewMode } from "IDE/Interfaces/EditorTypes";
 import { getIDETypeByUrl } from "ee/entities/IDE/utils";
 import type { ActionData } from "ee/reducers/entityReducers/actionsReducer";
 import {
@@ -129,7 +132,7 @@ import { convertToBaseParentEntityIdSelector } from "selectors/pageListSelectors
 import AppsmithConsole from "utils/AppsmithConsole";
 import { getDynamicBindingsChangesSaga } from "utils/DynamicBindingUtils";
 import { getDefaultTemplateActionConfig } from "utils/editorContextUtils";
-import { shouldBeDefined } from "utils/helpers";
+import { isEmptyKeyValue, shouldBeDefined } from "utils/helpers";
 import history from "utils/history";
 import { setAIPromptTriggered } from "utils/storage";
 import { sendAnalyticsEventSaga } from "./AnalyticsSaga";
@@ -143,6 +146,8 @@ import {
 } from "./helper";
 import { handleQueryEntityRedirect } from "./IDESaga";
 import type { EvaluationReduxAction } from "actions/EvaluationReduxActionTypes";
+import { IDE_TYPE } from "ee/IDE/Interfaces/IDETypes";
+import type { ActionRunBehaviourType } from "PluginActionEditor/types/PluginActionTypes";
 
 export const DEFAULT_PREFIX = {
   QUERY: "Query",
@@ -270,24 +275,31 @@ export function* getPluginActionDefaultValues(pluginId: string) {
   return initialValues;
 }
 
+type CreateActionRequestSagaAction = Partial<Action> & {
+  eventData?: unknown;
+  pluginId: string;
+  shouldRedirectToQueryEditor?: boolean;
+};
+
 /**
  * This saga prepares the action request i.e it helps generating a
  * new name of an action. This is to reduce any dependency on name generation
  * on the caller of this saga.
  */
 export function* createActionRequestSaga(
-  actionPayload: ReduxAction<
-    Partial<Action> & { eventData?: unknown; pluginId: string }
+  action: ReduxActionWithCallbacks<
+    CreateActionRequestSagaAction,
+    unknown,
+    unknown
   >,
 ) {
-  const payload = { ...actionPayload.payload };
+  const payload = { ...action.payload };
   const pluginId =
-    actionPayload.payload.pluginId ||
-    actionPayload.payload.datasource?.pluginId;
+    action.payload.pluginId || action.payload.datasource?.pluginId;
 
-  if (!actionPayload.payload.name) {
+  if (!action.payload.name) {
     const { parentEntityId, parentEntityKey } = resolveParentEntityMetadata(
-      actionPayload.payload,
+      action.payload,
     );
 
     if (!parentEntityId || !parentEntityKey) return;
@@ -299,13 +311,6 @@ export function* createActionRequestSaga(
 
     const prefix = isQueryType ? DEFAULT_PREFIX.QUERY : DEFAULT_PREFIX.API;
 
-    if (
-      plugin?.type === PluginType.DB ||
-      plugin?.packageName === PluginPackageName.APPSMITH_AI
-    ) {
-      DEFAULT_PREFIX.QUERY;
-    }
-
     payload.name = yield select(getNewEntityName, {
       prefix,
       parentEntityId,
@@ -313,20 +318,22 @@ export function* createActionRequestSaga(
     });
   }
 
-  yield put(createActionInit(payload));
+  yield put(createActionInit(payload, action.onSuccess));
 }
 
+type CreateActionSagaPayload = Partial<Action> & {
+  eventData: unknown;
+  pluginId: string;
+  shouldRedirectToQueryEditor?: boolean;
+};
+
 export function* createActionSaga(
-  actionPayload: ReduxAction<
-    // TODO: Fix this the next time the file is edited
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    Partial<Action> & { eventData: any; pluginId: string }
-  >,
+  action: ReduxActionWithCallbacks<CreateActionSagaPayload, unknown, unknown>,
 ) {
   try {
     // Indicates that source of action creation is self
-    actionPayload.payload.source = ActionCreationSourceTypeEnum.SELF;
-    const payload = actionPayload.payload;
+    action.payload.source = ActionCreationSourceTypeEnum.SELF;
+    const payload = action.payload;
 
     const response: ApiResponse<ActionCreateUpdateResponse> =
       yield ActionAPI.createAction(payload);
@@ -343,7 +350,7 @@ export function* createActionSaga(
         // @ts-expect-error: name does not exists on type ActionCreateUpdateResponse
         actionName: response.data.name,
         pageName: pageName,
-        ...actionPayload.payload.eventData,
+        ...action.payload.eventData,
       });
 
       AppsmithConsole.info({
@@ -359,8 +366,17 @@ export function* createActionSaga(
 
       const newAction = response.data;
 
-      // @ts-expect-error: type mismatch ActionCreateUpdateResponse vs Action
-      yield put(createActionSuccess(newAction));
+      yield put(
+        createActionSuccess({
+          ...(newAction as unknown as Action),
+          shouldRedirectToQueryEditor:
+            action.payload.shouldRedirectToQueryEditor,
+        }),
+      );
+
+      if (action.onSuccess) {
+        yield put(action.onSuccess);
+      }
 
       // we fork to prevent the call from blocking
       yield fork(fetchActionDatasourceStructure, newAction);
@@ -368,7 +384,7 @@ export function* createActionSaga(
   } catch (error) {
     yield put({
       type: ReduxActionErrorTypes.CREATE_ACTION_ERROR,
-      payload: actionPayload.payload,
+      payload: action.payload,
     });
   }
 }
@@ -520,8 +536,7 @@ export function* updateActionSaga(actionPayload: ReduxAction<{ id: string }>) {
     const plugin: Plugin | undefined = yield select(getPlugin, action.pluginId);
 
     if (action && plugin && plugin.packageName === PluginPackageName.MONGO) {
-      // @ts-expect-error: Types are not available
-      action = fixActionPayloadForMongoQuery(action);
+      action = fixActionPayloadForMongoQuery(action) as Action;
     }
 
     const response: ApiResponse<Action> = yield call(
@@ -1017,15 +1032,21 @@ export function* setActionPropertySaga(
     ),
   );
 
-  if (propertyName === "executeOnLoad") {
+  if (propertyName === "runBehaviour") {
     yield put({
-      type: ReduxActionTypes.TOGGLE_ACTION_EXECUTE_ON_LOAD_INIT,
+      type: ReduxActionTypes.UPDATE_ACTION_RUN_BEHAVIOR_INIT,
       payload: {
         actionId,
-        shouldExecute: value,
+        runBehaviour: value as ActionRunBehaviourType,
       },
     });
 
+    return;
+  }
+
+  // The Rest Api editor adds empty key value pairs in the form for display.
+  // We don't need to save those empty key value pairs.
+  if (actionObj?.pluginType === PluginType.API && isEmptyKeyValue(value)) {
     return;
   }
 
@@ -1033,25 +1054,28 @@ export function* setActionPropertySaga(
   if (!skipSave) yield put(updateAction({ id: actionId }));
 }
 
-function* toggleActionExecuteOnLoadSaga(
-  action: ReduxAction<{ actionId: string; shouldExecute: boolean }>,
+function* updateActionRunBehaviourSaga(
+  action: ReduxAction<{
+    actionId: string;
+    runBehaviour: ActionRunBehaviourType;
+  }>,
 ) {
   try {
     const response: ApiResponse = yield call(
-      ActionAPI.toggleActionExecuteOnLoad,
+      ActionAPI.updateActionRunBehaviour,
       action.payload.actionId,
-      action.payload.shouldExecute,
+      action.payload.runBehaviour,
     );
     const isValidResponse: boolean = yield validateResponse(response);
 
     if (isValidResponse) {
       yield put({
-        type: ReduxActionTypes.TOGGLE_ACTION_EXECUTE_ON_LOAD_SUCCESS,
+        type: ReduxActionTypes.UPDATE_ACTION_RUN_BEHAVIOR_SUCCESS,
       });
     }
   } catch (error) {
     yield put({
-      type: ReduxActionErrorTypes.TOGGLE_ACTION_EXECUTE_ON_LOAD_ERROR,
+      type: ReduxActionErrorTypes.UPDATE_ACTION_RUN_BEHAVIOR_ERROR,
       payload: error,
     });
   }
@@ -1059,9 +1083,6 @@ function* toggleActionExecuteOnLoadSaga(
 
 function* handleMoveOrCopySaga(actionPayload: ReduxAction<Action>) {
   const { baseId: baseActionId, pluginId, pluginType } = actionPayload.payload;
-  const isApi = pluginType === PluginType.API;
-  const isQuery = pluginType === PluginType.DB;
-  const isSaas = pluginType === PluginType.SAAS;
   const { parentEntityId } = resolveParentEntityMetadata(actionPayload.payload);
 
   if (!parentEntityId) return;
@@ -1071,37 +1092,40 @@ function* handleMoveOrCopySaga(actionPayload: ReduxAction<Action>) {
     parentEntityId,
   );
 
-  if (isApi) {
-    history.push(
-      apiEditorIdURL({
-        baseParentEntityId,
-        baseApiId: baseActionId,
-      }),
-    );
-  }
+  switch (pluginType) {
+    case PluginType.API: {
+      history.push(
+        apiEditorIdURL({
+          baseParentEntityId,
+          baseApiId: baseActionId,
+        }),
+      );
+      break;
+    }
+    case PluginType.SAAS: {
+      const plugin = shouldBeDefined<Plugin>(
+        yield select(getPlugin, pluginId),
+        `Plugin not found for pluginId - ${pluginId}`,
+      );
 
-  if (isQuery) {
-    history.push(
-      queryEditorIdURL({
-        baseParentEntityId,
-        baseQueryId: baseActionId,
-      }),
-    );
-  }
-
-  if (isSaas) {
-    const plugin = shouldBeDefined<Plugin>(
-      yield select(getPlugin, pluginId),
-      `Plugin not found for pluginId - ${pluginId}`,
-    );
-
-    history.push(
-      saasEditorApiIdURL({
-        baseParentEntityId,
-        pluginPackageName: plugin.packageName,
-        baseApiId: baseActionId,
-      }),
-    );
+      history.push(
+        saasEditorApiIdURL({
+          baseParentEntityId,
+          pluginPackageName: plugin.packageName,
+          baseApiId: baseActionId,
+        }),
+      );
+      break;
+    }
+    default: {
+      history.push(
+        queryEditorIdURL({
+          baseParentEntityId,
+          baseQueryId: baseActionId,
+        }),
+      );
+      break;
+    }
   }
 }
 
@@ -1142,11 +1166,11 @@ function* executeCommandSaga(actionPayload: ReduxAction<SlashCommandPayload>) {
       const isJavascriptMode = context.mode === EditorModes.TEXT_WITH_BINDING;
 
       const noOfTimesAIPromptTriggered: number = yield select(
-        (state) => state.ai.noOfTimesAITriggered,
+        (state) => state.aiAssistant.noOfTimesAITriggered,
       );
 
       const noOfTimesAIPromptTriggeredForQuery: number = yield select(
-        (state) => state.ai.noOfTimesAITriggeredForQuery,
+        (state) => state.aiAssistant.noOfTimesAITriggeredForQuery,
       );
 
       const triggerCount = isJavascriptMode
@@ -1170,6 +1194,11 @@ function* executeCommandSaga(actionPayload: ReduxAction<SlashCommandPayload>) {
         payload: {
           context,
         },
+      });
+
+      // Open the AI panel when triggered via slash command
+      yield put({
+        type: ReduxActionTypes.OPEN_AI_PANEL,
       });
       break;
     }
@@ -1235,8 +1264,8 @@ export function* watchActionSagas() {
     takeEvery(ReduxActionErrorTypes.MOVE_ACTION_ERROR, handleMoveOrCopySaga),
     takeEvery(ReduxActionErrorTypes.COPY_ACTION_ERROR, handleMoveOrCopySaga),
     takeLatest(
-      ReduxActionTypes.TOGGLE_ACTION_EXECUTE_ON_LOAD_INIT,
-      toggleActionExecuteOnLoadSaga,
+      ReduxActionTypes.UPDATE_ACTION_RUN_BEHAVIOR_INIT,
+      updateActionRunBehaviourSaga,
     ),
     takeLatest(ReduxActionTypes.EXECUTE_COMMAND, executeCommandSaga),
     takeLatest(

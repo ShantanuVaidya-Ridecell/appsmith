@@ -1,12 +1,12 @@
 import { useEffect, useMemo } from "react";
 import { useSelector } from "react-redux";
-import type { AppState } from "ee/reducers";
+import type { DefaultRootState } from "react-redux";
 import { compact, get, groupBy } from "lodash";
 import type { Datasource } from "entities/Datasource";
 import { isStoredDatasource } from "entities/Action";
 import type { WidgetProps } from "widgets/BaseWidget";
 import log from "loglevel";
-import produce from "immer";
+import { create } from "mutative";
 import type { CanvasStructure } from "reducers/uiReducers/pageCanvasStructureReducer";
 import { getActions, getDatasources } from "ee/selectors/entitiesSelector";
 import type { ActionData } from "ee/reducers/entityReducers/actionsReducer";
@@ -49,7 +49,7 @@ const findWidgets = (widgets: CanvasStructure, keyword: string) => {
 
 export const useDatasourcesPageMapInCurrentApplication = () => {
   const actions = useActions();
-  const reducerDatasources = useSelector((state: AppState) => {
+  const reducerDatasources = useSelector((state: DefaultRootState) => {
     return state.entities.datasources.list;
   });
 
@@ -173,7 +173,7 @@ export const useDatasourceSuggestions = () => {
 
 export const useActions = (searchKeyword?: string) => {
   const reducerActions = useSelector(
-    (state: AppState) => state.entities.actions,
+    (state: DefaultRootState) => state.entities.actions,
   );
   const pageIds = usePageIds(searchKeyword);
 
@@ -184,7 +184,7 @@ export const useActions = (searchKeyword?: string) => {
   return useMemo(() => {
     if (searchKeyword) {
       const start = performance.now();
-      const filteredActions = produce(actions, (draft) => {
+      const filteredActions = create(actions, (draft) => {
         for (const [key, value] of Object.entries(draft)) {
           if (pageIds.includes(key)) {
             draft[key] = value;
@@ -218,14 +218,14 @@ export const useActions = (searchKeyword?: string) => {
 
 export const useWidgets = (searchKeyword?: string) => {
   const pageCanvasStructures = useSelector(
-    (state: AppState) => state.ui.pageCanvasStructure,
+    (state: DefaultRootState) => state.ui.pageCanvasStructure,
   );
   const pageIds = usePageIds(searchKeyword);
 
   return useMemo(() => {
     if (searchKeyword && pageCanvasStructures) {
       const start = performance.now();
-      const filteredDSLs = produce(pageCanvasStructures, (draft) => {
+      const filteredDSLs = create(pageCanvasStructures, (draft) => {
         for (const [key, value] of Object.entries(draft)) {
           if (pageIds.includes(key)) {
             draft[key] = value;
@@ -250,13 +250,13 @@ export const useWidgets = (searchKeyword?: string) => {
 };
 
 export const usePageIds = (searchKeyword?: string) => {
-  const pages = useSelector((state: AppState) => {
+  const pages = useSelector((state: DefaultRootState) => {
     return state.entities.pageList.pages;
   });
 
   return useMemo(() => {
     if (searchKeyword) {
-      const filteredPages = produce(pages, (draft) => {
+      const filteredPages = create(pages, (draft) => {
         draft.forEach((page, index) => {
           const searchMatches =
             page.pageName.toLowerCase().indexOf(searchKeyword.toLowerCase()) >
@@ -277,14 +277,14 @@ export const usePageIds = (searchKeyword?: string) => {
 };
 
 export const useEntityUpdateState = (entityId: string) => {
-  return useSelector((state: AppState) =>
+  return useSelector((state: DefaultRootState) =>
     get(state, "ui.explorer.entity.updatingEntity")?.includes(entityId),
   );
 };
 
 export const useEntityEditState = (entityId: string) => {
   return useSelector(
-    (state: AppState) =>
+    (state: DefaultRootState) =>
       get(state, "ui.explorer.entity.editingEntityName") === entityId,
   );
 };

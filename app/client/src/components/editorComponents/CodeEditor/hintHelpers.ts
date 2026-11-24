@@ -7,6 +7,7 @@ import { EditorModes } from "components/editorComponents/CodeEditor/EditorConfig
 import {
   checkIfCursorInsideBinding,
   isCursorOnEmptyToken,
+  shouldShowAutocompleteWithBindingBrackets,
 } from "components/editorComponents/CodeEditor/codeEditorUtils";
 import { isEmpty, isString } from "lodash";
 import type { getAllDatasourceTableKeys } from "ee/selectors/entitiesSelector";
@@ -53,6 +54,8 @@ export const bindingHintHelper: HintHelper = (editor: CodeMirror.Editor) => {
         } else {
           shouldShow = true;
         }
+      } else if (shouldShowAutocompleteWithBindingBrackets(editor)) {
+        shouldShow = true;
       } else {
         shouldShow = checkIfCursorInsideBinding(editor);
       }
@@ -159,7 +162,10 @@ export class SqlHintHelper {
         LiElement.setAttribute("icontext", iconText);
         LiElement.classList.add("cm-sql-hint");
         LiElement.classList.add(`cm-sql-hint-${iconBgType}`);
-        LiElement.innerHTML = text;
+        // Using textContent (not innerHTML) to prevent stored XSS — database
+        // table/column names can legitimately contain any character, so we
+        // must render them as text. See GHSA-vjfq-fvfc-3vjw.
+        LiElement.textContent = text;
       };
 
       return completion;

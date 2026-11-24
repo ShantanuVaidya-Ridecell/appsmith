@@ -15,6 +15,15 @@ import type { IconName } from "@blueprintjs/icons";
 import type { ButtonVariant } from "components/constants";
 import { FEATURE_FLAG } from "ee/entities/FeatureFlag";
 
+export interface RowColorStyles {
+  headerRowColor?: string;
+  headerTextColor?: string;
+  headerFontWeight?: string | number;
+  headerFontStyle?: string;
+  oddRowColor?: string;
+  evenRowColor?: string;
+}
+
 export interface EditableCell {
   column: string;
   index: number;
@@ -52,7 +61,8 @@ export interface TableWidgetProps
   extends WidgetProps,
     WithMeta,
     TableStyles,
-    AddNewRowProps {
+    AddNewRowProps,
+    RowColorStyles {
   pristine: boolean;
   nextPageKey?: string;
   prevPageKey?: string;
@@ -67,6 +77,7 @@ export interface TableWidgetProps
   onRowSelected?: string;
   onSearchTextChanged: string;
   onSort: string;
+  customSortFunction?: string;
   selectedRowIndex?: number;
   selectedRowIndices: number[];
   serverSidePaginationEnabled?: boolean;
@@ -111,6 +122,9 @@ export interface TableWidgetProps
   onTableFilterUpdate: string;
   customIsLoading: boolean;
   customIsLoadingValue: boolean;
+  infiniteScrollEnabled: boolean;
+  cachedTableData: Record<number, Array<Record<string, unknown>>>;
+  endOfData: boolean;
 }
 
 export enum TableVariantTypes {
@@ -244,8 +258,8 @@ export const DEFAULT_COLUMN_NAME = "Table Column";
 export const ALLOW_TABLE_WIDGET_SERVER_SIDE_FILTERING =
   FEATURE_FLAG["release_table_serverside_filtering_enabled"];
 
-export const CUSTOM_LOADING_STATE_ENABLED =
-  FEATURE_FLAG["release_table_custom_loading_state_enabled"];
+export const INFINITE_SCROLL_ENABLED =
+  FEATURE_FLAG["release_table_infinitescroll_enabled"];
 
-export const HTML_COLUMN_TYPE_ENABLED =
-  FEATURE_FLAG["release_table_html_column_type_enabled"];
+export const CUSTOM_SORT_FUNCTION_ENABLED =
+  FEATURE_FLAG["release_table_custom_sort_function_enabled"];

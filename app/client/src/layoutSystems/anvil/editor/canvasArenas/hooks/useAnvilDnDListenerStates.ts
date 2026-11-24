@@ -5,7 +5,7 @@ import {
   type DraggedWidget,
   LayoutComponentTypes,
 } from "layoutSystems/anvil/utils/anvilTypes";
-import type { CanvasWidgetsReduxState } from "reducers/entityReducers/canvasWidgetsReducer";
+import type { CanvasWidgetsReduxState } from "ee/reducers/entityReducers/canvasWidgetsReducer";
 import type { LayoutElementPositions } from "layoutSystems/common/types";
 import { areWidgetsWhitelisted } from "layoutSystems/anvil/utils/layouts/whitelistUtils";
 import { AnvilDropTargetTypesEnum, type AnvilDragMeta } from "../types";
@@ -15,8 +15,8 @@ import { getWidgetHierarchy } from "layoutSystems/anvil/utils/paste/utils";
 import type { AnvilGlobalDnDStates } from "../../canvas/hooks/useAnvilGlobalDnDStates";
 import { getWidgets } from "sagas/selectors";
 import { useMemo } from "react";
-import { WDSZoneWidget } from "modules/ui-builder/ui/wds/WDSZoneWidget";
 import { useAnvilWidgetElevation } from "../../canvas/providers/AnvilWidgetElevationProvider";
+import { anvilWidgets } from "widgets/wds/constants";
 
 interface AnvilDnDListenerStatesProps {
   anvilGlobalDragStates: AnvilGlobalDnDStates;
@@ -148,7 +148,7 @@ export const useAnvilDnDListenerStates = ({
   }, [widgetProps, allWidgets]);
 
   const isElevatedWidget = useMemo(() => {
-    if (widgetProps.type === WDSZoneWidget.type) {
+    if (widgetProps.type === anvilWidgets.ZONE_WIDGET) {
       const isAnyZoneElevated = allSiblingsWidgetIds.some(
         (each) => !!elevatedWidgets[each],
       );

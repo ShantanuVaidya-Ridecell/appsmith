@@ -17,6 +17,8 @@ export const FEATURE_FLAG = {
     "release_show_publish_app_to_community_enabled",
   license_gac_enabled: "license_gac_enabled",
   release_anvil_enabled: "release_anvil_enabled",
+  license_anvil_enabled: "license_anvil_enabled",
+  license_ai_agent_enabled: "license_ai_agent_enabled",
   license_git_branch_protection_enabled:
     "license_git_branch_protection_enabled",
   license_git_continuous_delivery_enabled:
@@ -31,29 +33,40 @@ export const FEATURE_FLAG = {
   release_drag_drop_building_blocks_enabled:
     "release_drag_drop_building_blocks_enabled",
   release_layout_conversion_enabled: "release_layout_conversion_enabled",
-  release_anvil_toggle_enabled: "release_anvil_toggle_enabled",
   release_git_persist_branch_enabled: "release_git_persist_branch_enabled",
   release_ide_animations_enabled: "release_ide_animations_enabled",
   release_ide_datasource_selector_enabled:
     "release_ide_datasource_selector_enabled",
-  release_table_custom_loading_state_enabled:
-    "release_table_custom_loading_state_enabled",
   release_custom_widget_ai_builder: "release_custom_widget_ai_builder",
-  ab_request_new_integration_enabled: "ab_request_new_integration_enabled",
   release_evaluation_scope_cache: "release_evaluation_scope_cache",
-  release_table_html_column_type_enabled:
-    "release_table_html_column_type_enabled",
   release_gs_all_sheets_options_enabled:
     "release_gs_all_sheets_options_enabled",
   release_git_modularisation_enabled: "release_git_modularisation_enabled",
   release_git_api_contracts_enabled: "release_git_api_contracts_enabled",
-  ab_premium_datasources_view_enabled: "ab_premium_datasources_view_enabled",
   kill_session_recordings_enabled: "kill_session_recordings_enabled",
   config_mask_session_recordings_enabled:
     "config_mask_session_recordings_enabled",
   config_user_session_recordings_enabled:
     "config_user_session_recordings_enabled",
-  release_ads_entity_item_enabled: "release_ads_entity_item_enabled",
+  release_external_saas_plugins_enabled:
+    "release_external_saas_plugins_enabled",
+  release_table_infinitescroll_enabled: "release_table_infinitescroll_enabled",
+  license_multi_org_enabled: "license_multi_org_enabled",
+  release_table_custom_sort_function_enabled:
+    "release_table_custom_sort_function_enabled",
+  release_git_package_enabled: "release_git_package_enabled",
+  license_external_saas_plugins_enabled:
+    "license_external_saas_plugins_enabled",
+  release_computation_cache_enabled: "release_computation_cache_enabled",
+  release_ai_chat_integrations_enabled: "release_ai_chat_integrations_enabled",
+  release_reactive_actions_enabled: "release_reactive_actions_enabled",
+  license_ai_agent_instance_enabled: "license_ai_agent_instance_enabled",
+  release_jsobjects_onpageunloadactions_enabled:
+    "release_jsobjects_onpageunloadactions_enabled",
+  license_static_url_enabled: "license_static_url_enabled",
+  release_window_dimensions_enabled: "release_window_dimensions_enabled",
+  release_branding_logo_resize_enabled: "release_branding_logo_resize_enabled",
+  release_ssh_key_manager_enabled: "release_ssh_key_manager_enabled",
 } as const;
 
 export type FeatureFlag = keyof typeof FEATURE_FLAG;
@@ -73,6 +86,8 @@ export const DEFAULT_FEATURE_FLAG_VALUE: FeatureFlags = {
   release_show_publish_app_to_community_enabled: false,
   license_gac_enabled: false,
   release_anvil_enabled: false,
+  license_anvil_enabled: false,
+  license_ai_agent_enabled: false,
   release_drag_drop_building_blocks_enabled: false,
   license_git_branch_protection_enabled: false,
   license_git_continuous_delivery_enabled: false,
@@ -82,23 +97,32 @@ export const DEFAULT_FEATURE_FLAG_VALUE: FeatureFlags = {
   rollout_remove_feature_walkthrough_enabled: true,
   rollout_eslint_enabled: false,
   release_layout_conversion_enabled: false,
-  release_anvil_toggle_enabled: false,
   release_git_persist_branch_enabled: false,
   release_ide_animations_enabled: false,
   release_ide_datasource_selector_enabled: false,
-  release_table_custom_loading_state_enabled: false,
   release_custom_widget_ai_builder: false,
-  ab_request_new_integration_enabled: false,
   release_evaluation_scope_cache: false,
-  release_table_html_column_type_enabled: false,
   release_gs_all_sheets_options_enabled: false,
   release_git_modularisation_enabled: false,
   release_git_api_contracts_enabled: false,
-  ab_premium_datasources_view_enabled: false,
   kill_session_recordings_enabled: false,
   config_user_session_recordings_enabled: true,
   config_mask_session_recordings_enabled: true,
-  release_ads_entity_item_enabled: false,
+  release_external_saas_plugins_enabled: false,
+  release_table_infinitescroll_enabled: false,
+  license_multi_org_enabled: false,
+  release_table_custom_sort_function_enabled: false,
+  release_git_package_enabled: false,
+  license_external_saas_plugins_enabled: false,
+  release_computation_cache_enabled: false,
+  release_ai_chat_integrations_enabled: false,
+  release_reactive_actions_enabled: false,
+  license_ai_agent_instance_enabled: false,
+  release_jsobjects_onpageunloadactions_enabled: false,
+  license_static_url_enabled: false,
+  release_window_dimensions_enabled: false,
+  release_branding_logo_resize_enabled: false,
+  release_ssh_key_manager_enabled: false,
 };
 
 export const AB_TESTING_EVENT_KEYS = {

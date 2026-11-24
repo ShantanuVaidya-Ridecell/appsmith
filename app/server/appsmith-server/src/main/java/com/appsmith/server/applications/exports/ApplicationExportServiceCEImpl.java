@@ -129,8 +129,8 @@ public class ApplicationExportServiceCEImpl implements ArtifactBasedExportServic
                 !jsonSchemaVersions.getServerVersion().equals(application.getServerSchemaVersion());
 
         exportingMetaDTO.setArtifactLastCommittedAt(applicationLastCommittedAt);
-        exportingMetaDTO.setClientSchemaMigrated(isClientSchemaMigrated);
-        exportingMetaDTO.setServerSchemaMigrated(isServerSchemaMigrated);
+        exportingMetaDTO.setIsClientSchemaMigrated(isClientSchemaMigrated);
+        exportingMetaDTO.setIsServerSchemaMigrated(isServerSchemaMigrated);
         applicationJson.setExportedApplication(application);
         applicationJson.setModifiedResources(new ModifiedResources());
 
@@ -206,6 +206,23 @@ public class ApplicationExportServiceCEImpl implements ArtifactBasedExportServic
             Mono<Void> combinedActionExportablesMono = actionCollectionExportablesMono.then(newActionExportablesMono);
 
             return combinedActionExportablesMono.flux();
+        });
+    }
+
+    @Override
+    public Flux<Void> updateArtifactComponentDependentExportables(
+            ExportingMetaDTO exportingMetaDTO,
+            MappedExportableResourcesDTO mappedResourcesDTO,
+            Mono<? extends Artifact> exportableArtifactMono,
+            ArtifactExchangeJson artifactExchangeJson) {
+        return exportableArtifactMono.flatMapMany(exportableArtifact -> {
+            Mono<Application> applicationMono = Mono.just((Application) exportableArtifact);
+            ApplicationJson applicationJson = (ApplicationJson) artifactExchangeJson;
+
+            Mono<Void> newActionExportablesMono = newActionExportableService.updateExportableEntities(
+                    exportingMetaDTO, mappedResourcesDTO, applicationMono, applicationJson);
+
+            return newActionExportablesMono.flux();
         });
     }
 }

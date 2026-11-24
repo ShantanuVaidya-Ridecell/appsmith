@@ -3,6 +3,7 @@ package com.appsmith.server.services.ce;
 import com.appsmith.external.constants.PluginConstants;
 import com.appsmith.external.dtos.ExecutePluginDTO;
 import com.appsmith.external.dtos.RemoteDatasourceDTO;
+import com.appsmith.external.enums.FeatureFlagEnum;
 import com.appsmith.external.exceptions.pluginExceptions.AppsmithPluginException;
 import com.appsmith.external.exceptions.pluginExceptions.StaleConnectionException;
 import com.appsmith.external.models.DatasourceStorage;
@@ -20,6 +21,7 @@ import com.appsmith.server.exceptions.AppsmithException;
 import com.appsmith.server.helpers.PluginExecutorHelper;
 import com.appsmith.server.plugins.base.PluginService;
 import com.appsmith.server.services.ConfigService;
+import com.appsmith.server.services.FeatureFlagService;
 import com.appsmith.server.solutions.DatasourcePermission;
 import com.google.common.cache.Cache;
 import com.google.common.cache.CacheBuilder;
@@ -68,6 +70,7 @@ public class DatasourceContextServiceCEImpl implements DatasourceContextServiceC
     private final PluginExecutorHelper pluginExecutorHelper;
     private final ConfigService configService;
     private final DatasourcePermission datasourcePermission;
+    private final FeatureFlagService featureFlagService;
 
     private final AppsmithException TOO_MANY_REQUESTS_EXCEPTION =
             new AppsmithException(AppsmithError.TOO_MANY_FAILED_DATASOURCE_CONNECTION_REQUESTS);
@@ -79,7 +82,8 @@ public class DatasourceContextServiceCEImpl implements DatasourceContextServiceC
             PluginService pluginService,
             PluginExecutorHelper pluginExecutorHelper,
             ConfigService configService,
-            DatasourcePermission datasourcePermission) {
+            DatasourcePermission datasourcePermission,
+            FeatureFlagService featureFlagService) {
         this.datasourceService = datasourceService;
         this.datasourceStorageService = datasourceStorageService;
         this.pluginService = pluginService;
@@ -89,6 +93,7 @@ public class DatasourceContextServiceCEImpl implements DatasourceContextServiceC
         this.datasourceContextSynchronizationMonitorMap = new ConcurrentHashMap<>();
         this.configService = configService;
         this.datasourcePermission = datasourcePermission;
+        this.featureFlagService = featureFlagService;
     }
 
     private RemovalListener<DatasourceContextIdentifier, DatasourcePluginContext> createRemovalListener() {
@@ -123,6 +128,10 @@ public class DatasourceContextServiceCEImpl implements DatasourceContextServiceC
         if (connection != null) {
             pluginExecutorHelper
                     .getPluginExecutor(pluginMono)
+                    // datasourceDestroy blocks for pooled plugins (it closes the pool). Keep that off the I/O thread
+                    // that
+                    // delivered the executor.
+                    .publishOn(Schedulers.boundedElastic())
                     .flatMap(pluginExecutor -> Mono.fromRunnable(() -> pluginExecutor.datasourceDestroy(connection)))
                     .onErrorResume(e -> {
                         log.error("Error destroying stale datasource connection", e);
@@ -209,8 +218,27 @@ public class DatasourceContextServiceCEImpl implements DatasourceContextServiceC
 
                         /* Create a fresh datasource context */
                         DatasourceContext<Object> datasourceContext = new DatasourceContext<>();
-                        Mono<Object> connectionMonoCache = pluginExecutor
-                                .datasourceCreate(datasourceStorage.getDatasourceConfiguration())
+
+                        // Feature flagging implementation is added here as a potential fix to dynamoDB query timeouts
+                        // problem
+                        // This is a temporary fix and will be removed once we get the confirmation from the user that
+                        // issue is resolved
+                        // Even if the issue is not resolved, we will know that fix does not work and hence will be
+                        // removing the code in any case
+                        // https://github.com/appsmithorg/appsmith/issues/39426 Created task here to remove this flag
+                        // This implementation ensures that none of the existing plugins have any impact due to feature
+                        // flagging, hence if else condition
+                        Mono<Object> connectionMonoCache = featureFlagService
+                                .check(FeatureFlagEnum.release_dynamodb_connection_time_to_live_enabled)
+                                .flatMap(isDynamoDBConnectionTimeToLiveEnabled -> {
+                                    if (isDynamoDBConnectionTimeToLiveEnabled) {
+                                        return pluginExecutor.datasourceCreate(
+                                                datasourceStorage.getDatasourceConfiguration(), true);
+                                    } else {
+                                        return pluginExecutor.datasourceCreate(
+                                                datasourceStorage.getDatasourceConfiguration());
+                                    }
+                                })
                                 .cache();
 
                         Mono<DatasourceContext<Object>> datasourceContextMonoCache = connectionMonoCache
@@ -491,25 +519,39 @@ public class DatasourceContextServiceCEImpl implements DatasourceContextServiceC
             // No resource context exists for this resource. Return void.
             return Mono.empty();
         }
+        Mono<DatasourceContext<Object>> cachedContextMono = datasourceContextMonoMap.get(datasourceContextIdentifier);
         return pluginExecutorHelper
                 .getPluginExecutor(pluginService.findById(datasourceStorage.getPluginId()))
+                // datasourceDestroy blocks for pooled plugins (it closes the pool). Keep that off the I/O thread that
+                // delivered the executor.
+                .publishOn(Schedulers.boundedElastic())
                 .flatMap(pluginExecutor -> {
-                    log.info("Clearing datasource context for datasource storage ID {}.", datasourceStorage.getId());
+                    log.info(
+                            "Clearing datasource context for datasource id {}, environment id {}.",
+                            datasourceContextIdentifier.getDatasourceId(),
+                            datasourceContextIdentifier.getEnvironmentId());
                     pluginExecutor.datasourceDestroy(datasourceContext.getConnection());
-                    datasourceContextMonoMap.remove(datasourceContextIdentifier);
+                    if (cachedContextMono != null) {
+                        datasourceContextMonoMap.remove(datasourceContextIdentifier, cachedContextMono);
+                    }
+                    // Drop only the entry that was destroyed. A context rebuilt while the executor was being resolved
+                    // is live and stays cached, together with any LRU entry it registered.
+                    if (!datasourceContextMap.remove(datasourceContextIdentifier, datasourceContext)) {
+                        log.info(
+                                "Datasource context for datasource id {}, environment id {} was replaced while being cleared; keeping the new one",
+                                datasourceContextIdentifier.getDatasourceId(),
+                                datasourceContextIdentifier.getEnvironmentId());
+                        return Mono.empty();
+                    }
+                    // The LRU removal listener destroys whatever connection it finds in datasourceContextMap, so it
+                    // runs after that entry is gone and does not close the connection a second time.
                     log.info(
                             "Invalidating the LRU cache entry for datasource id {}, environment id {} as delete datasource context is invoked",
                             datasourceContextIdentifier.getDatasourceId(),
                             datasourceContextIdentifier.getEnvironmentId());
                     datasourcePluginContextMapLRUCache.invalidate(datasourceContextIdentifier);
-                    if (!datasourceContextMap.containsKey(datasourceContextIdentifier)) {
-                        log.info(
-                                "datasourceContextMap does not contain any entry for datasource storage with id: {} ",
-                                datasourceStorage.getId());
-                        return Mono.empty();
-                    }
 
-                    return Mono.just(datasourceContextMap.remove(datasourceContextIdentifier));
+                    return Mono.<DatasourceContext<?>>just(datasourceContext);
                 });
     }
 
@@ -522,7 +564,7 @@ public class DatasourceContextServiceCEImpl implements DatasourceContextServiceC
      */
     @Override
     public Mono<DatasourceContext<?>> getDatasourceContext(DatasourceStorage datasourceStorage, Plugin plugin) {
-        if (plugin.isRemotePlugin()) {
+        if (plugin.getIsRemotePlugin()) {
             return this.getRemoteDatasourceContext(plugin, datasourceStorage);
         }
         return this.getDatasourceContext(datasourceStorage);

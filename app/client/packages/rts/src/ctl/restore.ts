@@ -4,11 +4,50 @@ import os from "os";
 import readlineSync from "readline-sync";
 import * as utils from "./utils";
 import * as Constants from "./constants";
+import { serializeEnvFile, writeEnvFile } from "./env-file";
 
 const command_args = process.argv.slice(3);
 
-async function getBackupFileName() {
+export function isNonInteractive(args: readonly string[]) {
+  return args.includes("--non-interactive");
+}
+
+function getArgValue(args: readonly string[], name: string) {
+  const prefix = `--${name}=`;
+  const arg = args.find((a) => a.startsWith(prefix));
+
+  return arg?.substring(prefix.length);
+}
+
+export async function getBackupFileName(args: readonly string[]) {
   const backupFiles = await utils.listLocalBackupFiles();
+  const requestedFile = getArgValue(args, "backup-file");
+
+  if (requestedFile) {
+    if (path.basename(requestedFile) !== requestedFile) {
+      throw new Error(
+        "Invalid --backup-file value: it must be a file name, not a path.",
+      );
+    }
+
+    if (backupFiles.includes(requestedFile)) {
+      return requestedFile;
+    }
+
+    throw new Error(
+      'Backup file "' +
+        requestedFile +
+        '" was not found in ' +
+        Constants.BACKUP_PATH +
+        ".",
+    );
+  }
+
+  if (isNonInteractive(args)) {
+    throw new Error(
+      "Non-interactive restore requires --backup-file=<name> to select the backup archive.",
+    );
+  }
 
   console.log(
     "\n" +
@@ -57,10 +96,35 @@ async function getBackupFileName() {
   }
 }
 
-async function decryptArchive(
+export async function decryptArchive(
   encryptedFilePath: string,
   backupFilePath: string,
+  args: readonly string[],
 ) {
+  const envPassword = process.env.APPSMITH_BACKUP_ARCHIVE_PASSWORD;
+
+  if (envPassword) {
+    try {
+      await runDecryptCommand(encryptedFilePath, backupFilePath, envPassword);
+
+      return true;
+    } catch (error) {
+      console.error(
+        "Failed to decrypt the backup archive using APPSMITH_BACKUP_ARCHIVE_PASSWORD: the password is wrong or the archive is unreadable.",
+      );
+
+      return false;
+    }
+  }
+
+  if (isNonInteractive(args)) {
+    console.error(
+      "The backup archive is encrypted. Set APPSMITH_BACKUP_ARCHIVE_PASSWORD to decrypt it in non-interactive mode.",
+    );
+
+    return false;
+  }
+
   for (const attempt of [1, 2, 3]) {
     if (attempt > 1) {
       console.log("Retry attempt", attempt);
@@ -72,21 +136,7 @@ async function decryptArchive(
     );
 
     try {
-      await utils.execCommandSilent([
-        "openssl",
-        "enc",
-        "-d",
-        "-aes-256-cbc",
-        "-pbkdf2",
-        "-iter",
-        "100000",
-        "-in",
-        encryptedFilePath,
-        "-out",
-        backupFilePath,
-        "-k",
-        decryptionPwd,
-      ]);
+      await runDecryptCommand(encryptedFilePath, backupFilePath, decryptionPwd);
 
       return true;
     } catch (error) {
@@ -95,6 +145,48 @@ async function decryptArchive(
   }
 
   return false;
+}
+
+async function runDecryptCommand(
+  encryptedFilePath: string,
+  backupFilePath: string,
+  password: string,
+) {
+  // The password is passed through the child environment instead of argv, so
+  // it is not visible in the process table while openssl runs.
+  return utils.execCommandSilent(
+    [
+      "openssl",
+      "enc",
+      "-d",
+      "-aes-256-cbc",
+      "-pbkdf2",
+      "-iter",
+      "100000",
+      "-in",
+      encryptedFilePath,
+      "-out",
+      backupFilePath,
+      "-pass",
+      "env:APPSMITH_BACKUP_ARCHIVE_PASSWORD",
+    ],
+    {
+      env: { ...process.env, APPSMITH_BACKUP_ARCHIVE_PASSWORD: password },
+    },
+  );
+}
+
+export function ensureEncryptionKeysPresent() {
+  if (
+    !(
+      process.env.APPSMITH_ENCRYPTION_PASSWORD &&
+      process.env.APPSMITH_ENCRYPTION_SALT
+    )
+  ) {
+    throw new Error(
+      "Non-interactive restore of an unencrypted backup archive requires APPSMITH_ENCRYPTION_PASSWORD and APPSMITH_ENCRYPTION_SALT to be set.",
+    );
+  }
 }
 
 async function extractArchive(backupFilePath: string, restoreRootPath: string) {
@@ -139,30 +231,33 @@ async function restoreDatabase(restoreContentsPath: string, dbUrl: string) {
   console.log("Restoring database completed");
 }
 
-async function restoreDockerEnvFile(
+async function prepareDockerEnvFile(
   restoreContentsPath: string,
-  backupName: string,
+  dbUrl: string,
   overwriteEncryptionKeys: boolean,
+  args: readonly string[],
 ) {
-  console.log("Restoring docker environment file");
-  const dockerEnvFile = "/appsmith-stacks/configuration/docker.env";
-  const updatedbUrl = utils.getDburl();
+  console.log("Validating docker environment file");
   let encryptionPwd = process.env.APPSMITH_ENCRYPTION_PASSWORD;
   let encryptionSalt = process.env.APPSMITH_ENCRYPTION_SALT;
 
-  await utils.execCommand([
-    "cp",
-    dockerEnvFile,
-    dockerEnvFile + "." + backupName,
-  ]);
-
-  let dockerEnvContent = await fsPromises.readFile(
+  const dockerEnvContent = await fsPromises.readFile(
     restoreContentsPath + "/docker.env",
     "utf8",
   );
+  const values: Record<string, string> = {
+    APPSMITH_DB_URL: dbUrl,
+    APPSMITH_MONGODB_USER: process.env.APPSMITH_MONGODB_USER,
+    APPSMITH_MONGODB_PASSWORD: process.env.APPSMITH_MONGODB_PASSWORD,
+  };
 
   if (overwriteEncryptionKeys) {
-    if (encryptionPwd && encryptionSalt) {
+    if (isNonInteractive(args)) {
+      ensureEncryptionKeysPresent();
+      console.log(
+        "Restoring docker environment file with the encryption password & salt from the current environment",
+      );
+    } else if (encryptionPwd && encryptionSalt) {
       const input = readlineSync.question(
         'If you are restoring to the same Appsmith deployment which generated the backup archive, you can use the existing encryption keys on the instance.\n\
       Press Enter to continue with existing encryption keys\n\
@@ -203,30 +298,26 @@ async function restoreDockerEnvFile(
       );
     }
 
-    dockerEnvContent +=
-      "\nAPPSMITH_ENCRYPTION_PASSWORD=" +
-      encryptionPwd +
-      "\nAPPSMITH_ENCRYPTION_SALT=" +
-      encryptionSalt +
-      "\nAPPSMITH_DB_URL=" +
-      utils.getDburl() +
-      "\nAPPSMITH_MONGODB_USER=" +
-      process.env.APPSMITH_MONGODB_USER +
-      "\nAPPSMITH_MONGODB_PASSWORD=" +
-      process.env.APPSMITH_MONGODB_PASSWORD;
-  } else {
-    dockerEnvContent +=
-      "\nAPPSMITH_DB_URL=" +
-      updatedbUrl +
-      "\nAPPSMITH_MONGODB_USER=" +
-      process.env.APPSMITH_MONGODB_USER +
-      "\nAPPSMITH_MONGODB_PASSWORD=" +
-      process.env.APPSMITH_MONGODB_PASSWORD;
+    if (!encryptionPwd || !encryptionSalt) {
+      throw new Error("Encryption password and salt are required for restore.");
+    }
+
+    values.APPSMITH_ENCRYPTION_PASSWORD = encryptionPwd;
+    values.APPSMITH_ENCRYPTION_SALT = encryptionSalt;
   }
 
-  await fsPromises.writeFile(dockerEnvFile, dockerEnvContent, "utf8");
+  // Preserve the restoring instance's Redis configuration. The backup strips
+  // these (see `removeSensitiveEnvData`) because the source instance's Redis
+  // password does not match the target's embedded Redis `requirepass`.
+  if (process.env.APPSMITH_REDIS_URL) {
+    values.APPSMITH_REDIS_URL = process.env.APPSMITH_REDIS_URL;
+  }
 
-  console.log("Restoring docker environment file completed");
+  if (process.env.APPSMITH_REDIS_PASSWORD) {
+    values.APPSMITH_REDIS_PASSWORD = process.env.APPSMITH_REDIS_PASSWORD;
+  }
+
+  return serializeEnvFile(dockerEnvContent, values);
 }
 
 async function restoreGitStorageArchive(
@@ -245,7 +336,10 @@ async function restoreGitStorageArchive(
   console.log("Restoring git-storage archive completed");
 }
 
-async function checkRestoreVersionCompatability(restoreContentsPath: string) {
+export async function checkRestoreVersionCompatability(
+  restoreContentsPath: string,
+  args: readonly string[],
+) {
   const currentVersion = await utils.getCurrentAppsmithVersion();
   const manifest_data = await fsPromises.readFile(
     path.join(restoreContentsPath, "manifest.json"),
@@ -274,6 +368,21 @@ async function checkRestoreVersionCompatability(restoreContentsPath: string) {
         "' in the 'docker-compose.yml' file\nand run the cmd: 'docker-compose restart' " +
         "after the restore process is completed, to ensure the restored instance runs successfully.",
     );
+
+    if (isNonInteractive(args)) {
+      if (args.includes("--force")) {
+        console.log(
+          "--force is set, continuing with the restore despite the version mismatch.",
+        );
+
+        return;
+      }
+
+      throw new Error(
+        "Restore aborted: the backup archive's Appsmith version does not match the current version. Re-run with --force to restore anyway.",
+      );
+    }
+
     const confirm = readlineSync.question(
       'Press Enter to continue \nOr Type "c" to cancel the restore process.\n',
     );
@@ -318,7 +427,7 @@ export async function run() {
   await utils.ensureSupervisorIsRunning();
 
   try {
-    let backupFileName = await getBackupFileName();
+    let backupFileName = await getBackupFileName(command_args);
 
     if (backupFileName == null) {
       process.exit();
@@ -338,15 +447,21 @@ export async function run() {
         const decryptSuccess = await decryptArchive(
           encryptedBackupFilePath,
           backupFilePath,
+          command_args,
         );
 
         if (!decryptSuccess) {
-          console.log(
-            "You have entered the incorrect password multiple times. Aborting the restore process.",
+          console.error(
+            "Failed to decrypt the backup archive. Aborting the restore process.",
           );
           await fsPromises.rm(backupFilePath, { force: true });
-          process.exit();
+          process.exit(1);
         }
+      }
+
+      if (isNonInteractive(command_args) && overwriteEncryptionKeys) {
+        // Fail before services are stopped or the database is touched.
+        ensureEncryptionKeysPresent();
       }
 
       const backupName = backupFileName.replace(/\.tar\.gz$/, "");
@@ -356,7 +471,17 @@ export async function run() {
 
       const restoreContentsPath = await figureOutContentsPath(restoreRootPath);
 
-      await checkRestoreVersionCompatability(restoreContentsPath);
+      await checkRestoreVersionCompatability(restoreContentsPath, command_args);
+
+      // Validate before stopping services or restoring any data. An incompatible
+      // legacy file must not leave a restored database with unusable credentials.
+      const dbUrl = utils.getDburl();
+      const dockerEnvContent = await prepareDockerEnvFile(
+        restoreContentsPath,
+        dbUrl,
+        overwriteEncryptionKeys,
+        command_args,
+      );
 
       console.log(
         "****************************************************************",
@@ -365,18 +490,19 @@ export async function run() {
         "Restoring Appsmith instance from the backup at " + backupFilePath,
       );
       await utils.stop(["backend", "rts"]);
-      await restoreDatabase(restoreContentsPath, utils.getDburl());
-      await restoreDockerEnvFile(
-        restoreContentsPath,
-        backupName,
-        overwriteEncryptionKeys,
-      );
+      await restoreDatabase(restoreContentsPath, dbUrl);
+      await utils.execCommand([
+        "cp",
+        Constants.ENV_PATH,
+        Constants.ENV_PATH + "." + backupName,
+      ]);
+      await writeEnvFile(Constants.ENV_PATH, dockerEnvContent);
       await restoreGitStorageArchive(restoreContentsPath, backupName);
       console.log("Appsmith instance successfully restored.");
       await fsPromises.rm(restoreRootPath, { recursive: true, force: true });
     }
   } catch (err) {
-    console.log(err);
+    console.error(err);
     process.exitCode = 1;
   } finally {
     if (cleanupArchive) {

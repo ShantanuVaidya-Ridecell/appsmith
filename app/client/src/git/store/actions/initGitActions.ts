@@ -1,8 +1,9 @@
+import type { GitArtifact } from "git/types";
 import { createArtifactAction } from "../helpers/createArtifactAction";
-import type { ApplicationPayload } from "entities/Application";
 
 export interface InitGitForEditorPayload {
-  artifact: ApplicationPayload | null;
+  artifact: GitArtifact | null;
+  skipCurrentBranchUpdate?: boolean;
 }
 
 export const initGitForEditorAction =

@@ -16,12 +16,12 @@ import {
 } from "ee/constants/messages";
 
 import WidgetFactory from "WidgetProvider/factory";
-import type { CanvasWidgetsReduxState } from "reducers/entityReducers/canvasWidgetsReducer";
+import type { CanvasWidgetsReduxState } from "ee/reducers/entityReducers/canvasWidgetsReducer";
 import { setSnipingMode } from "actions/propertyPaneActions";
 import { selectWidgetInitAction } from "actions/widgetSelectionActions";
 import { SelectionRequestType } from "sagas/WidgetSelectUtils";
 import { toast } from "@appsmith/ads";
-import type { PropertyUpdates } from "WidgetProvider/constants";
+import type { PropertyUpdates } from "WidgetProvider/types";
 import type { ModuleInstance } from "ee/constants/ModuleInstanceConstants";
 import { getModuleInstanceById } from "ee/selectors/moduleInstanceSelectors";
 
@@ -76,7 +76,11 @@ export function* bindDataToWidgetSaga(
     : oneClickBindingQuery;
   let isDynamicPropertyPath = true;
 
-  if (bindingQuery === oneClickBindingQuery) {
+  if (
+    bindingQuery === oneClickBindingQuery &&
+    selectedWidget.type !== "TABLE_WIDGET_V2" &&
+    selectedWidget.type !== "SELECT_WIDGET"
+  ) {
     isDynamicPropertyPath = false;
   }
 

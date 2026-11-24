@@ -1,10 +1,10 @@
 import { createSelector } from "reselect";
 
-import type { AppState } from "ee/reducers";
+import type { DefaultRootState } from "react-redux";
 import type {
   CanvasWidgetsReduxState,
   FlattenedWidgetProps,
-} from "reducers/entityReducers/canvasWidgetsReducer";
+} from "ee/reducers/entityReducers/canvasWidgetsReducer";
 import type {
   AppLayoutConfig,
   PageListReduxState,
@@ -25,23 +25,24 @@ import {
   getLoadingEntities,
   getConfigTree,
 } from "selectors/dataTreeSelectors";
-import type { MainCanvasReduxState } from "reducers/uiReducers/mainCanvasReducer";
+import type { MainCanvasReduxState } from "ee/reducers/uiReducers/mainCanvasReducer";
 
 import { getActionEditorSavingMap } from "PluginActionEditor/store";
 import {
   getCanvasWidgets,
+  getAllJSCollectionActions,
   getJSCollections,
 } from "ee/selectors/entitiesSelector";
 import { checkIsDropTarget } from "WidgetProvider/factory/helpers";
 import { buildChildWidgetTree } from "utils/widgetRenderUtils";
 import { LOCAL_STORAGE_KEYS } from "utils/localStorage";
-import type { CanvasWidgetStructure } from "WidgetProvider/constants";
+import type { CanvasWidgetStructure } from "WidgetProvider/types";
 import { denormalize } from "utils/canvasStructureHelpers";
 import { isAutoHeightEnabledForWidget } from "widgets/WidgetUtils";
 import WidgetFactory from "WidgetProvider/factory";
 import { isAirgapped } from "ee/utils/airgapHelpers";
 import { getIsAnonymousDataPopupVisible } from "./onboardingSelectors";
-import { WDS_V2_WIDGET_MAP } from "modules/ui-builder/ui/wds/constants";
+import { WDS_V2_WIDGET_MAP } from "widgets/wds/constants";
 import { LayoutSystemTypes } from "layoutSystems/types";
 import { getLayoutSystemType } from "./layoutSystemSelectors";
 import { protectedModeSelector } from "./gitSyncSelectors";
@@ -49,40 +50,45 @@ import { getIsAnvilLayout } from "layoutSystems/anvil/integrations/selectors";
 import { getCurrentApplication } from "ee/selectors/applicationSelectors";
 import type { Page } from "entities/Page";
 import { objectKeys } from "@appsmith/utils";
+import type { MetaWidgetsReduxState } from "reducers/entityReducers/metaWidgetsReducer";
+import { ActionRunBehaviour } from "PluginActionEditor/types/PluginActionTypes";
+import { getWidgetConfigsVersion } from "WidgetProvider/factory/widgetConfigVersion";
 
-const getIsDraggingOrResizing = (state: AppState) =>
+const getIsDraggingOrResizing = (state: DefaultRootState) =>
   state.ui.widgetDragResize.isResizing || state.ui.widgetDragResize.isDragging;
 
-const getIsResizing = (state: AppState) => state.ui.widgetDragResize.isResizing;
+const getIsResizing = (state: DefaultRootState) =>
+  state.ui.widgetDragResize.isResizing;
 
-const getPageListState = (state: AppState) => state.entities.pageList;
+const getPageListState = (state: DefaultRootState) => state.entities.pageList;
 
-const getWidgets = (state: AppState): CanvasWidgetsReduxState =>
+const getWidgets = (state: DefaultRootState): CanvasWidgetsReduxState =>
   state.entities.canvasWidgets;
 
-export const getIsEditorInitialized = (state: AppState) =>
+export const getIsEditorInitialized = (state: DefaultRootState) =>
   state.ui.editor.initialized;
 
-export const getIsWidgetConfigBuilt = (state: AppState) =>
+export const getIsWidgetConfigBuilt = (state: DefaultRootState) =>
   state.ui.editor.widgetConfigBuilt;
 
-export const getIsEditorLoading = (state: AppState) =>
+export const getIsEditorLoading = (state: DefaultRootState) =>
   state.ui.editor.loadingStates.loading;
 
-export const getIsFetchingPage = (state: AppState) =>
+export const getIsFetchingPage = (state: DefaultRootState) =>
   state.ui.editor.loadingStates.isPageSwitching;
 
-export const getLoadingError = (state: AppState) =>
+export const getLoadingError = (state: DefaultRootState) =>
   state.ui.editor.loadingStates.loadingError;
 
 export const getIsPageSaving = createSelector(
   [
     getActionEditorSavingMap,
-    (state: AppState) => state.ui.jsPane.isSaving,
-    (state: AppState) => state.ui.appTheming.isSaving,
-    (state: AppState) => state.ui.applications.isSavingNavigationSetting,
-    (state: AppState) => state.ui.editor.loadingStates.savingEntity,
-    (state: AppState) => state.ui.editor.loadingStates.saving,
+    (state: DefaultRootState) => state.ui.jsPane.isSaving,
+    (state: DefaultRootState) => state.ui.appTheming.isSaving,
+    (state: DefaultRootState) =>
+      state.ui.applications.isSavingNavigationSetting,
+    (state: DefaultRootState) => state.ui.editor.loadingStates.savingEntity,
+    (state: DefaultRootState) => state.ui.editor.loadingStates.saving,
   ],
   (
     savingActions,
@@ -110,33 +116,58 @@ export const getIsPageSaving = createSelector(
   },
 );
 
-export const snipingModeSelector = (state: AppState) =>
+export const snipingModeSelector = (state: DefaultRootState) =>
   state.ui.editor.isSnipingMode;
 
-export const snipingModeBindToSelector = (state: AppState) =>
+export const snipingModeBindToSelector = (state: DefaultRootState) =>
   state.ui.editor.snipModeBindTo;
 
-export const getPageSavingError = (state: AppState) => {
+export const getPageSavingError = (state: DefaultRootState) => {
   return state.ui.editor.loadingStates.savingError;
 };
 
-export const getLayoutOnLoadActions = (state: AppState) =>
+export const getCurrentPageId = (state: DefaultRootState) =>
+  state.entities.pageList.currentPageId;
+
+export const getLayoutOnLoadActions = (state: DefaultRootState) =>
   state.ui.editor.pageActions || [];
 
-export const getLayoutOnLoadIssues = (state: AppState) => {
+export const getLayoutOnUnloadActions = createSelector(
+  getCurrentPageId,
+  getAllJSCollectionActions,
+  (currentPageId, jsActions) =>
+    jsActions.filter(
+      (action) =>
+        action.runBehaviour === ActionRunBehaviour.ON_PAGE_UNLOAD &&
+        action.pageId === currentPageId,
+    ),
+);
+
+export const getLayoutOnLoadIssues = (state: DefaultRootState) => {
   return state.ui.editor.layoutOnLoadActionErrors || [];
 };
 
-export const getIsPublishingApplication = (state: AppState) =>
+export const getOnLoadActionsWithExecutionStatus = (state: DefaultRootState) =>
+  state.ui.editor.onLoadActionExecution;
+
+export const getIsPublishingApplication = (state: DefaultRootState) =>
   state.ui.editor.loadingStates.publishing;
 
-export const getPublishingError = (state: AppState) =>
+export const getPublishingError = (state: DefaultRootState) =>
   state.ui.editor.loadingStates.publishingError;
 
-export const getCurrentLayoutId = (state: AppState): string | undefined =>
-  state.ui.editor.currentLayoutId;
+export const getIsRedeployingApplication = (state: DefaultRootState) =>
+  state.ui.editor.loadingStates.redeploying;
 
-export const getPageList = (state: AppState) => state.entities.pageList.pages;
+export const getRedeployingError = (state: DefaultRootState) =>
+  state.ui.editor.loadingStates.redeployingError;
+
+export const getCurrentLayoutId = (
+  state: DefaultRootState,
+): string | undefined => state.ui.editor.currentLayoutId;
+
+export const getPageList = (state: DefaultRootState) =>
+  state.entities.pageList.pages;
 
 export const getPageById = (pageId: string) =>
   createSelector(getPageList, (pages: Page[]) =>
@@ -148,11 +179,29 @@ export const getPageByBaseId = (basePageId: string) =>
     pages.find((page) => page.basePageId === basePageId),
   );
 
-export const getCurrentPageId = (state: AppState) =>
-  state.entities.pageList.currentPageId;
-
-export const getCurrentBasePageId = (state: AppState) =>
+export const getCurrentBasePageId = (state: DefaultRootState) =>
   state.entities.pageList.currentBasePageId;
+
+export const getBasePageIdFromStaticSlug = createSelector(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  [getPageList, (_: any, staticPageSlug: string) => staticPageSlug],
+  (pages: Page[], staticPageSlug: string) => {
+    if (!staticPageSlug || !pages.length) {
+      return null;
+    }
+
+    // Find page by matching uniqueSlug property
+    const matchingPage = pages.find(
+      (page) => page.uniqueSlug === staticPageSlug,
+    );
+
+    if (matchingPage) {
+      return matchingPage.basePageId;
+    }
+
+    return null;
+  },
+);
 
 export const getCurrentPagePermissions = createSelector(
   getCurrentPageId,
@@ -162,7 +211,7 @@ export const getCurrentPagePermissions = createSelector(
   },
 );
 
-export const getPagePermissions = (state: AppState) => {
+export const getPagePermissions = (state: DefaultRootState) => {
   const pageId = getCurrentPageId(state);
   const page = find(state.entities.pageList.pages, { pageId });
 
@@ -194,18 +243,21 @@ export const selectPageSlugToIdMap = createSelector(getPageList, (pages) =>
   ),
 );
 
-export const getCurrentApplicationId = (state: AppState) =>
+export const getCurrentApplicationId = (state: DefaultRootState) =>
   state.entities.pageList.applicationId || "";
 
-export const getCurrentBaseApplicationId = (state: AppState) =>
+export const getCurrentBaseApplicationId = (state: DefaultRootState) =>
   state.entities.pageList.baseApplicationId || "";
 
-export const selectCurrentApplicationSlug = (state: AppState) =>
+export const selectCurrentApplicationSlug = (state: DefaultRootState) =>
   state.ui.applications.currentApplication?.slug || PLACEHOLDER_APP_SLUG;
 
-export const selectApplicationVersion = (state: AppState) =>
+export const selectApplicationVersion = (state: DefaultRootState) =>
   state.ui.applications.currentApplication?.applicationVersion ||
   ApplicationVersion.DEFAULT;
+
+export const getIsStaticUrlEnabled = (state: DefaultRootState) =>
+  !!state.ui.applications.currentApplication?.staticUrlSettings?.enabled;
 
 export const selectPageSlugById = (pageId: string) =>
   createSelector(getPageList, (pages) => {
@@ -230,14 +282,30 @@ export const selectURLSlugs = createSelector(
   },
 );
 
-export const getRenderMode = (state: AppState) => {
+export const getRenderMode = (state: DefaultRootState) => {
   return state.entities.app.mode === APP_MODE.EDIT
     ? RenderModes.CANVAS
     : RenderModes.PAGE;
 };
 
-export const getIsViewMode = (state: AppState) =>
+export const getIsViewMode = (state: DefaultRootState) =>
   state.entities.app.mode === APP_MODE.PUBLISHED;
+
+export const getIsPersistingPageSlug = (
+  state: DefaultRootState,
+  pageId: string,
+) => state.entities.app.pageSlug[pageId]?.isPersisting || false;
+
+export const getIsErrorPersistingPageSlug = (
+  state: DefaultRootState,
+  pageId: string,
+) => state.entities.app.pageSlug[pageId]?.isError || false;
+
+export const getIsValidatingPageSlug = (state: DefaultRootState) =>
+  state.entities.app.pageSlugValidation.isValidating;
+
+export const getIsPageSlugValid = (state: DefaultRootState) =>
+  state.entities.app.pageSlugValidation.isValid;
 
 export const getViewModePageList = createSelector(
   getPageList,
@@ -265,7 +333,7 @@ const defaultLayout: AppLayoutConfig = {
   type: "FLUID",
 };
 
-const getAppLayout = (state: AppState) =>
+const getAppLayout = (state: DefaultRootState) =>
   state.ui.applications.currentApplication?.appLayout || defaultLayout;
 
 export const getIsMobileCanvasLayout = createSelector(
@@ -288,10 +356,52 @@ export const getCurrentApplicationLayout = createSelector(
   },
 );
 
-export const getCanvasWidth = (state: AppState) => state.ui.mainCanvas.width;
-export const getMainCanvasProps = (state: AppState) => state.ui.mainCanvas;
+export const getCanvasWidth = (state: DefaultRootState) =>
+  state.ui.mainCanvas.width;
+export const getMainCanvasProps = (state: DefaultRootState) =>
+  state.ui.mainCanvas;
 
-export const getMetaWidgets = (state: AppState) => state.entities.metaWidgets;
+export const getMetaWidgets = (state: DefaultRootState) =>
+  state.entities.metaWidgets;
+
+/**
+ * What are template meta widgets?
+ *
+ * A template meta widget is as meta widget which can be used as a template widget.
+ * At the time of writing this, the use of template widget is with the List widget, where
+ * a template widget is any widget that is dropped inside the List widget first row canvas.
+ *
+ * Why do we need a template meta widget?
+ *
+ * A list widget take the template widgets and clones it multiple times and renders it as rows.
+ * These template widgets in an app of a list widget reside in canvasWidget reducer and is part of the
+ * DSL. But when a list widget is part of a UI module and this UI module is used in an app, all the widget
+ * under this module widget are meta widget inlcuding the list widget itself. Since all the widget are meta
+ * widgets and the list widget also genereates meta widgets, we need to have a way to identify these template
+ * widgets and feed it to the List widget so that it can replicate and behave natively.
+ *
+ * How do we identify a template meta widget?
+ *
+ * A template meta widget is any meta widget which has the property `isTemplate` set to true.
+ * The usage of this property is upon the widget to decide how to use it and currently only the List widget
+ * uses this property.
+ *
+ */
+
+export const getTemplateMetaWidgets = createSelector(
+  getMetaWidgets,
+  (metaWidgets) => {
+    const templateMetaWidgets: MetaWidgetsReduxState = {};
+
+    Object.values(metaWidgets).forEach((metaWidget) => {
+      if (metaWidget.isTemplate) {
+        templateMetaWidgets[metaWidget.widgetId] = metaWidget;
+      }
+    });
+
+    return templateMetaWidgets;
+  },
+);
 
 export const getMetaWidget = (metaWidgetId: string) =>
   createSelector(getMetaWidgets, (metaWidgets) => {
@@ -328,9 +438,14 @@ export const getCurrentPageName = createSelector(
       ?.pageName,
 );
 
+const isModuleWidget = (
+  config: ReturnType<typeof WidgetFactory.getConfigs>[string],
+) => config.type.startsWith("MODULE_WIDGET_");
+
 export const getWidgetCards = createSelector(
   getIsAutoLayout,
   getIsAnvilLayout,
+  getWidgetConfigsVersion, // Add dependency on widget configs version
   (isAutoLayout, isAnvilLayout) => {
     const widgetConfigs = WidgetFactory.getConfigs();
     const widgetConfigsArray = Object.values(widgetConfigs);
@@ -345,12 +460,23 @@ export const getWidgetCards = createSelector(
 
       return !isAnvilWidget;
     });
+    // When a successor widget is registered (e.g. the v8 Anvil table), its
+    // predecessor is dropped from the palette so only one entry is offered.
+    // This is data-driven: it keys off the presence of the successor's config
+    // among the eligible widgets, not off a feature flag.
+    const hasAnvilTableSuccessor = layoutSystemBasesWidgets.some(
+      (config) => config.type === "WDS_ANVIL_TABLE_WIDGET",
+    );
     const cards = layoutSystemBasesWidgets.filter((config) => {
+      if (hasAnvilTableSuccessor && config.type === "WDS_TABLE_WIDGET") {
+        return false;
+      }
+
       if (isAirgapped()) {
         return config.widgetName !== "Map" && !config.hideCard;
       }
 
-      return !config.hideCard;
+      return !config.hideCard && !isModuleWidget(config);
     });
 
     const _cards: WidgetCardProps[] = cards.map((config) => {
@@ -401,7 +527,8 @@ export const getWidgetCards = createSelector(
     return sortedCards;
   },
 );
-const getIsMobileBreakPoint = (state: AppState) => state.ui.mainCanvas.isMobile;
+const getIsMobileBreakPoint = (state: DefaultRootState) =>
+  state.ui.mainCanvas.isMobile;
 
 export const getIsAutoLayoutMobileBreakPoint = createSelector(
   getIsAutoLayout,
@@ -495,7 +622,7 @@ export const getChildWidgets = createSelector(
     getDataTree,
     getLoadingEntities,
     getConfigTree,
-    (_state: AppState, widgetId: string) => widgetId,
+    (_state: DefaultRootState, widgetId: string) => widgetId,
   ],
   buildChildWidgetTree,
 );
@@ -880,7 +1007,10 @@ export function getContainerWidgetSpacesSelectorWhileMoving(
 }
 
 export const getJSCollectionDataById = createSelector(
-  [getJSCollections, (state: AppState, collectionId: string) => collectionId],
+  [
+    getJSCollections,
+    (state: DefaultRootState, collectionId: string) => collectionId,
+  ],
   (jsActions, collectionId) => {
     const action = jsActions.find(
       (action) => action.config.id === collectionId,
@@ -897,9 +1027,7 @@ export const getJSCollectionDataById = createSelector(
 export const getJSCollectionDataByBaseId = createSelector(
   [
     getJSCollections,
-    // TODO: Fix this the next time the file is edited
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (state: AppState, baseCollectionId: any) => baseCollectionId,
+    (state: DefaultRootState, baseCollectionId: string) => baseCollectionId,
   ],
   (jsActions, baseCollectionId) => {
     const action = jsActions.find(
@@ -914,17 +1042,27 @@ export const getJSCollectionDataByBaseId = createSelector(
   },
 );
 
-export const getApplicationLastDeployedAt = (state: AppState) =>
+export const getApplicationLastDeployedAt = (state: DefaultRootState) =>
   state.ui.applications.currentApplication?.lastDeployedAt;
 
 /**
  * returns the `state.ui.editor.isPreviewMode`
  *
- * @param state AppState
+ * @param state DefaultRootState
  * @returns boolean
  */
-export const previewModeSelector = (state: AppState) => {
+export const previewModeSelector = (state: DefaultRootState) => {
   return state.ui.editor.isPreviewMode;
+};
+
+/**
+ * returns the `state.ui.editor.showTabOrderOverlay`
+ *
+ * @param state DefaultRootState
+ * @returns boolean
+ */
+export const showTabOrderOverlaySelector = (state: DefaultRootState) => {
+  return state.ui.editor.showTabOrderOverlay;
 };
 
 /**
@@ -944,23 +1082,23 @@ export const isEditOnlyModeSelector = createSelector(
 /**
  * returns the `state.ui.editor.zoomLevel`
  *
- * @param state AppState
+ * @param state DefaultRootState
  * @returns number
  */
-export const getZoomLevel = (state: AppState) => {
+export const getZoomLevel = (state: DefaultRootState) => {
   return state.ui.editor.zoomLevel;
 };
 
 /**
  * returns the `state.ui.editor.savingEntity`
  *
- * @param state AppState
+ * @param state DefaultRootState
  * @returns boolean
  */
-export const getIsSavingEntity = (state: AppState) =>
+export const getIsSavingEntity = (state: DefaultRootState) =>
   state.ui.editor.loadingStates.savingEntity;
 
-export const selectJSCollections = (state: AppState) =>
+export const selectJSCollections = (state: DefaultRootState) =>
   state.entities.jsActions;
 
 export const showCanvasTopSectionSelector = createSelector(
@@ -985,8 +1123,8 @@ export const showCanvasTopSectionSelector = createSelector(
   },
 );
 
-export const getGsheetToken = (state: AppState) =>
+export const getGsheetToken = (state: DefaultRootState) =>
   state.entities.datasources.gsheetToken;
 
-export const getGsheetProjectID = (state: AppState) =>
+export const getGsheetProjectID = (state: DefaultRootState) =>
   state.entities.datasources.gsheetProjectID;

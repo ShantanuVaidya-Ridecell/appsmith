@@ -31,6 +31,8 @@ public interface DatasourceServiceCE {
 
     Mono<Datasource> findById(String id, AclPermission aclPermission);
 
+    Flux<Datasource> findAllByIds(List<String> ids, AclPermission aclPermission);
+
     Mono<Datasource> findByIdWithStorages(String id);
 
     Mono<Datasource> findByIdAndEnvironmentId(String id, String environmentId);
@@ -65,8 +67,28 @@ public interface DatasourceServiceCE {
 
     Mono<Datasource> create(Datasource datasource);
 
+    /**
+     * Same as {@link #create(Datasource)} but skips the deprecated-plugin creation guard. Meant for internal flows
+     * (e.g. forking an application) that must keep working for datasources of deprecated plugins that already exist.
+     */
+    Mono<Datasource> createWithoutDeprecationCheck(Datasource datasource);
+
+    /**
+     * Errors with {@code DEPRECATED_PLUGIN_QUERY_CREATION} when the given action datasource belongs to a
+     * deprecated plugin — resolved by id for saved datasources (permission-scoped read) or by the payload's
+     * pluginId for embedded ones. Used to block creating new queries on such datasources; existing queries keep
+     * working. Completes empty for a null datasource or one that can't be resolved, so downstream validation
+     * reports the usual errors.
+     */
+    Mono<Void> validateNewQueryCreationAllowed(Datasource datasource);
+
     Mono<Datasource> createWithoutPermissions(Datasource datasource);
 
+    /**
+     * Creates the datasource without saving it, and adds its new storages to {@code datasourceStorageDryRunQueries}
+     * for a later bulk save. Import shares that map across concurrent calls, so implementations must add to it with
+     * {@link com.appsmith.server.helpers.DryOpsUtils#addDryOp}.
+     */
     Mono<Datasource> createWithoutPermissions(
             Datasource datasource, Map<DBOpsType, List<DatasourceStorage>> datasourceStorageDryRunQueries);
 

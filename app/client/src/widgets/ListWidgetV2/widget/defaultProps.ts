@@ -1,6 +1,6 @@
 import { get } from "lodash";
-import type { FlattenedWidgetProps } from "WidgetProvider/constants";
-import { BlueprintOperationTypes } from "WidgetProvider/constants";
+import type { FlattenedWidgetProps } from "WidgetProvider/types";
+import { BlueprintOperationTypes } from "WidgetProvider/types";
 import { DynamicHeight, RegisteredWidgetFeatures } from "utils/WidgetFeatures";
 import type { WidgetProps } from "widgets/BaseWidget";
 import {
@@ -10,7 +10,7 @@ import {
 import { FILL_WIDGET_MIN_WIDTH } from "constants/minWidthConstants";
 import { getWidgetBluePrintUpdates } from "utils/WidgetBlueprintUtils";
 import { GridDefaults } from "constants/WidgetConstants";
-import type { CanvasWidgetsReduxState } from "reducers/entityReducers/canvasWidgetsReducer";
+import type { CanvasWidgetsReduxState } from "ee/reducers/entityReducers/canvasWidgetsReducer";
 import {
   FlexLayerAlignment,
   FlexVerticalAlignment,
@@ -51,6 +51,7 @@ export default {
   rows: 40,
   columns: 24,
   animateLoading: true,
+  disableSelection: false,
   gridType: "vertical",
   //positioning: Positioning.Fixed,
   minWidth: FILL_WIDGET_MIN_WIDTH,

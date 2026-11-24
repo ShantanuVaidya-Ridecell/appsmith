@@ -14,6 +14,11 @@ on:
         required: false
         type: number
         default: 0
+      checkout-ref:
+        description: "Immutable commit SHA to checkout for an approved external PR"
+        required: false
+        type: string
+        default: ""
   workflow_call:
     inputs:
       pr:
@@ -25,6 +30,11 @@ on:
         required: false
         type: number
         default: 0
+      checkout-ref:
+        description: "Immutable commit SHA to checkout for an approved external PR"
+        required: false
+        type: string
+        default: ""
 
 jobs:
   ci-test-limited:
@@ -45,10 +55,6 @@ jobs:
         image: redis
         ports:
           - 6379:6379
-      postgres:
-        image: postgres:14
-        ports:
-          - 5432:5432
       mongo:
         image: mongo
         ports:
@@ -66,15 +72,21 @@ jobs:
 
       # Check out merge commit
       - name: Fork based /ok-to-test checkout
-        if: inputs.pr != 0
+        if: inputs.checkout-ref == '' && inputs.pr != 0
         uses: actions/checkout@v4
         with:
           ref: "refs/pull/${{ inputs.pr }}/merge"
 
       # Checkout the code in the current branch in case the workflow is called because of a branch push event
       - name: Checkout the head commit of the branch
-        if: inputs.pr == 0
+        if: inputs.checkout-ref == '' && inputs.pr == 0
         uses: actions/checkout@v4
+
+      - name: Checkout the approved immutable commit
+        if: inputs.checkout-ref != ''
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.checkout-ref }}
 
       # Timestamp will be used to create cache key
       - id: timestamp
@@ -119,26 +131,19 @@ jobs:
           specs_to_run=${specs_to_run#,}
           echo "specs_to_run=$specs_to_run" >> $GITHUB_ENV
 
-      # In case of run-id provided download the artifact from the previous run
-      - name: Download Docker image artifact
-        if: inputs.previous-workflow-run-id != 0
-        uses: actions/cache@v4
-        with:
-          path: cicontainer.tar.gz
-          key: docker-image-${{ inputs.previous-workflow-run-id }}
-
-      # In case of run-id is 0 download the artifact from the current run
-      - name: Download Docker image artifact
-        if: inputs.previous-workflow-run-id == 0
-        uses: actions/cache@v4
-        with:
-          path: cicontainer.tar.gz
-          key: docker-image-${{github.run_id}}
-
-      - name: Load Docker image from tar file
+      # The build job pushed the SUT image to GHCR tagged with its run id;
+      # when previous-workflow-run-id is set, reuse the image built by that
+      # earlier run instead.
+      - name: Load Docker image
         run: |
-          gunzip cicontainer.tar.gz
-          docker load -i cicontainer.tar
+          image_run_id='${{ inputs.previous-workflow-run-id }}'
+          if [[ "$image_run_id" == '0' ]]; then
+            image_run_id='${{ github.run_id }}'
+          fi
+          ghcr_image="ghcr.io/${{ github.repository }}-citest:run-$image_run_id"
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          docker pull "$ghcr_image"
+          docker tag "$ghcr_image" cicontainer
 
       - name: Create folder
         if: steps.run_result.outputs.run_result != 'success'
@@ -153,9 +158,28 @@ jobs:
           sudo /etc/init.d/ssh stop ;
           sudo systemctl disable --now ssh.socket
           mkdir -p ~/git-server/keys
+          ted_image="appsmith/test-event-driver:latest"
+          cs_image="appsmith/cloud-services:release"
+          # A dropped Docker Hub download fails the shard before any test runs.
+          # Retry here, because GitHub re-runs a failed shard only after the whole run ends.
+          pull_image() {
+            for attempt in 1 2 3; do
+              if timeout 900 docker pull "$1"; then
+                return 0
+              fi
+              echo "::warning::docker pull $1 failed on attempt $attempt of 3."
+              if [[ "$attempt" -lt 3 ]]; then
+                sleep $((attempt * 20))
+              fi
+            done
+            echo "::error::docker pull $1 failed 3 times."
+            return 1
+          }
+          pull_image "$ted_image"
+          pull_image "$cs_image"
           docker run --name test-event-driver -d -p 22:22 -p 5001:5001 -p 3306:3306 \
             -p 5433:5432 -p 28017:27017 -p 25:25 -p 4200:4200 -p 5000:5000 -p 3001:3000 -p 6001:6001 -p 8001:8000 --privileged --pid=host --ipc=host --volume /:/host -v ~/git-server/keys:/git-server/keys \
-            appsmith/test-event-driver:latest
+            "$ted_image"
           docker run --name cloud-services -d -p 8000:80 -p 8090:8090 \
             --privileged --pid=host --ipc=host --add-host=host.docker.internal:host-gateway\
             -e APPSMITH_CLOUD_SERVICES_MONGODB_URI=mongodb://host.docker.internal:27017 \
@@ -181,13 +205,14 @@ jobs:
             -e ENTERPRISE_ADMIN_NAME=ent-admin@appsmith.com \
             -e ENTERPRISE_ADMIN_PASSWORD=ent_admin_password \
             -e LAUNCHDARKLY_BUSINESS_FLAGS_SERVER_KEY=$LAUNCHDARKLY_BUSINESS_FLAGS_SERVER_KEY \
-            appsmith/cloud-services:release
+            "$cs_image"
           cd cicontainerlocal
           docker run -d --name appsmith -p 80:80 \
             -v "$PWD/stacks:/appsmith-stacks" \
             -e APPSMITH_DISABLE_TELEMETRY=true \
-            -e APPSMITH_INTERCOM_APP_ID=DUMMY_VALUE \
+            -e APPSMITH_PYLON_APP_ID=DUMMY_VALUE \
             -e APPSMITH_CLOUD_SERVICES_BASE_URL=http://host.docker.internal:5001 \
+            -e APPSMITH_BASE_URL=http://localhost \
             --add-host=host.docker.internal:host-gateway --add-host=api.segment.io:host-gateway --add-host=t.appsmith.com:host-gateway \
             cicontainer
 
@@ -207,12 +232,40 @@ jobs:
             app/client/.yarn/cache
             app/client/node_modules/.cache/webpack/
           key: v1-yarn3-${{ hashFiles('app/client/yarn.lock') }}
+          restore-keys: |
+            v1-yarn3-
 
-      # Install all the dependencies
+      # yarn install downloads the Cypress binary (about 200 MB) into ~/.cache/Cypress.
+      # A cached binary skips that download. The cache key includes the patches because
+      # the postinstall script applies them to the binary.
+      - name: Get the Cypress version
+        id: cypress-version
+        working-directory: app/client
+        run: |
+          echo "version=$(node -p 'require("./package.json").devDependencies.cypress')" >> "$GITHUB_OUTPUT"
+
+      - name: Restore Cypress binary cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/Cypress
+          key: v1-cypress-${{ runner.os }}-${{ steps.cypress-version.outputs.version }}-${{ hashFiles('app/client/cypress/patches/**') }}
+
+      # A broken download (an npm package or the Cypress binary) fails the install.
+      # Retry here, because GitHub re-runs a failed shard only after the whole run ends.
       - name: Install dependencies
         working-directory: app/client
         run: |
-          yarn install --immutable
+          for attempt in 1 2 3; do
+            if timeout 600 yarn install --immutable; then
+              exit 0
+            fi
+            echo "::warning::yarn install failed on attempt $attempt of 3."
+            if [[ "$attempt" -lt 3 ]]; then
+              sleep $((attempt * 20))
+            fi
+          done
+          echo "::error::yarn install failed 3 times."
+          exit 1
 
       - name: Setting up the cypress tests
         if: steps.run_result.outputs.run_result != 'success'
@@ -222,13 +275,16 @@ jobs:
           chmod a+x ./cypress/setup-test-ci.sh
           ./cypress/setup-test-ci.sh
           
-      - name: Install Google Chrome 129.0.6668.100
+      - name: Install Google Chrome 156.0.8078.47
+        env:
+          CHROME_DEB_URL: https://appsmith-github-chrome-129-debian.s3.us-east-2.amazonaws.com/google-chrome-stable_156.0.8078.47-1_amd64.deb
+          CHROME_DEB_SHA256: 6c92cd22e90c6e3e255d782991543fa2091db8614e8536a971a7433a5c4d7ac8
         run: |
-          sudo apt-get remove google-chrome-stable
-          wget -q https://dl.google.com/linux/chrome/deb/pool/main/g/google-chrome-stable/google-chrome-stable_129.0.6668.100-1_amd64.deb
-          sudo apt-get update
-          sudo apt-get install -y ./google-chrome-stable_129.0.6668.100-1_amd64.deb
-          echo "BROWSER_PATH=$(which google-chrome)" >> $GITHUB_ENV
+          sudo apt-get remove -y google-chrome-stable || true
+          curl --fail --silent --show-error --location --max-time 300 --retry 3 --output google-chrome-stable.deb "$CHROME_DEB_URL"
+          echo "$CHROME_DEB_SHA256  google-chrome-stable.deb" | sha256sum --check
+          sudo apt-get install -y ./google-chrome-stable.deb
+          echo "BROWSER_PATH=$(which google-chrome)" >> "$GITHUB_ENV"
           google-chrome --version
 
       - name: Save Git values
@@ -339,6 +395,11 @@ jobs:
           CYPRESS_S3_ACCESS: ${{ secrets.CYPRESS_S3_ACCESS }}
           CYPRESS_S3_SECRET: ${{ secrets.CYPRESS_S3_SECRET }}
           CYPRESS_STATIC_ALLOCATION: true
+          CYPRESS_SNOWFLAKE_ACCOUNT_NAME: ${{ secrets.SNOWFLAKE_ACCOUNT_NAME }}
+          CYPRESS_SNOWFLAKE_USERNAME: ${{ secrets.SNOWFLAKE_USERNAME }}
+          CYPRESS_SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
+          CYPRESS_HUBSPOT_TOKEN: ${{ secrets.HUBSPOT_TOKEN }}
+          GITHUB_WORKFLOW : ${{ github.workflow }}
         with:
           browser: ${{ env.BROWSER_PATH }}
           install: false

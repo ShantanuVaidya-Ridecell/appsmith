@@ -2,10 +2,12 @@ import React from "react";
 import { noop } from "lodash";
 import { useBoolean } from "usehooks-ts";
 
-import { DismissibleTab } from "../..";
-import { EditableEntityName } from "..";
+import { DismissibleTab } from "../../DismissibleTab";
+import { EditableEntityName } from "../EditableEntityName";
 
 import type { EditableDismissibleTabProps } from "./EditableDismissibleTab.types";
+import { useActiveDoubleClick } from "../../__hooks__";
+import { Badge } from "../../Badge";
 
 export const EditableDismissibleTab = (props: EditableDismissibleTabProps) => {
   const {
@@ -13,21 +15,34 @@ export const EditableDismissibleTab = (props: EditableDismissibleTabProps) => {
     icon,
     isActive,
     isEditable = true,
+    isEditing: propIsEditing,
     isLoading,
     name,
     onClick,
     onClose,
+    onEnterEditMode: propOnEnterEditMode,
+    onExitEditMode: propOnExitEditMode,
     onNameSave,
+    showUnsavedChanges,
     validateName,
   } = props;
 
   const {
-    setFalse: exitEditMode,
-    setTrue: enterEditMode,
-    value: isEditing,
+    setFalse: localOnExitEditMode,
+    setTrue: localOnEnterEditMode,
+    value: localIsEditing,
   } = useBoolean(false);
 
-  const handleDoubleClick = isEditable ? enterEditMode : noop;
+  const isEditing = propIsEditing ?? localIsEditing;
+  const handleEnterEditMode = propOnEnterEditMode ?? localOnEnterEditMode;
+  const handleExitEditMode = propOnExitEditMode ?? localOnExitEditMode;
+
+  const doubleClickOverride = useActiveDoubleClick(
+    isActive,
+    handleEnterEditMode,
+  );
+
+  const handleDoubleClick = isEditable ? doubleClickOverride : noop;
 
   return (
     <DismissibleTab
@@ -38,14 +53,16 @@ export const EditableDismissibleTab = (props: EditableDismissibleTabProps) => {
       onDoubleClick={handleDoubleClick}
     >
       <EditableEntityName
+        canEdit={isEditable}
         icon={icon}
         isEditing={isEditing}
         isLoading={isLoading}
         name={name}
-        onExitEditing={exitEditMode}
+        onExitEditing={handleExitEditMode}
         onNameSave={onNameSave}
         validateName={validateName}
       />
+      {showUnsavedChanges ? <Badge kind="info" size="small" /> : null}
     </DismissibleTab>
   );
 };

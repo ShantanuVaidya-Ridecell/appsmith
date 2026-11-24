@@ -33,7 +33,8 @@ import crudInfoModalReducer from "reducers/uiReducers/crudInfoModalReducer";
 import { widgetReflowReducer } from "reducers/uiReducers/reflowReducer";
 import jsObjectNameReducer from "reducers/uiReducers/jsObjectNameReducer";
 import appThemingReducer from "reducers/uiReducers/appThemingReducer";
-import mainCanvasReducer from "reducers/uiReducers/mainCanvasReducer";
+import windowReducer from "reducers/uiReducers/windowReducer";
+import mainCanvasReducer from "ee/reducers/uiReducers/mainCanvasReducer";
 import focusHistoryReducer from "reducers/uiReducers/focusHistoryReducer";
 import { editorContextReducer } from "ee/reducers/uiReducers/editorContextReducer";
 import libraryReducer from "reducers/uiReducers/libraryReducer";
@@ -46,6 +47,7 @@ import activeFieldReducer from "reducers/uiReducers/activeFieldEditorReducer";
 import selectedWorkspaceReducer from "ee/reducers/uiReducers/selectedWorkspaceReducer";
 import ideReducer from "reducers/uiReducers/ideReducer";
 import consolidatedPageLoadReducer from "reducers/uiReducers/consolidatedPageLoadReducer";
+import copyEntityToAppReducer from "reducers/uiReducers/copyEntityToAppReducer";
 import { pluginActionReducer } from "PluginActionEditor/store";
 
 export const uiReducerObject = {
@@ -85,6 +87,7 @@ export const uiReducerObject = {
   crudInfoModal: crudInfoModalReducer,
   widgetReflow: widgetReflowReducer,
   appTheming: appThemingReducer,
+  windowDimensions: windowReducer,
   mainCanvas: mainCanvasReducer,
   appSettingsPane: appSettingsPaneReducer,
   focusHistory: focusHistoryReducer,
@@ -98,4 +101,5 @@ export const uiReducerObject = {
   ide: ideReducer,
   consolidatedPageLoad: consolidatedPageLoadReducer,
   pluginActionEditor: pluginActionReducer,
+  copyEntityToApp: copyEntityToAppReducer,
 };

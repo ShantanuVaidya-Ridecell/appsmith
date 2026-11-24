@@ -11,7 +11,7 @@ import {
   createDatasourceFromForm,
   createTempDatasourceFromForm,
 } from "actions/datasourceActions";
-import type { AppState } from "ee/reducers";
+import type { DefaultRootState } from "react-redux";
 import AnalyticsUtil from "ee/utils/AnalyticsUtil";
 import { getCurrentApplication } from "ee/selectors/applicationSelectors";
 import type { ApplicationPayload } from "entities/Application";
@@ -41,7 +41,7 @@ import { ASSETS_CDN_URL } from "constants/ThirdPartyConstants";
 import { useParentEntityInfo } from "ee/IDE/hooks/useParentEntityInfo";
 import scrollIntoView from "scroll-into-view-if-needed";
 import { pluginSearchSelector } from "./CreateNewDatasourceHeader";
-import type { CreateDatasourceConfig } from "api/DatasourcesApi";
+import type { CreateDatasourceConfig } from "ee/api/DatasourcesApi";
 import type { Datasource } from "entities/Datasource";
 import type { AnyAction, Dispatch } from "redux";
 import {
@@ -51,7 +51,8 @@ import {
   PluginType,
 } from "entities/Plugin";
 import { getIDETypeByUrl } from "ee/entities/IDE/utils";
-import type { IDEType } from "ee/entities/IDE/constants";
+import type { IDEType } from "ee/IDE/Interfaces/IDETypes";
+import { filterSearch } from "./util";
 
 // This function remove the given key from queryParams and return string
 const removeQueryParams = (paramKeysToRemove: Array<string>) => {
@@ -298,7 +299,7 @@ function CreateDBOrMostPopularPlugins(props: CreateDBOrMostPopularPluginsType) {
 }
 
 const mapStateToProps = (
-  state: AppState,
+  state: DefaultRootState,
   props: {
     active?: boolean;
     pageId: string;
@@ -324,9 +325,7 @@ const mapStateToProps = (
     ? filteredMostPopularPlugins
     : getDBPlugins(state);
 
-  plugins = plugins.filter((plugin) =>
-    plugin.name.toLocaleLowerCase().includes(searchedPlugin),
-  );
+  plugins = filterSearch(plugins, searchedPlugin) as Plugin[];
 
   return {
     pluginImages: getPluginImages(state),

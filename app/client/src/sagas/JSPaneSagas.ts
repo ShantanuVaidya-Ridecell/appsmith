@@ -96,9 +96,12 @@ import { getJsPaneDebuggerState } from "selectors/jsPaneSelectors";
 import { logMainJsActionExecution } from "ee/utils/analyticsHelpers";
 import { getFocusablePropertyPaneField } from "selectors/propertyPaneSelectors";
 import { setIdeEditorViewMode } from "actions/ideActions";
-import { EditorViewMode } from "ee/entities/IDE/constants";
+import { EditorViewMode } from "IDE/Interfaces/EditorTypes";
 import { updateJSCollectionAPICall } from "ee/sagas/ApiCallerSagas";
 import { convertToBasePageIdSelector } from "selectors/pageListSelectors";
+import { getIsAnvilEnabledInCurrentApplication } from "layoutSystems/anvil/integrations/selectors";
+import { fetchActionsForPage } from "actions/pluginActionActions";
+import type { ActionRunBehaviourType } from "PluginActionEditor/types/PluginActionTypes";
 
 export interface GenerateDefaultJSObjectProps {
   name: string;
@@ -333,17 +336,36 @@ function* updateJSCollection(data: {
   }
 
   try {
-    const { deletedActions, jsCollection, newActions } = data;
+    const { deletedActions, jsCollection, newActions, updatedActions } = data;
+
+    const isAnvilEnabled: boolean = yield select(
+      getIsAnvilEnabledInCurrentApplication,
+    );
+    const pageId: string = yield select(getCurrentPageId);
 
     if (jsCollection) {
       yield put(jsSaveActionStart({ id: jsCollection.id }));
       const response: JSCollectionCreateUpdateResponse = yield call(
         updateJSCollectionAPICall,
         jsCollection,
+        newActions,
+        updatedActions,
+        deletedActions,
       );
       const isValidResponse: boolean = yield validateResponse(response);
 
       if (isValidResponse) {
+        // If Anvil is enabled and actions are added or deleted,
+        // fetch the actions for the page.
+        // This is to ensure that the actions are fetched and the schema is updated
+        if (
+          isAnvilEnabled &&
+          ((newActions && newActions.length) ||
+            (deletedActions && deletedActions.length))
+        ) {
+          yield put(fetchActionsForPage(pageId));
+        }
+
         if (newActions && newActions.length) {
           pushLogsForObjectUpdate(
             newActions,
@@ -628,6 +650,7 @@ export function* handleStartExecuteJSFunctionSaga(
     consoleStatements:
       action.actionConfiguration?.body?.match(CONSOLE_DOT_LOG_INVOCATION_REGEX)
         ?.length || 0,
+    runBehaviour: action.runBehaviour,
   });
 
   yield call(handleExecuteJSFunctionSaga, {
@@ -647,24 +670,19 @@ function* handleUpdateJSCollectionBody(
     actionPayload.payload.id,
   );
 
-  // @ts-expect-error: Object jsCollection is possibly undefined
-  jsCollection["body"] = actionPayload.payload.body;
   try {
     if (jsCollection) {
-      // TODO: Fix this the next time the file is edited
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const response: ApiResponse<any> =
+      const response: ApiResponse<JSCollection> =
         yield JSActionAPI.updateJSCollectionBody(
           jsCollection.id,
-          jsCollection.body,
+          actionPayload.payload.body,
         );
       const isValidResponse: boolean = yield validateResponse(response);
 
       if (isValidResponse) {
-        // since server is not sending the info about whether the js collection is main or not
-        // we are retaining it manually
+        const serverData = response.data;
         const updatedJSCollection: JSCollection = {
-          ...jsCollection,
+          ...serverData,
           isMainJSCollection: !!jsCollection.isMainJSCollection,
         };
 
@@ -761,13 +779,13 @@ function* setFunctionPropertySaga(
 
   const actionId = action.id;
 
-  if (propertyName === "executeOnLoad") {
+  if (propertyName === "runBehaviour") {
     yield put({
-      type: ReduxActionTypes.TOGGLE_FUNCTION_EXECUTE_ON_LOAD_INIT,
+      type: ReduxActionTypes.UPDATE_FUNCTION_RUN_BEHAVIOR_INIT,
       payload: {
         collectionId: action.collectionId,
         actionId,
-        shouldExecute: value,
+        runBehaviour: value,
       },
     });
 
@@ -825,35 +843,35 @@ function* handleUpdateJSFunctionPropertySaga(
   }
 }
 
-function* toggleFunctionExecuteOnLoadSaga(
+function* updateFunctionRunBehaviourSaga(
   action: ReduxAction<{
     collectionId: string;
     actionId: string;
-    shouldExecute: boolean;
+    runBehaviour: ActionRunBehaviourType;
   }>,
 ) {
   try {
-    const { actionId, collectionId, shouldExecute } = action.payload;
+    const { actionId, collectionId, runBehaviour } = action.payload;
     const response: ApiResponse = yield call(
-      ActionAPI.toggleActionExecuteOnLoad,
+      ActionAPI.updateActionRunBehaviour,
       actionId,
-      shouldExecute,
+      runBehaviour,
     );
     const isValidResponse: boolean = yield validateResponse(response);
 
     if (isValidResponse) {
       yield put({
-        type: ReduxActionTypes.TOGGLE_FUNCTION_EXECUTE_ON_LOAD_SUCCESS,
+        type: ReduxActionTypes.UPDATE_FUNCTION_RUN_BEHAVIOR_SUCCESS,
         payload: {
           actionId: actionId,
           collectionId: collectionId,
-          executeOnLoad: shouldExecute,
+          runBehaviour,
         },
       });
     }
   } catch (error) {
     yield put({
-      type: ReduxActionErrorTypes.TOGGLE_ACTION_EXECUTE_ON_LOAD_ERROR,
+      type: ReduxActionErrorTypes.UPDATE_FUNCTION_RUN_BEHAVIOR_ERROR,
       payload: error,
     });
   }
@@ -922,8 +940,8 @@ export default function* root() {
       handleUpdateJSFunctionPropertySaga,
     ),
     takeLatest(
-      ReduxActionTypes.TOGGLE_FUNCTION_EXECUTE_ON_LOAD_INIT,
-      toggleFunctionExecuteOnLoadSaga,
+      ReduxActionTypes.UPDATE_FUNCTION_RUN_BEHAVIOR_INIT,
+      updateFunctionRunBehaviourSaga,
     ),
     takeLatest(
       ReduxActionTypes.CREATE_NEW_JS_FROM_ACTION_CREATOR,

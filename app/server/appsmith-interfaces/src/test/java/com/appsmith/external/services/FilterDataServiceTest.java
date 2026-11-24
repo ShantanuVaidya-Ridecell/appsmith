@@ -2,6 +2,7 @@ package com.appsmith.external.services;
 
 import com.appsmith.external.constants.ConditionalOperator;
 import com.appsmith.external.constants.DataType;
+import com.appsmith.external.exceptions.pluginExceptions.AppsmithPluginError;
 import com.appsmith.external.exceptions.pluginExceptions.AppsmithPluginException;
 import com.appsmith.external.models.Condition;
 import com.appsmith.external.models.UQIDataFilterParams;
@@ -45,6 +46,21 @@ public class FilterDataServiceTest {
         String table = filterDataService.generateTable(schema);
 
         assertThat(table).isNotNull();
+    }
+
+    @Test
+    public void testDropTable_rejectsSqlInjectionPayload() {
+        AppsmithPluginException ex = assertThrows(AppsmithPluginException.class, () -> {
+            filterDataService.dropTable("valid_table; DROP TABLE users; --");
+        });
+        assertThat(ex.getMessage()).contains("Invalid filter temporary table name");
+    }
+
+    @Test
+    public void testDropTable_acceptsGeneratedTableName() {
+        Map<String, DataType> schema = Map.of("id", DataType.INTEGER);
+        String tableName = filterDataService.generateTable(schema);
+        filterDataService.dropTable(tableName);
     }
 
     @Test
@@ -1335,5 +1351,222 @@ public class FilterDataServiceTest {
             e.printStackTrace();
             fail(e.getMessage());
         }
+    }
+
+    private static final String SIMPLE_DATA = "[\n" + "  {\n"
+            + "    \"id\": 1,\n"
+            + "    \"email\": \"user@example.com\",\n"
+            + "    \"name\": \"Alice\"\n"
+            + "  },\n"
+            + "  {\n"
+            + "    \"id\": 2,\n"
+            + "    \"email\": \"admin@example.com\",\n"
+            + "    \"name\": \"Bob\"\n"
+            + "  }\n"
+            + "]";
+
+    @Test
+    public void testProjectionWithInvalidColumnName_throwsException() throws IOException {
+        ArrayNode items = (ArrayNode) objectMapper.readTree(SIMPLE_DATA);
+        List<String> projectionColumns = List.of("id", "nonExistentColumn");
+
+        AppsmithPluginException exception = assertThrows(AppsmithPluginException.class, () -> {
+            filterDataService.filterDataNew(items, new UQIDataFilterParams(null, projectionColumns, null, null));
+        });
+        assertThat(exception.getMessage()).contains("nonExistentColumn");
+        assertThat(exception.getMessage()).contains("not found in the known column names");
+    }
+
+    @Test
+    public void testSortByWithInvalidColumnName_throwsException() throws IOException {
+        ArrayNode items = (ArrayNode) objectMapper.readTree(SIMPLE_DATA);
+        List<Map<String, String>> sortBy =
+                List.of(Map.of(SORT_BY_COLUMN_NAME_KEY, "nonExistentColumn", SORT_BY_TYPE_KEY, VALUE_DESCENDING));
+
+        AppsmithPluginException exception = assertThrows(AppsmithPluginException.class, () -> {
+            filterDataService.filterDataNew(items, new UQIDataFilterParams(null, null, sortBy, null));
+        });
+        assertThat(exception.getMessage()).contains("nonExistentColumn");
+        assertThat(exception.getMessage()).contains("not found in the known column names");
+    }
+
+    @Test
+    public void testProjectionWithBacktickInjection_throwsException() throws IOException {
+        ArrayNode items = (ArrayNode) objectMapper.readTree(SIMPLE_DATA);
+        List<String> maliciousProjection = List.of("id` , FILE_READ('/etc/passwd') AS leaked , `id");
+
+        AppsmithPluginException exception = assertThrows(AppsmithPluginException.class, () -> {
+            filterDataService.filterDataNew(items, new UQIDataFilterParams(null, maliciousProjection, null, null));
+        });
+        assertThat(exception.getMessage()).contains("not found in the known column names");
+    }
+
+    @Test
+    public void testSortByWithBacktickInjection_throwsException() throws IOException {
+        ArrayNode items = (ArrayNode) objectMapper.readTree(SIMPLE_DATA);
+        List<Map<String, String>> maliciousSortBy = List.of(Map.of(
+                SORT_BY_COLUMN_NAME_KEY,
+                "id` , FILE_READ('/etc/passwd') AS leaked , `id",
+                SORT_BY_TYPE_KEY,
+                VALUE_DESCENDING));
+
+        AppsmithPluginException exception = assertThrows(AppsmithPluginException.class, () -> {
+            filterDataService.filterDataNew(items, new UQIDataFilterParams(null, null, maliciousSortBy, null));
+        });
+        assertThat(exception.getMessage()).contains("not found in the known column names");
+    }
+
+    @Test
+    public void testSchemaRejectsBackticksInColumnNames() {
+        String dataWithBacktickColumn =
+                "[\n" + "  {\n" + "    \"normal_col\": \"value1\",\n" + "    \"bad`col\": \"value2\"\n" + "  }\n" + "]";
+
+        AppsmithPluginException exception = assertThrows(AppsmithPluginException.class, () -> {
+            ArrayNode items = (ArrayNode) objectMapper.readTree(dataWithBacktickColumn);
+            filterDataService.filterDataNew(items, new UQIDataFilterParams(null, null, null, null));
+        });
+        assertThat(exception.getMessage()).contains("unsupported symbols in column names");
+    }
+
+    @Test
+    public void testProjectionWithSqlExpressionInjection_throwsException() throws IOException {
+        ArrayNode items = (ArrayNode) objectMapper.readTree(SIMPLE_DATA);
+        List<String> maliciousProjection = List.of("(SELECT CURRENT_TIMESTAMP)");
+
+        AppsmithPluginException exception = assertThrows(AppsmithPluginException.class, () -> {
+            filterDataService.filterDataNew(items, new UQIDataFilterParams(null, maliciousProjection, null, null));
+        });
+        assertThat(exception.getMessage()).contains("not found in the known column names");
+    }
+
+    @Test
+    public void testValidProjectionStillWorks() throws IOException {
+        ArrayNode items = (ArrayNode) objectMapper.readTree(SIMPLE_DATA);
+        List<String> projectionColumns = List.of("id", "email");
+
+        ArrayNode result =
+                filterDataService.filterDataNew(items, new UQIDataFilterParams(null, projectionColumns, null, null));
+
+        assertEquals(2, result.size());
+        List<String> returnedColumns = new ArrayList<>();
+        result.get(0).fieldNames().forEachRemaining(returnedColumns::add);
+        assertEquals(List.of("id", "email"), returnedColumns);
+    }
+
+    @Test
+    public void testValidSortByStillWorks() throws IOException {
+        ArrayNode items = (ArrayNode) objectMapper.readTree(SIMPLE_DATA);
+        List<Map<String, String>> sortBy =
+                List.of(Map.of(SORT_BY_COLUMN_NAME_KEY, "id", SORT_BY_TYPE_KEY, VALUE_DESCENDING));
+
+        ArrayNode result = filterDataService.filterDataNew(items, new UQIDataFilterParams(null, null, sortBy, null));
+
+        assertEquals(2, result.size());
+        assertEquals(2, result.get(0).get("id").asInt());
+        assertEquals(1, result.get(1).get("id").asInt());
+    }
+
+    @Test
+    public void testSortByWithNullOrder_throwsException() throws IOException {
+        ArrayNode items = (ArrayNode) objectMapper.readTree(SIMPLE_DATA);
+        Map<String, String> sortCondition = new HashMap<>();
+        sortCondition.put(SORT_BY_COLUMN_NAME_KEY, "id");
+        sortCondition.put(SORT_BY_TYPE_KEY, null);
+        List<Map<String, String>> sortBy = List.of(sortCondition);
+
+        AppsmithPluginException exception = assertThrows(AppsmithPluginException.class, () -> {
+            filterDataService.filterDataNew(items, new UQIDataFilterParams(null, null, sortBy, null));
+        });
+        assertThat(exception.getMessage()).contains("Sort order is required for column");
+    }
+
+    @Test
+    public void testSortByWithInvalidOrder_throwsException() throws IOException {
+        ArrayNode items = (ArrayNode) objectMapper.readTree(SIMPLE_DATA);
+        List<Map<String, String>> sortBy =
+                List.of(Map.of(SORT_BY_COLUMN_NAME_KEY, "id", SORT_BY_TYPE_KEY, "INVALID_ORDER"));
+
+        AppsmithPluginException exception = assertThrows(AppsmithPluginException.class, () -> {
+            filterDataService.filterDataNew(items, new UQIDataFilterParams(null, null, sortBy, null));
+        });
+        assertThat(exception.getMessage()).contains("Unsupported sort order");
+    }
+
+    @Test
+    public void testInvalidProjectionDoesNotLeakTable() throws IOException {
+        ArrayNode items = (ArrayNode) objectMapper.readTree(SIMPLE_DATA);
+        List<String> badProjection = List.of("nonExistentColumn");
+
+        assertThrows(AppsmithPluginException.class, () -> {
+            filterDataService.filterDataNew(items, new UQIDataFilterParams(null, badProjection, null, null));
+        });
+
+        ArrayNode result =
+                filterDataService.filterDataNew(items, new UQIDataFilterParams(null, List.of("id"), null, null));
+        assertEquals(2, result.size());
+    }
+
+    private Condition whereClause(Map<String, Object>... children) {
+        return parseWhereClause(Map.of("condition", "AND", "children", List.of(children)));
+    }
+
+    private void assertUnknownColumnRejected(Condition condition, String columnName) throws IOException {
+        ArrayNode items = (ArrayNode) objectMapper.readTree(SIMPLE_DATA);
+
+        AppsmithPluginException exception = assertThrows(
+                AppsmithPluginException.class,
+                () -> filterDataService.filterDataNew(items, new UQIDataFilterParams(condition, null, null, null)));
+
+        assertEquals(AppsmithPluginError.PLUGIN_EXECUTE_ARGUMENT_ERROR, exception.getError());
+        assertThat(exception.getMessage()).startsWith(columnName + " not found in the known column names");
+    }
+
+    @Test
+    public void testWhereWithUnknownColumn_throwsException() throws IOException {
+        Condition condition = whereClause(Map.of("condition", "EQ", "key", "unknownColumn", "value", "1"));
+
+        assertUnknownColumnRejected(condition, "unknownColumn");
+    }
+
+    @Test
+    public void testWhereWithUnknownColumnInNestedGroup_throwsException() throws IOException {
+        Condition condition = whereClause(
+                Map.of("condition", "EQ", "key", "id", "value", "1"),
+                Map.of(
+                        "condition",
+                        "OR",
+                        "children",
+                        List.of(Map.of("condition", "EQ", "key", "unknownColumn", "value", ""))));
+
+        assertUnknownColumnRejected(condition, "unknownColumn");
+    }
+
+    @Test
+    public void testWhereWithColumnNameContainingQuote_throwsException() throws IOException {
+        Condition condition = whereClause(Map.of("condition", "EQ", "key", "na\"me", "value", ""));
+
+        assertUnknownColumnRejected(condition, "na\"me");
+    }
+
+    @Test
+    public void testWhereWithKnownColumn_filtersRows() throws IOException {
+        ArrayNode items = (ArrayNode) objectMapper.readTree(SIMPLE_DATA);
+        Condition condition = whereClause(Map.of("condition", "EQ", "key", "id", "value", "1"));
+
+        ArrayNode result = filterDataService.filterDataNew(items, new UQIDataFilterParams(condition, null, null, null));
+
+        assertEquals(1, result.size());
+        assertEquals(1, result.get(0).get("id").asInt());
+    }
+
+    @Test
+    public void testGenerateLogicalExpression_quotesColumnNameContainingQuote() {
+        Map<String, DataType> schema = Map.of("na\"me", DataType.STRING);
+        Condition condition = whereClause(Map.of("condition", "EQ", "key", "na\"me", "value", "Alice"));
+
+        String expression = filterDataService.generateLogicalExpression(
+                (List<Condition>) condition.getValue(), new ArrayList<>(), schema, condition.getOperator());
+
+        assertThat(expression).isEqualTo(" ( \"na\"\"me\" = ? ) ");
     }
 }

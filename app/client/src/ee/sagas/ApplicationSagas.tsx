@@ -1,6 +1,7 @@
 export * from "ce/sagas/ApplicationSagas";
 import {
   publishApplicationSaga,
+  redeployApplicationSaga,
   updateApplicationLayoutSaga,
   updateApplicationSaga,
   changeAppViewAccessSaga,
@@ -17,15 +18,25 @@ import {
   uploadNavigationLogoSaga,
   deleteNavigationLogoSaga,
   fetchAllApplicationsOfWorkspaceSaga,
+  publishAnvilApplicationSaga,
+  persistAppSlugSaga,
+  validateAppSlugSaga,
+  fetchAppSlugSuggestionSaga,
+  enableStaticUrlSaga,
+  disableStaticUrlSaga,
 } from "ce/sagas/ApplicationSagas";
 import { ReduxActionTypes } from "ee/constants/ReduxActionConstants";
-import { all, takeLatest } from "redux-saga/effects";
+import { all, debounce, takeLatest } from "redux-saga/effects";
 
 export default function* applicationSagas() {
   yield all([
     takeLatest(
       ReduxActionTypes.PUBLISH_APPLICATION_INIT,
       publishApplicationSaga,
+    ),
+    takeLatest(
+      ReduxActionTypes.REDEPLOY_APPLICATION_INIT,
+      redeployApplicationSaga,
     ),
     takeLatest(ReduxActionTypes.UPDATE_APP_LAYOUT, updateApplicationLayoutSaga),
     takeLatest(ReduxActionTypes.UPDATE_APPLICATION, updateApplicationSaga),
@@ -67,5 +78,17 @@ export default function* applicationSagas() {
       ReduxActionTypes.FETCH_UNCONFIGURED_DATASOURCE_LIST,
       fetchUnconfiguredDatasourceList,
     ),
+    takeLatest(
+      ReduxActionTypes.PUBLISH_ANVIL_APPLICATION_INIT,
+      publishAnvilApplicationSaga,
+    ),
+    takeLatest(ReduxActionTypes.PERSIST_APP_SLUG, persistAppSlugSaga),
+    debounce(500, ReduxActionTypes.VALIDATE_APP_SLUG, validateAppSlugSaga),
+    takeLatest(
+      ReduxActionTypes.FETCH_APP_SLUG_SUGGESTION,
+      fetchAppSlugSuggestionSaga,
+    ),
+    takeLatest(ReduxActionTypes.ENABLE_STATIC_URL, enableStaticUrlSaga),
+    takeLatest(ReduxActionTypes.DISABLE_STATIC_URL, disableStaticUrlSaga),
   ]);
 }

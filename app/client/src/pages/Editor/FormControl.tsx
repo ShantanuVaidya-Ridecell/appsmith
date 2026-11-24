@@ -1,4 +1,4 @@
-import React, { memo, useEffect, useMemo, useState } from "react";
+import React, { memo, useEffect, useState } from "react";
 import type { ControlProps } from "components/formControls/BaseControl";
 import {
   getViewType,
@@ -9,7 +9,7 @@ import { useSelector, shallowEqual, useDispatch } from "react-redux";
 import { getFormValues, change } from "redux-form";
 import FormControlFactory from "utils/formControl/FormControlFactory";
 
-import type { AppState } from "ee/reducers";
+import type { DefaultRootState } from "react-redux";
 import type { Action } from "entities/Action";
 import type { EvaluationError } from "utils/DynamicBindingUtils";
 import { getConfigErrors } from "selectors/formSelectors";
@@ -34,6 +34,8 @@ import { getCurrentEditingEnvironmentId } from "ee/selectors/environmentSelector
 import { selectFeatureFlags } from "ee/selectors/featureFlagsSelectors";
 import { getCurrentWorkspaceId } from "ee/selectors/selectedWorkspaceSelectors";
 
+let isFormControlsLoadedOnce = false;
+
 export interface FormControlProps {
   config: ControlProps;
   formName: string;
@@ -42,9 +44,9 @@ export interface FormControlProps {
 
 function FormControl(props: FormControlProps) {
   const formValues: Partial<Action | Datasource> = useSelector(
-    (state: AppState) => getFormValues(props.formName)(state),
+    (state: DefaultRootState) => getFormValues(props.formName)(state),
   );
-  const actionValues = useSelector((state: AppState) =>
+  const actionValues = useSelector((state: DefaultRootState) =>
     getAction(state, formValues?.id || ""),
   );
 
@@ -54,6 +56,7 @@ function FormControl(props: FormControlProps) {
 
   // adding this to prevent excessive rerendering
   const [convertFormToRaw, setConvertFormToRaw] = useState(false);
+  const [isFormControlsLoaded, setIsFormControlsLoaded] = useState(false);
 
   const viewType = getViewType(formValues, props.config.configProperty);
   let formValueForEvaluatingHiddenObj = formValues;
@@ -69,7 +72,7 @@ function FormControl(props: FormControlProps) {
     featureFlags,
   );
   const configErrors: EvaluationError[] = useSelector(
-    (state: AppState) =>
+    (state: DefaultRootState) =>
       getConfigErrors(state, {
         configProperty: props?.config?.configProperty,
         formName: props.formName,
@@ -83,16 +86,16 @@ function FormControl(props: FormControlProps) {
     (formValues as Datasource)?.id;
   // TODO: Fix this the next time the file is edited
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const pluginTemplates: Record<string, any> = useSelector((state: AppState) =>
-    getPluginTemplates(state),
+  const pluginTemplates: Record<string, any> = useSelector(
+    (state: DefaultRootState) => getPluginTemplates(state),
   );
   const dsStructure: DatasourceStructure | undefined = useSelector(
-    (state: AppState) => getDatasourceStructureById(state, dsId),
+    (state: DefaultRootState) => getDatasourceStructureById(state, dsId),
   );
 
   const pluginId: string = formValues?.pluginId || "";
   const pluginTemplate = !!pluginId ? pluginTemplates[pluginId] : undefined;
-  const pluginName: string = useSelector((state: AppState) =>
+  const pluginName: string = useSelector((state: DefaultRootState) =>
     getPluginNameFromId(state, pluginId),
   );
   const workspaceId = useSelector(getCurrentWorkspaceId);
@@ -178,12 +181,46 @@ function FormControl(props: FormControlProps) {
     }
   }, [showTemplate]);
 
+  useEffect(function loadFormControlsLazily() {
+    let mounted = true;
+
+    const loadFormControls = async () => {
+      const { default: registry } = await import(
+        "utils/formControl/FormControlRegistry"
+      );
+
+      registry.registerFormControlBuilders();
+      isFormControlsLoadedOnce = true;
+
+      // this check is added when the component is unmounted and this loadFormControls async is still running we should not set the state because the component is unmounted.
+      if (mounted) {
+        setIsFormControlsLoaded(true);
+      }
+    };
+
+    // don't repeat the loading of form controls
+    if (!isFormControlsLoadedOnce) {
+      loadFormControls();
+    } else {
+      setIsFormControlsLoaded(true);
+    }
+
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
   const FormControlRenderMethod = (config = props.config) => {
+    if (!isFormControlsLoaded) {
+      return null;
+    }
+
     return FormControlFactory.createControl(
       {
         ...config,
         datasourceId: dsId,
         workspaceId,
+        actionId: actionValues?.id,
       },
       props.formName,
       props?.multipleConfig,
@@ -210,53 +247,49 @@ function FormControl(props: FormControlProps) {
     );
   };
 
-  return useMemo(
-    () =>
-      !hidden ? (
-        <FormConfig
-          changesViewType={
-            !!(viewTypes.length > 0 && viewTypes.includes(ViewTypes.JSON))
-          }
-          config={props.config}
-          configErrors={configErrors}
-          formName={props.formName}
-          multipleConfig={props?.multipleConfig}
-        >
-          <div
-            className={`t--form-control-${props.config.controlType}`}
-            data-location-id={btoa(props.config.configProperty)}
-          >
-            {showTemplate &&
-            !convertFormToRaw &&
-            !SQL_DATASOURCES.includes(pluginName) ? (
-              <TemplateMenu
-                createTemplate={(templateString: string) =>
-                  createTemplate(
-                    templateString,
-                    props?.formName,
-                    props?.config?.configProperty,
-                  )
-                }
-                pluginId={(formValues as Action)?.datasource?.pluginId || ""}
-              />
-            ) : viewTypes.length > 0 && viewTypes.includes(ViewTypes.JSON) ? (
-              <ToggleComponentToJson
-                componentControlType={props.config.controlType}
-                configProperty={props.config.configProperty}
-                customStyles={props?.config?.customStyles}
-                disabled={props.config.disabled}
-                formName={props.formName}
-                renderCompFunction={FormControlRenderMethod}
-                viewType={viewType}
-              />
-            ) : (
-              FormControlRenderMethod()
-            )}
-          </div>
-        </FormConfig>
-      ) : null,
-    [props],
-  );
+  return !hidden ? (
+    <FormConfig
+      changesViewType={
+        !!(viewTypes.length > 0 && viewTypes.includes(ViewTypes.JSON))
+      }
+      config={props.config}
+      configErrors={configErrors}
+      formName={props.formName}
+      multipleConfig={props?.multipleConfig}
+    >
+      <div
+        className={`t--form-control-${props.config.controlType}`}
+        data-location-id={btoa(props.config.configProperty)}
+      >
+        {showTemplate &&
+        !convertFormToRaw &&
+        !SQL_DATASOURCES.includes(pluginName) ? (
+          <TemplateMenu
+            createTemplate={(templateString: string) =>
+              createTemplate(
+                templateString,
+                props?.formName,
+                props?.config?.configProperty,
+              )
+            }
+            pluginId={(formValues as Action)?.datasource?.pluginId || ""}
+          />
+        ) : viewTypes.length > 0 && viewTypes.includes(ViewTypes.JSON) ? (
+          <ToggleComponentToJson
+            componentControlType={props.config.controlType}
+            configProperty={props.config.configProperty}
+            customStyles={props?.config?.customStyles}
+            disabled={props.config.disabled}
+            formName={props.formName}
+            renderCompFunction={FormControlRenderMethod}
+            viewType={viewType}
+          />
+        ) : (
+          FormControlRenderMethod()
+        )}
+      </div>
+    </FormConfig>
+  ) : null;
 }
 
 // Updated the memo function to allow for disabled props to be compared

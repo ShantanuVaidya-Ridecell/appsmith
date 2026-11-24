@@ -2,16 +2,22 @@ name: Docker Base Image
 
 on:
   workflow_dispatch:
+  # Rebuild every weekday so the `release` base tag carries the current OS
+  # security updates. Every image build starts from this tag.
+  schedule:
+    - cron: "0 5 * * MON-FRI"
   push:
     branches:
       - release
-      - master
     paths:
       - "deploy/docker/base.dockerfile"
 
 jobs:
   build-docker:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
 
     defaults:
       run:
@@ -27,27 +33,27 @@ jobs:
           username: ${{ secrets.DOCKER_HUB_USERNAME }}
           password: ${{ secrets.DOCKER_HUB_ACCESS_TOKEN }}
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
+      # Builds from release publish the `release` tag, which every image build uses.
+      # A manual run on another branch publishes a tag named after that branch, for testing.
       - name: Get tag
         id: tag
         run: |
           tag="${GITHUB_REF_NAME//\//-}"
-          if [[ "$tag" == master ]]; then
-            tag=nightly
-          fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
+      - name: Set up Depot CLI
+        uses: depot/setup-action@v1
+
       - name: Build and push base image
-        uses: docker/build-push-action@v5
+        uses: depot/build-push-action@v1
         with:
+          project: ${{ secrets.DEPOT_PROJECT_ID }}
           context: .
           file: deploy/docker/base.dockerfile
           push: true
+          pull: true
+          # do not cache so we get fresh OS packages each time
+          no-cache: true
           platforms: linux/arm64,linux/amd64
           tags: |
             ${{ vars.DOCKER_HUB_ORGANIZATION }}/base-${{ vars.EDITION }}:${{ steps.tag.outputs.tag }}

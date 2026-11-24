@@ -1,7 +1,6 @@
 package com.appsmith.server.imports.internal.partial;
 
 import com.appsmith.external.models.Datasource;
-import com.appsmith.server.actioncollections.base.ActionCollectionService;
 import com.appsmith.server.applications.base.ApplicationService;
 import com.appsmith.server.datasources.base.DatasourceService;
 import com.appsmith.server.domains.ActionCollection;
@@ -25,7 +24,6 @@ import com.appsmith.server.repositories.PermissionGroupRepository;
 import com.appsmith.server.services.AnalyticsService;
 import com.appsmith.server.services.ApplicationPageService;
 import com.appsmith.server.services.ApplicationTemplateService;
-import com.appsmith.server.services.SessionUserService;
 import com.appsmith.server.services.WorkspaceService;
 import com.appsmith.server.solutions.ActionPermission;
 import com.appsmith.server.solutions.ApplicationPermission;
@@ -52,7 +50,6 @@ public class PartialImportServiceImpl extends PartialImportServiceCEImpl impleme
             ApplicationPermission applicationPermission,
             PagePermission pagePermission,
             ActionPermission actionPermission,
-            SessionUserService sessionUserService,
             TransactionalOperator transactionalOperator,
             PermissionGroupRepository permissionGroupRepository,
             ImportableService<Plugin> pluginImportableService,
@@ -67,7 +64,6 @@ public class PartialImportServiceImpl extends PartialImportServiceCEImpl impleme
             WidgetRefactorUtil widgetRefactorUtil,
             ApplicationPageService applicationPageService,
             NewActionService newActionService,
-            ActionCollectionService actionCollectionService,
             ArtifactBasedImportService<Application, ApplicationImportDTO, ApplicationJson> applicationImportService,
             DatasourceService datasourceService,
             CustomJSLibService customJSLibService,
@@ -83,7 +79,6 @@ public class PartialImportServiceImpl extends PartialImportServiceCEImpl impleme
                 applicationPermission,
                 pagePermission,
                 actionPermission,
-                sessionUserService,
                 transactionalOperator,
                 permissionGroupRepository,
                 pluginImportableService,
@@ -98,7 +93,6 @@ public class PartialImportServiceImpl extends PartialImportServiceCEImpl impleme
                 widgetRefactorUtil,
                 applicationPageService,
                 newActionService,
-                actionCollectionService,
                 applicationImportService,
                 datasourceService,
                 customJSLibService,

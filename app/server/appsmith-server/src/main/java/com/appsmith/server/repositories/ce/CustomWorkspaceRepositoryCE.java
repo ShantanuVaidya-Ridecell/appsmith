@@ -13,7 +13,15 @@ public interface CustomWorkspaceRepositoryCE extends AppsmithRepository<Workspac
 
     Mono<Workspace> findByName(String name, AclPermission aclPermission);
 
-    Flux<Workspace> findByIdsIn(Set<String> workspaceIds, String tenantId, AclPermission aclPermission, Sort sort);
+    Flux<Workspace> findByIdsIn(
+            Set<String> workspaceIds, String organizationId, AclPermission aclPermission, Sort sort);
 
     Flux<Workspace> findAll(AclPermission permission);
+
+    /**
+     * Counts workspaces that are not deleted, for support diagnostics.
+     *
+     * <p>No ACL. Call only behind the super-user check in {@code SupportDiagnosticsServiceCEImpl}.
+     */
+    Mono<Long> countForDiagnostics();
 }

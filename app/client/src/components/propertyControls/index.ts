@@ -6,8 +6,8 @@ import type { SwitchControlProps } from "components/propertyControls/SwitchContr
 import SwitchControl from "components/propertyControls/SwitchControl";
 import OptionControl from "components/propertyControls/OptionControl";
 import type { ControlProps } from "components/propertyControls/BaseControl";
-import type BaseControl from "components/propertyControls/BaseControl";
 import CodeEditorControl from "components/propertyControls/CodeEditorControl";
+import type BaseControl from "components/propertyControls/BaseControl";
 import type { DatePickerControlProps } from "components/propertyControls/DatePickerControl";
 import DatePickerControl from "components/propertyControls/DatePickerControl";
 import ChartDataControl from "components/propertyControls/ChartDataControl";
@@ -45,6 +45,8 @@ import ButtonControl from "./ButtonControl";
 import LabelAlignmentOptionsControl from "./LabelAlignmentOptionsControl";
 import type { NumericInputControlProps } from "./NumericInputControl";
 import NumericInputControl from "./NumericInputControl";
+import type { ClearableNumericInputControlProps } from "./ClearableNumericInputControl";
+import ClearableNumericInputControl from "./ClearableNumericInputControl";
 import PrimaryColumnsControlV2 from "components/propertyControls/PrimaryColumnsControlV2";
 import type { SelectDefaultValueControlProps } from "./SelectDefaultValueControl";
 import SelectDefaultValueControl from "./SelectDefaultValueControl";
@@ -77,6 +79,10 @@ import IconSelectControlV2 from "./IconSelectControlV2";
 import PrimaryColumnsControlWDS from "./PrimaryColumnsControlWDS";
 import ToolbarButtonListControl from "./ToolbarButtonListControl";
 import ArrayControl from "./ArrayControl";
+import TableCustomSortControl, {
+  type TableCustomSortControlProps,
+} from "./TableCustomSortControl";
+import EEPropertyControls from "ee/components/propertyControls";
 
 export const PropertyControls = {
   InputTextControl,
@@ -114,6 +120,7 @@ export const PropertyControls = {
   ButtonControl,
   LabelAlignmentOptionsControl,
   NumericInputControl,
+  ClearableNumericInputControl,
   PrimaryColumnColorPickerControl,
   PrimaryColumnColorPickerControlV2,
   SelectDefaultValueControl,
@@ -130,6 +137,8 @@ export const PropertyControls = {
   IconSelectControlV2,
   PrimaryColumnsControlWDS,
   ToolbarButtonListControl,
+  TableCustomSortControl,
+  ...EEPropertyControls,
 };
 
 export type PropertyControlPropsType =
@@ -146,6 +155,7 @@ export type PropertyControlPropsType =
   | ComputeTablePropertyControlProps
   | PrimaryColumnDropdownControlProps
   | NumericInputControlProps
+  | ClearableNumericInputControlProps
   | PrimaryColumnColorPickerControlProps
   | ComputeTablePropertyControlPropsV2
   | MenuButtonDynamicItemsControlProps
@@ -158,7 +168,8 @@ export type PropertyControlPropsType =
   | WrappedCodeEditorControlProps
   | ZoneStepperControlProps
   | SectionSplitterControlProps
-  | IconSelectControlV2Props;
+  | IconSelectControlV2Props
+  | TableCustomSortControlProps;
 
 export const getPropertyControlTypes = (): { [key: string]: string } => {
   const _types: { [key: string]: string } = {};

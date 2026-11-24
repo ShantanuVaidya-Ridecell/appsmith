@@ -8,9 +8,9 @@ import type { ValidationTypes } from "constants/WidgetValidation";
 import type { Datasource } from "entities/Datasource";
 import { PluginPackageName, PluginType } from "entities/Plugin";
 import type { WidgetType } from "constants/WidgetConstants";
-import type { EntityTypeValue } from "entities/DataTree/dataTreeFactory";
+import type { EntityTypeValue } from "ee/entities/DataTree/types";
 import { getPluginByPackageName } from "ee/selectors/entitiesSelector";
-import type { AppState } from "ee/reducers";
+import type { DefaultRootState } from "react-redux";
 import WidgetFactory from "WidgetProvider/factory";
 import {
   CurlIconV2,
@@ -98,7 +98,10 @@ export const filterEntityTypeLabels: Partial<Record<EntityTypeValue, string>> =
     JSACTION: "JS Objects",
   };
 
-export const getSnippetFilterLabel = (state: AppState, label: string) => {
+export const getSnippetFilterLabel = (
+  state: DefaultRootState,
+  label: string,
+) => {
   return (
     WidgetFactory.widgetConfigMap.get(label as WidgetType)?.widgetName ||
     getPluginByPackageName(state, label)?.name ||
@@ -254,7 +257,7 @@ export const getEntityId = (entity: {
     case FocusEntity.QUERY:
     case FocusEntity.JS_OBJECT:
       return entity.config?.id;
-    case FocusEntity.PROPERTY_PANE:
+    case FocusEntity.WIDGET:
       return entity.widgetId;
     case FocusEntity.CANVAS:
     case FocusEntity.EDITOR:

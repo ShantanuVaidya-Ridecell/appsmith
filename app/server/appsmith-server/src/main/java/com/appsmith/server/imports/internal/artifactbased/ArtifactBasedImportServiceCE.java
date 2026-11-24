@@ -19,7 +19,7 @@ import java.util.Set;
 public interface ArtifactBasedImportServiceCE<
         T extends Artifact, U extends ArtifactImportDTO, V extends ArtifactExchangeJson> {
 
-    ImportArtifactPermissionProvider getImportArtifactPermissionProviderForImportingArtifact(
+    Mono<ImportArtifactPermissionProvider> getImportArtifactPermissionProviderForImportingArtifact(
             Set<String> userPermissions);
 
     ImportArtifactPermissionProvider getImportArtifactPermissionProviderForUpdatingArtifact(
@@ -49,6 +49,27 @@ public interface ArtifactBasedImportServiceCE<
      * @param artifactExchangeJson
      */
     void setJsonArtifactNameToNullBeforeUpdate(String artifactId, ArtifactExchangeJson artifactExchangeJson);
+
+    /**
+     * Strips identity fields (e.g. primary key {@code id}, {@code baseId}, foreign-key pointers like
+     * {@code gitApplicationMetadata} or {@code datasourceId}, plus audit fields like {@code createdAt},
+     * {@code updatedAt}, {@code policies}) from every domain object reachable through the
+     * {@link ArtifactExchangeJson}. Retains the legitimate correlation key {@code gitSyncId} and any
+     * name-based cross-references the importer rewires via name-maps.
+     *
+     * <p>This is a defensive step invoked once at the top of the import pipeline, before validation and
+     * before any importable service consumes the JSON. It ensures that a crafted or otherwise polluted
+     * JSON cannot overwrite existing database documents by carrying attacker-controlled ids.
+     *
+     * <p>Implementations should delegate to the canonical {@code sanitiseToExportDBObject()} and
+     * {@code makePristine()} on each entity, mirroring what a freshly-exported JSON looks like, with a
+     * narrow carve-out for entities whose composite {@code id} is consumed by the importer as a wiring
+     * key (e.g. {@code NewAction}/{@code ActionCollection}); those entities rely on the existing
+     * save-time {@code makePristine()} in their per-service importers.
+     *
+     * @param artifactExchangeJson the incoming JSON payload; mutated in place
+     */
+    default void sanitizeJsonForImport(ArtifactExchangeJson artifactExchangeJson) {}
 
     U getImportableArtifactDTO(Artifact importableArtifact, List<Datasource> datasourceList, String environmentId);
 
@@ -155,4 +176,30 @@ public interface ArtifactBasedImportServiceCE<
     Flux<String> getBranchedArtifactIdsByBranchedArtifactId(String branchedArtifactId);
 
     Mono<V> migrateArtifactExchangeJson(String branchedArtifactId, ArtifactExchangeJson artifactExchangeJson);
+
+    Mono<T> getImportedArtifactFromDatabase(String artifactId);
+
+    /**
+     * Performs post-import processing for an artifact after it has been successfully imported
+     * and the database transaction has been committed.
+     *
+     * <p>This hook is called outside the main import transaction, allowing for operations that:
+     * <ul>
+     *   <li>May require the imported entities to be fully persisted in the database</li>
+     *   <li>Can safely fail without rolling back the import transaction</li>
+     *   <li>Need to trigger additional workflows based on the imported artifact</li>
+     * </ul>
+     *
+     * <p><b>CE Implementation (Applications):</b> Updates all page layouts to ensure DSL
+     * bindings are correctly resolved with the newly imported actions and widgets.</p>
+     *
+     * <p><b>EE Implementation (Applications):</b> Additionally performs a Just-In-Time (JIT)
+     * package pull before updating layouts, ensuring module instances from connected packages
+     * are available when computing layouts.</p>
+     *
+     * @param artifact The imported artifact that requires post-processing.
+     * @return A {@link Mono} that completes when the post-import processing is finished.
+     *         Errors are logged but do not fail the overall import operation.
+     */
+    Mono<Void> postImportHook(Artifact artifact);
 }

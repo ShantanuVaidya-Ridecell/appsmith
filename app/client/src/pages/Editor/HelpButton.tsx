@@ -4,7 +4,10 @@ import { HELP_MODAL_WIDTH } from "constants/HelpConstants";
 import AnalyticsUtil from "ee/utils/AnalyticsUtil";
 import { getCurrentUser } from "selectors/usersSelectors";
 import { useDispatch, useSelector } from "react-redux";
-import bootIntercom, { updateIntercomProperties } from "utils/bootIntercom";
+import bootPylon, {
+  isPylonChatAvailable,
+  updatePylonChatIdentity,
+} from "utils/bootPylon";
 import {
   APPSMITH_DISPLAY_VERSION,
   CONTINUE,
@@ -35,10 +38,15 @@ import {
 import SignpostingPopup from "pages/Editor/FirstTimeUserOnboarding/Modal";
 import { showSignpostingModal } from "actions/onboardingActions";
 import TooltipContent from "./FirstTimeUserOnboarding/TooltipContent";
-import { getInstanceId } from "ee/selectors/tenantSelectors";
+import { getInstanceId } from "ee/selectors/organizationSelectors";
 import { updateIntercomConsent, updateUserDetails } from "actions/userActions";
+import { getIsAiAgentApp } from "ee/selectors/aiAgentSelectors";
+import { DOCS_AI_BASE_URL } from "constants/ThirdPartyConstants";
+import BetterbugsUtil from "utils/Analytics/betterbugs";
+import { isAirgapped } from "ee/utils/airgapHelpers";
+import { useBetterbugsMetadata } from "ee/hooks/useBetterbugsMetadata";
 
-const { appVersion, cloudHosting, intercomAppID } = getAppsmithConfigs();
+const { appVersion, betterbugs, cloudHosting } = getAppsmithConfigs();
 
 const HelpFooter = styled.div`
   display: flex;
@@ -72,7 +80,7 @@ interface HelpItem {
   icon: string;
 }
 
-const HELP_MENU_ITEMS: HelpItem[] = [
+let HELP_MENU_ITEMS: HelpItem[] = [
   {
     icon: "book-line",
     label: "Documentation",
@@ -85,11 +93,19 @@ const HELP_MENU_ITEMS: HelpItem[] = [
   },
 ];
 
-if (intercomAppID && window.Intercom) {
+if (betterbugs.enabled && !isAirgapped()) {
+  HELP_MENU_ITEMS.push({
+    icon: "support",
+    label: "Send support info",
+    id: "betterbugs-trigger",
+  });
+}
+
+if (isPylonChatAvailable()) {
   HELP_MENU_ITEMS.push({
     icon: "chat-help",
     label: "Chat with us",
-    id: "intercom-trigger",
+    id: "pylon-trigger",
   });
 }
 
@@ -105,7 +121,7 @@ export function IntercomConsent({
   const sendUserDataToIntercom = async () => {
     const { email } = user || {};
 
-    updateIntercomProperties(instanceId, user);
+    updatePylonChatIdentity(instanceId, user);
     dispatch(
       updateUserDetails({
         intercomConsentGiven: true,
@@ -121,7 +137,7 @@ export function IntercomConsent({
       });
     }
 
-    window.Intercom("show");
+    window.Pylon("show");
   };
 
   return (
@@ -160,10 +176,11 @@ function HelpButtonTooltip(props: {
   return <>{createMessage(HELP_RESOURCE_TOOLTIP)}</>;
 }
 
-function HelpButton() {
+function HelpButtonMenu() {
   const [showIntercomConsent, setShowIntercomConsent] = useState(false);
   const [showTooltip, setShowTooltip] = useState(false);
   const user = useSelector(getCurrentUser);
+  const instanceId = useSelector(getInstanceId);
   const dispatch = useDispatch();
   const isFirstTimeUserOnboardingEnabled = useSelector(
     getIsFirstTimeUserOnboardingEnabled,
@@ -172,6 +189,8 @@ function HelpButton() {
   const onboardingModalOpen = useSelector(getFirstTimeUserOnboardingModal);
   const unreadSteps = useSelector(getSignpostingUnreadSteps);
   const setOverlay = useSelector(getSignpostingSetOverlay);
+  const betterbugsMetadata = useBetterbugsMetadata();
+
   const showUnreadSteps =
     !!unreadSteps.length &&
     isFirstTimeUserOnboardingEnabled &&
@@ -188,9 +207,25 @@ function HelpButton() {
       }
     : {};
 
+  const isAgentApp = useSelector(getIsAiAgentApp);
+
+  if (isAgentApp) {
+    const docItem = HELP_MENU_ITEMS.find(
+      (item) => item.label === "Documentation",
+    );
+
+    if (docItem) {
+      docItem.link = DOCS_AI_BASE_URL;
+    }
+
+    HELP_MENU_ITEMS = HELP_MENU_ITEMS.filter(
+      (item) => item.label !== "Report a bug",
+    );
+  }
+
   useEffect(() => {
-    bootIntercom(user);
-  }, [user?.email]);
+    bootPylon(user);
+  }, [user?.email, user?.emailVerificationHash, user?.name, user?.username]);
 
   return (
     <Menu
@@ -263,16 +298,22 @@ function HelpButton() {
                       window.open(item.link, "_blank");
                     }
 
-                    if (item.id === "intercom-trigger") {
+                    if (item.id === "pylon-trigger") {
                       e?.preventDefault();
 
-                      if (intercomAppID && window.Intercom) {
+                      if (isPylonChatAvailable()) {
                         if (user?.isIntercomConsentGiven || cloudHosting) {
-                          window.Intercom("show");
+                          updatePylonChatIdentity(instanceId, user);
+                          window.Pylon("show");
                         } else {
                           setShowIntercomConsent(true);
                         }
                       }
+                    }
+
+                    if (item.id === "betterbugs-trigger") {
+                      e?.preventDefault();
+                      BetterbugsUtil.show(user, betterbugsMetadata);
                     }
                   }}
                   startIcon={item.icon}
@@ -306,6 +347,12 @@ function HelpButton() {
       )}
     </Menu>
   );
+}
+
+function HelpButton() {
+  if (getAppsmithConfigs().disableHelpIcon) return null;
+
+  return <HelpButtonMenu />;
 }
 
 export default HelpButton;

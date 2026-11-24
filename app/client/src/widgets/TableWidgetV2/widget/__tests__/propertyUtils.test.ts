@@ -1,4 +1,8 @@
 import {
+  infiniteScrollUpdateHook,
+  updateAllowAddNewRowOnInfiniteScrollChange,
+} from "../propertyUtils";
+import {
   totalRecordsCountValidation,
   uniqueColumnNameValidation,
   updateColumnStyles,
@@ -9,6 +13,7 @@ import {
   updateCustomColumnAliasOnLabelChange,
   selectColumnOptionsValidation,
   allowedFirstDayOfWeekRange,
+  updateSearchSortFilterOnInfiniteScrollChange,
 } from "../propertyUtils";
 import _ from "lodash";
 import type { ColumnTypes, TableWidgetProps } from "../../constants";
@@ -1047,5 +1052,114 @@ describe("allowedFirstDayOfWeekRange", () => {
       parsed: 0,
       messages: ["Number should be between 0-6."],
     });
+  });
+});
+
+describe("Infinite Scroll Update Hooks - ", () => {
+  it("infiniteScrollUpdateHook - should not change add new row, search, filter, sort when infinite scroll is turned off", () => {
+    const props = {
+      allowAddNewRow: true,
+      isVisibleSearch: true,
+      isVisibleFilters: true,
+      isSortable: true,
+    } as unknown as TableWidgetProps;
+
+    expect(
+      infiniteScrollUpdateHook(props, "infiniteScrollEnabled", false),
+    ).toBeUndefined();
+  });
+
+  it("updateAllowAddNewRowOnInfiniteScrollChange - should disable add new row when infinite scroll is turned on", () => {
+    const props = {} as TableWidgetProps;
+
+    expect(
+      updateAllowAddNewRowOnInfiniteScrollChange(
+        props,
+        "infiniteScrollEnabled",
+        true,
+      ),
+    ).toEqual([
+      {
+        propertyPath: "allowAddNewRow",
+        propertyValue: false,
+      },
+    ]);
+  });
+
+  it("updateAllowAddNewRowOnInfiniteScrollChange - should leave add new row as it is when infinite scroll is turned off", () => {
+    const props = { allowAddNewRow: false } as TableWidgetProps;
+
+    expect(
+      updateAllowAddNewRowOnInfiniteScrollChange(
+        props,
+        "infiniteScrollEnabled",
+        false,
+      ),
+    ).toBeUndefined();
+  });
+
+  it("updateAllowAddNewRowOnInfiniteScrollChange - should not update add new row for a non-boolean value", () => {
+    const props = {} as TableWidgetProps;
+
+    expect(
+      updateAllowAddNewRowOnInfiniteScrollChange(
+        props,
+        "infiniteScrollEnabled",
+        "some-other-value",
+      ),
+    ).toBeUndefined();
+  });
+
+  it("updateSearchSortFilterOnInfiniteScrollChange - should disable search, filter, sort when infinite scroll is turned on", () => {
+    const props = {} as TableWidgetProps;
+
+    expect(
+      updateSearchSortFilterOnInfiniteScrollChange(
+        props,
+        "infiniteScrollEnabled",
+        true,
+      ),
+    ).toEqual([
+      {
+        propertyPath: "isVisibleSearch",
+        propertyValue: false,
+      },
+      {
+        propertyPath: "isVisibleFilters",
+        propertyValue: false,
+      },
+      {
+        propertyPath: "isSortable",
+        propertyValue: false,
+      },
+    ]);
+  });
+
+  it("updateSearchSortFilterOnInfiniteScrollChange - should leave search, filter, sort as they are when infinite scroll is turned off", () => {
+    const props = {
+      isVisibleSearch: false,
+      isVisibleFilters: false,
+      isSortable: false,
+    } as unknown as TableWidgetProps;
+
+    expect(
+      updateSearchSortFilterOnInfiniteScrollChange(
+        props,
+        "infiniteScrollEnabled",
+        false,
+      ),
+    ).toBeUndefined();
+  });
+
+  it("updateSearchSortFilterOnInfiniteScrollChange - should not update search, filter, sort for a non-boolean value", () => {
+    const props = {} as TableWidgetProps;
+
+    expect(
+      updateSearchSortFilterOnInfiniteScrollChange(
+        props,
+        "infiniteScrollEnabled",
+        "some-other-value",
+      ),
+    ).toBeUndefined();
   });
 });

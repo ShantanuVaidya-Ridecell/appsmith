@@ -19,7 +19,7 @@ public interface UserServiceCE extends CrudService<User, String> {
 
     Mono<User> findByEmail(String email);
 
-    Mono<User> findByEmailAndTenantId(String email, String tenantId);
+    Mono<User> findByEmailAndOrganizationId(String email, String organizationId);
 
     Mono<Boolean> forgotPasswordTokenGenerate(ResetUserPasswordDTO resetUserPasswordDTO);
 
@@ -36,6 +36,10 @@ public interface UserServiceCE extends CrudService<User, String> {
     Mono<User> updateCurrentUser(UserUpdateDTO updates, ServerWebExchange exchange);
 
     Mono<Boolean> isUsersEmpty();
+
+    Mono<Boolean> claimSuperUserCreationSlot();
+
+    Mono<Void> releaseSuperUserCreationSlot();
 
     Mono<UserProfileDTO> buildUserProfileDTO(User user);
 

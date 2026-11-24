@@ -7,7 +7,7 @@ import { ValidationTypes } from "constants/WidgetValidation";
 import React, { lazy, Suspense } from "react";
 import showdown from "showdown";
 import { retryPromise } from "utils/AppsmithUtils";
-import type { DerivedPropertiesMap } from "WidgetProvider/factory";
+import type { DerivedPropertiesMap } from "WidgetProvider/factory/types";
 import {
   isAutoHeightEnabledForWidget,
   DefaultAutocompleteDefinitions,
@@ -20,7 +20,7 @@ import type { SetterConfig, Stylesheet } from "entities/AppTheming";
 import type {
   AnvilConfig,
   AutocompletionDefinitions,
-} from "WidgetProvider/constants";
+} from "WidgetProvider/types";
 import { FILL_WIDGET_MIN_WIDTH } from "constants/minWidthConstants";
 import {
   FlexVerticalAlignment,
@@ -33,7 +33,7 @@ import ThumbnailSVG from "../thumbnail.svg";
 import type {
   SnipingModeProperty,
   PropertyUpdates,
-} from "WidgetProvider/constants";
+} from "WidgetProvider/types";
 import { WIDGET_TAGS } from "constants/WidgetConstants";
 
 export enum RTEFormats {
@@ -549,6 +549,7 @@ class RichTextEditorWidget extends BaseWidget<
           isDisabled={this.props.isDisabled}
           isDynamicHeightEnabled={isAutoHeightEnabledForWidget(this.props)}
           isMarkdown={this.props.inputType === RTEFormats.MARKDOWN}
+          isRequired={this.props.isRequired}
           isToolbarHidden={!!this.props.isToolbarHidden}
           isValid={this.props.isValid}
           isVisible={this.props.isVisible}

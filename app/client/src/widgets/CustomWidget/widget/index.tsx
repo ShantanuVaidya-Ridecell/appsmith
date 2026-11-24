@@ -1,6 +1,6 @@
 import React from "react";
 
-import type { DerivedPropertiesMap } from "WidgetProvider/factory";
+import type { DerivedPropertiesMap } from "WidgetProvider/factory/types";
 
 import type { WidgetProps, WidgetState } from "widgets/BaseWidget";
 import BaseWidget from "widgets/BaseWidget";
@@ -17,7 +17,7 @@ import type {
   Stylesheet,
 } from "entities/AppTheming";
 import { DefaultAutocompleteDefinitions } from "widgets/WidgetUtils";
-import type { AutocompletionDefinitions } from "WidgetProvider/constants";
+import type { AutocompletionDefinitions } from "WidgetProvider/types";
 import { EventType } from "constants/AppsmithActionConstants/ActionConstants";
 import { DEFAULT_MODEL } from "../constants";
 import defaultApp from "./defaultApp";
@@ -32,7 +32,6 @@ import { Link } from "@appsmith/ads";
 import styled from "styled-components";
 import { ReduxActionTypes } from "ee/constants/ReduxActionConstants";
 import { Colors } from "constants/Colors";
-import AnalyticsUtil from "ee/utils/AnalyticsUtil";
 import { DynamicHeight, type WidgetFeatures } from "utils/WidgetFeatures";
 import { isAirgapped } from "ee/utils/airgapHelpers";
 
@@ -407,11 +406,6 @@ class CustomWidget extends BaseWidget<CustomWidgetProps, WidgetState> {
         },
         globalContext: contextObj,
       });
-
-      AnalyticsUtil.logEvent("CUSTOM_WIDGET_API_TRIGGER_EVENT", {
-        widgetId: this.props.widgetId,
-        eventName,
-      });
     }
   };
 
@@ -419,10 +413,6 @@ class CustomWidget extends BaseWidget<CustomWidgetProps, WidgetState> {
     this.props.updateWidgetMetaProperty("model", {
       ...this.props.model,
       ...data,
-    });
-
-    AnalyticsUtil.logEvent("CUSTOM_WIDGET_API_UPDATE_MODEL", {
-      widgetId: this.props.widgetId,
     });
   };
 

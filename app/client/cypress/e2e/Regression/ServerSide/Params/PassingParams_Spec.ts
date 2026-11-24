@@ -22,7 +22,7 @@ let jsName: any, dsName: any;
 
 describe(
   "Bug #10784 - Passing params from JS to SQL query should not break",
-  { tags: ["@tag.Datasource", "@tag.Git", "@tag.AccessControl"] },
+  { tags: ["@tag.Datasource", "@tag.AccessControl"] },
   () => {
     before(() => {
       entityExplorer.DragDropWidgetNVerify(draggableWidgets.BUTTON, 100, 100);
@@ -76,7 +76,7 @@ describe(
       propPane.EnterJSContext("Table data", "{{ParamsTest.data}}");
 
       EditorNavigation.SelectEntityByName("ParamsTest", EntityType.Query);
-      apiPage.ToggleOnPageLoadRun(false); //Bug 12476
+      apiPage.ToggleOnPageLoadRun("Manual"); //Bug 12476
 
       deployMode.DeployApp(locators._buttonByText("Submit"));
       agHelper.SelectDropDown("7");

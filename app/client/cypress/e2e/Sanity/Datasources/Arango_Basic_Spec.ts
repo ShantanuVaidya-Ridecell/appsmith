@@ -23,12 +23,7 @@ if (CURRENT_REPO == REPO.CE) {
   describe(
     "Validate Arango & CURL Import Datasources",
     {
-      tags: [
-        "@tag.Datasource",
-        "@tag.Sanity",
-        "@tag.Git",
-        "@tag.AccessControl",
-      ],
+      tags: ["@tag.Datasource", "@tag.Sanity", "@tag.AccessControl"],
     },
     () => {
       let dsName: any,
@@ -334,14 +329,14 @@ if (CURRENT_REPO == REPO.CE) {
         dataSources.EnterQuery(query);
         dataSources.RunQuery();
         dataSources.AddSuggestedWidget(Widgets.Table); //Binding to new table from schema explorer
-        propPane.AssertPropertiesDropDownCurrentValue("Table data", "Query6");
+        propPane.ValidatePropertyFieldValue("Table data", "{{Query6.data}}");
 
         EditorNavigation.SelectEntityByName("Query6", EntityType.Query);
         dataSources.AddSuggestedWidget(
           Widgets.Table,
           dataSources._addSuggestedExisting,
         );
-        propPane.AssertPropertiesDropDownCurrentValue("Table data", "Query6");
+        propPane.ValidatePropertyFieldValue("Table data", "{{Query6.data}}");
       });
 
       //To add test for duplicate collection name

@@ -36,6 +36,7 @@ import com.appsmith.server.solutions.ApplicationPermission;
 import com.appsmith.server.solutions.DatasourcePermission;
 import com.appsmith.server.solutions.PagePermission;
 import com.appsmith.server.solutions.WorkspacePermission;
+import com.appsmith.server.staticurl.StaticUrlService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.collections.CollectionUtils;
@@ -53,10 +54,8 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
 
-import static com.appsmith.server.constants.FieldName.PUBLISHED;
 import static com.appsmith.server.constants.FieldName.UNPUBLISHED;
 import static com.appsmith.server.helpers.ImportExportUtils.setPropertiesToExistingApplication;
-import static com.appsmith.server.helpers.ImportExportUtils.setPublishedApplicationProperties;
 import static org.springframework.util.StringUtils.hasText;
 
 @RequiredArgsConstructor
@@ -66,6 +65,7 @@ public class ApplicationImportServiceCEImpl
         implements ArtifactBasedImportServiceCE<Application, ApplicationImportDTO, ApplicationJson> {
 
     private final ApplicationService applicationService;
+    protected final StaticUrlService staticUrlService;
     private final ApplicationPageService applicationPageService;
     private final NewActionService newActionService;
     private final UpdateLayoutService updateLayoutService;
@@ -82,7 +82,8 @@ public class ApplicationImportServiceCEImpl
     private final ImportableService<ActionCollection> actionCollectionImportableService;
 
     /**
-     * This map keeps constants which are specific to context of Application, parallel to other Artifacts.
+     * This map keeps constants which are specific to context of Application,
+     * parallel to other Artifacts.
      * i.e. Artifact --> Application
      * i.e. ID --> applicationId
      */
@@ -90,19 +91,21 @@ public class ApplicationImportServiceCEImpl
             Map.of(FieldName.ARTIFACT_CONTEXT, FieldName.APPLICATION, FieldName.ID, FieldName.APPLICATION_ID);
 
     @Override
-    public ImportArtifactPermissionProvider getImportArtifactPermissionProviderForImportingArtifact(
+    public Mono<ImportArtifactPermissionProvider> getImportArtifactPermissionProviderForImportingArtifact(
             Set<String> userPermissionGroups) {
-        return ImportArtifactPermissionProvider.builder(
-                        applicationPermission,
-                        pagePermission,
-                        actionPermission,
-                        datasourcePermission,
-                        workspacePermission)
-                .requiredPermissionOnTargetWorkspace(workspacePermission.getApplicationCreatePermission())
-                .permissionRequiredToCreateDatasource(true)
-                .permissionRequiredToEditDatasource(true)
-                .currentUserPermissionGroups(userPermissionGroups)
-                .build();
+        return workspacePermission
+                .getApplicationCreatePermission()
+                .map(appCreatePermission -> ImportArtifactPermissionProvider.builder(
+                                applicationPermission,
+                                pagePermission,
+                                actionPermission,
+                                datasourcePermission,
+                                workspacePermission)
+                        .requiredPermissionOnTargetWorkspace(appCreatePermission)
+                        .permissionRequiredToCreateDatasource(true)
+                        .permissionRequiredToEditDatasource(true)
+                        .currentUserPermissionGroups(userPermissionGroups)
+                        .build());
     }
 
     @Override
@@ -122,12 +125,17 @@ public class ApplicationImportServiceCEImpl
     }
 
     /**
-     * If the application is connected to git, then the user must have edit permission on the application.
-     * If user is importing application from Git, create application permission is already checked by the
+     * If the application is connected to git, then the user must have edit
+     * permission on the application.
+     * If user is importing application from Git, create application permission is
+     * already checked by the
      * caller method, so it's not required here.
-     * Other permissions are not required because Git is the source of truth for the application and Git
-     * Sync is a system level operation to get the latest code from Git. If the user does not have some
-     * permissions on the Application e.g. create page, that'll be checked when the user tries to create a page.
+     * Other permissions are not required because Git is the source of truth for the
+     * application and Git
+     * Sync is a system level operation to get the latest code from Git. If the user
+     * does not have some
+     * permissions on the Application e.g. create page, that'll be checked when the
+     * user tries to create a page.
      */
     @Override
     public ImportArtifactPermissionProvider getImportArtifactPermissionProviderForConnectingToGit(
@@ -175,11 +183,42 @@ public class ApplicationImportServiceCEImpl
     }
 
     /**
-     * this method removes the application name from Json file as updating the app-name is not supported via import
+     * Strips identity fields from the incoming {@link ApplicationJson} so a crafted or otherwise polluted
+     * payload cannot overwrite existing database documents via attacker-controlled ids.
+     *
+     * <p>This method handles only the artifact root (the {@link Application} itself). Per-entity
+     * sanitization is delegated to each injected {@link ImportableService#sanitizeEntitiesInJsonForImport
+     * sanitizeEntitiesInJsonForImport} implementation, which keeps the carve-out knowledge (e.g.
+     * {@code NewAction} preserving its composite id as a wiring key) co-located with the service that
+     * owns the entity.
+     */
+    @Override
+    public void sanitizeJsonForImport(ArtifactExchangeJson artifactExchangeJson) {
+        if (!(artifactExchangeJson instanceof ApplicationJson applicationJson)) {
+            return;
+        }
+
+        Application exportedApplication = applicationJson.getExportedApplication();
+        if (exportedApplication != null) {
+            exportedApplication.sanitiseToExportDBObject();
+            exportedApplication.makePristine();
+        }
+
+        themeImportableService.sanitizeEntitiesInJsonForImport(applicationJson);
+        newPageImportableService.sanitizeEntitiesInJsonForImport(applicationJson);
+        customJSLibImportableService.sanitizeEntitiesInJsonForImport(applicationJson);
+        newActionImportableService.sanitizeEntitiesInJsonForImport(applicationJson);
+        actionCollectionImportableService.sanitizeEntitiesInJsonForImport(applicationJson);
+    }
+
+    /**
+     * this method removes the application name from JSON file as updating the
+     * app-name is not supported via import
      * this avoids name conflict during import flow within workspace
      *
-     * @param applicationId : ID of the application which has been saved.
-     * @param artifactExchangeJson : the ArtifactExchangeJSON which is getting imported
+     * @param applicationId        : ID of the application which has been saved.
+     * @param artifactExchangeJson : the ArtifactExchangeJSON which is getting
+     *                             imported
      */
     @Override
     public void setJsonArtifactNameToNullBeforeUpdate(String applicationId, ArtifactExchangeJson artifactExchangeJson) {
@@ -197,7 +236,8 @@ public class ApplicationImportServiceCEImpl
             Mono<Application> importedApplicationMono,
             ApplicationJson applicationJson) {
 
-        // Requires pageNameMap, pageNameToOldNameMap, pluginMap and datasourceNameToIdMap to be present in importable
+        // Requires pageNameMap, pageNameToOldNameMap, pluginMap and
+        // datasourceNameToIdMap to be present in importable
         // resources.
         // Updates actionResultDTO in importable resources.
         // Also, directly updates required information in DB
@@ -208,7 +248,8 @@ public class ApplicationImportServiceCEImpl
                 importedApplicationMono,
                 applicationJson);
 
-        // Requires pageNameMap, pageNameToOldNameMap, pluginMap and actionResultDTO to be present in importable
+        // Requires pageNameMap, pageNameToOldNameMap, pluginMap and actionResultDTO to
+        // be present in importable
         // resources.
         // Updates actionCollectionResultDTO in importable resources.
         // Also, directly updates required information in DB
@@ -257,9 +298,11 @@ public class ApplicationImportServiceCEImpl
 
         ApplicationJson applicationJson = (ApplicationJson) artifactExchangeJson;
 
-        // Update the application JSON to prepare it for merging inside an existing application
+        // Update the application JSON to prepare it for merging inside an existing
+        // application
         if (applicationJson.getExportedApplication() != null) {
-            // setting some properties to null so that target application is not updated by these properties
+            // setting some properties to null so that target application is not updated by
+            // these properties
             applicationJson.getExportedApplication().setName(null);
             applicationJson.getExportedApplication().setSlug(null);
             applicationJson.getExportedApplication().setForkingEnabled(null);
@@ -289,9 +332,9 @@ public class ApplicationImportServiceCEImpl
                     .peek(newPage -> newPage.setGitSyncId(null))
                     .collect(Collectors.toList());
             applicationJson.setPageList(importedNewPageList);
-            // Remove the pages from the exported Application inside the json based on the pagesToImport
+            // Remove the pages from the exported Application inside the json based on the
+            // pagesToImport
             applicationJson.getExportedApplication().setPages(applicationPageList);
-            applicationJson.getExportedApplication().setPublishedPages(applicationPageList);
         }
         if (applicationJson.getActionList() != null) {
             List<NewAction> importedNewActionList = applicationJson.getActionList().stream()
@@ -299,8 +342,8 @@ public class ApplicationImportServiceCEImpl
                             && (CollectionUtils.isEmpty(entitiesToImport)
                                     || entitiesToImport.contains(
                                             newAction.getUnpublishedAction().getPageId())))
-                    .peek(newAction ->
-                            newAction.setGitSyncId(null)) // setting this null so that this action can be imported again
+                    .peek(newAction -> newAction.setGitSyncId(null)) // setting this null so that this action can be
+                    // imported again
                     .collect(Collectors.toList());
             applicationJson.setActionList(importedNewActionList);
         }
@@ -338,7 +381,7 @@ public class ApplicationImportServiceCEImpl
 
         // Persists relevant information and updates mapped resources
         return customJSLibImportableService.importEntities(
-                importingMetaDTO, mappedImportableResourcesDTO, null, null, (ApplicationJson) artifactExchangeJson);
+                importingMetaDTO, mappedImportableResourcesDTO, null, null, artifactExchangeJson);
     }
 
     @Override
@@ -348,11 +391,11 @@ public class ApplicationImportServiceCEImpl
 
     @Override
     public Mono<Application> updateAndSaveArtifactInContext(
-            Artifact importableArtifact,
+            Artifact artifactFromJson,
             ImportingMetaDTO importingMetaDTO,
             MappedImportableResourcesDTO mappedImportableResourcesDTO,
             Mono<User> currentUserMono) {
-        Mono<Application> importApplicationMono = Mono.just((Application) importableArtifact)
+        Mono<Application> importApplicationMono = Mono.just((Application) artifactFromJson)
                 .map(application -> {
                     if (application.getApplicationVersion() == null) {
                         application.setApplicationVersion(ApplicationVersion.EARLIEST_VERSION);
@@ -368,12 +411,7 @@ public class ApplicationImportServiceCEImpl
                             ? new ArrayList<>()
                             : application.getPages();
 
-                    List<ApplicationPage> publishedPages = CollectionUtils.isEmpty(application.getPublishedPages())
-                            ? new ArrayList<>()
-                            : application.getPublishedPages();
-
-                    Map<String, List<ApplicationPage>> mapOfApplicationPageList =
-                            Map.of(PUBLISHED, publishedPages, UNPUBLISHED, unPublishedPages);
+                    Map<String, List<ApplicationPage>> mapOfApplicationPageList = Map.of(UNPUBLISHED, unPublishedPages);
 
                     mappedImportableResourcesDTO
                             .getResourceStoreFromArtifactExchangeJson()
@@ -395,9 +433,12 @@ public class ApplicationImportServiceCEImpl
         });
 
         if (!StringUtils.hasText(importingMetaDTO.getArtifactId())) {
-            importApplicationMono = importApplicationMono.flatMap(application -> {
-                return applicationPageService.createOrUpdateSuffixedApplication(application, application.getName(), 0);
-            });
+            importApplicationMono = importApplicationMono
+                    .flatMap(staticUrlService::generateAndUpdateApplicationSlugForNewImports)
+                    .flatMap(application -> {
+                        return applicationPageService.createOrUpdateSuffixedApplication(
+                                application, application.getName(), 0);
+                    });
         } else {
             Mono<Application> existingApplicationMono = applicationService
                     .findById(
@@ -415,7 +456,8 @@ public class ApplicationImportServiceCEImpl
                     }))
                     .cache();
 
-            // this can be a git sync, import page from template, update app with json, restore snapshot
+            // this can be a git sync, import page from template, update app with JSON,
+            // restore snapshot
             if (importingMetaDTO.getAppendToArtifact()) { // we don't need to do anything with the imported application
                 if (!CollectionUtils.isEmpty(mappedImportableResourcesDTO.getInstalledJsLibsList())) {
                     Application update = new Application();
@@ -430,18 +472,23 @@ public class ApplicationImportServiceCEImpl
             } else {
                 importApplicationMono = importApplicationMono
                         .zipWith(existingApplicationMono)
-                        .map(objects -> {
-                            Application newApplication = objects.getT1();
-                            Application existingApplication = objects.getT2();
-                            // This method sets the published mode properties in the imported
-                            // application.When a user imports an application from the git repo,
-                            // since the git only stores the unpublished version, the current
-                            // deployed version in the newly imported app is not updated.
-                            // This function sets the initial deployed version to the same as the
-                            // edit mode one.
-                            setPublishedApplicationProperties(newApplication);
-                            setPropertiesToExistingApplication(newApplication, existingApplication);
-                            return existingApplication;
+                        .flatMap(applicationFromJsonAndDB -> {
+                            Application appFromJson = applicationFromJsonAndDB.getT1();
+                            Application existingAppFromDB = applicationFromJsonAndDB.getT2();
+
+                            return staticUrlService
+                                    .generateAndUpdateApplicationSlugForImportsOnExistingApps(
+                                            appFromJson, existingAppFromDB)
+                                    .map(appJsonWithUniqueSlug -> {
+                                        // This method sets the published mode properties in the imported
+                                        // application.When a user imports an application from the git repo,
+                                        // since the git only stores the unpublished version, the current
+                                        // deployed version in the newly imported app is not updated.
+                                        // This function sets the initial deployed version to the same as the
+                                        // edit mode one.
+                                        setPropertiesToExistingApplication(appJsonWithUniqueSlug, existingAppFromDB);
+                                        return existingAppFromDB;
+                                    });
                         })
                         .flatMap(application -> {
                             Mono<Application> parentApplicationMono;
@@ -481,37 +528,39 @@ public class ApplicationImportServiceCEImpl
                 });
     }
 
+    protected Mono<Application> updateAllPageLayouts(Application application) {
+        return Flux.fromIterable(application.getPages())
+                .map(ApplicationPage::getId)
+                .flatMap(pageId -> {
+                    return updateLayoutService.updatePageLayoutsByPageId(pageId).onErrorResume(throwable -> {
+                        // the error would most probably arise because of update layout error,
+                        // this shouldn't stop the application from getting imported.
+                        String errorMessage = ImportExportUtils.getErrorMessage(throwable);
+                        log.error("Error while updating layout. Error: {}", errorMessage, throwable);
+                        // continuing the execution
+                        return Mono.just("");
+                    });
+                })
+                .collectList()
+                .thenReturn(application);
+    }
+
     @Override
     public Mono<Application> updateImportableArtifact(Artifact importableArtifact) {
-        return Mono.just((Application) importableArtifact)
-                .flatMap(application -> {
-                    log.info("Imported application with id {}", application.getId());
-                    // Need to update the application object with updated pages and publishedPages
-                    Application updateApplication = new Application();
-                    updateApplication.setPages(application.getPages());
-                    updateApplication.setPublishedPages(application.getPublishedPages());
+        return Mono.just((Application) importableArtifact).flatMap(application -> {
+            log.info("Imported application with id {}", application.getId());
+            // Need to update the application object with updated pages
+            Application updateApplication = new Application();
+            updateApplication.setPages(application.getPages());
+            updateApplication.setUnpublishedThemeId(application.getUnpublishedThemeId());
+            return applicationService.update(application.getId(), updateApplication);
+        });
+    }
 
-                    return applicationService.update(application.getId(), updateApplication);
-                })
-                .flatMap(application -> {
-                    return Flux.fromIterable(application.getPages())
-                            .map(ApplicationPage::getId)
-                            .flatMap(pageId -> {
-                                return updateLayoutService
-                                        .updatePageLayoutsByPageId(pageId)
-                                        .onErrorResume(throwable -> {
-                                            // the error would most probably arise because of update layout error,
-                                            // this shouldn't stop the application from getting imported.
-                                            String errorMessage = ImportExportUtils.getErrorMessage(throwable);
-                                            log.error(
-                                                    "Error while updating layout. Error: {}", errorMessage, throwable);
-                                            // continuing the execution
-                                            return Mono.just("");
-                                        });
-                            })
-                            .collectList()
-                            .thenReturn(application);
-                });
+    @Override
+    public Mono<Void> postImportHook(Artifact artifact) {
+        Application application = (Application) artifact;
+        return updateAllPageLayouts(application).then();
     }
 
     @Override
@@ -669,5 +718,10 @@ public class ApplicationImportServiceCEImpl
             return jsonSchemaMigration.migrateApplicationJsonToLatestSchema(
                     applicationJson, baseArtifactId, refName, refType);
         });
+    }
+
+    @Override
+    public Mono<Application> getImportedArtifactFromDatabase(String artifactId) {
+        return applicationService.findById(artifactId);
     }
 }

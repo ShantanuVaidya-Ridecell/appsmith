@@ -1,5 +1,6 @@
 package com.external.plugins;
 
+import com.appsmith.external.configurations.connectionpool.ConnectionPoolConfig;
 import com.appsmith.external.datatypes.ClientDataType;
 import com.appsmith.external.dtos.ExecuteActionDTO;
 import com.appsmith.external.exceptions.pluginExceptions.AppsmithPluginException;
@@ -24,6 +25,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.JsonNodeType;
+import io.micrometer.observation.ObservationRegistry;
 import io.r2dbc.pool.ConnectionPool;
 import io.r2dbc.spi.Connection;
 import io.r2dbc.spi.ConnectionFactories;
@@ -43,6 +45,8 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.utility.DockerImageName;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Scheduler;
+import reactor.core.scheduler.Schedulers;
 import reactor.test.StepVerifier;
 import reactor.util.function.Tuple2;
 
@@ -76,7 +80,20 @@ import static reactor.core.publisher.Mono.zip;
 @Testcontainers
 public class MySqlPluginTest {
 
-    static MySqlPlugin.MySqlPluginExecutor pluginExecutor = new MySqlPlugin.MySqlPluginExecutor();
+    private static class MockConnectionPoolConfig implements ConnectionPoolConfig {
+        @Override
+        public Mono<Integer> getMaxConnectionPoolSize() {
+            return Mono.just(5);
+        }
+
+        @Override
+        public Mono<Integer> getSocketTimeoutSeconds() {
+            return Mono.just(600);
+        }
+    }
+
+    static MySqlPlugin.MySqlPluginExecutor pluginExecutor =
+            new MySqlPlugin.MySqlPluginExecutor(new MockConnectionPoolConfig(), ObservationRegistry.NOOP);
 
     ConnectionContext<ConnectionPool> instanceConnectionContext;
 
@@ -614,6 +631,102 @@ public class MySqlPluginTest {
             String expectedMessage = MySQLErrorMessages.IS_KEYWORD_NOT_SUPPORTED_IN_PS_ERROR_MSG;
             assertTrue(expectedMessage.equals(error.getMessage()));
         });
+    }
+
+    /**
+     * A SQL body the MCP stores starts with a `--` marker line (APP-16324 F9). This plugin strips `--` comments and then
+     * reads the first word to decide whether the query returns rows, so a marked SELECT must still return its rows,
+     * not an affected-row count. The marker shape matches markMcpAuthoredBody in
+     * app/client/packages/mcp/src/builder/query.ts. Change both together.
+     */
+    @Test
+    public void testMcpMarkedSelectStillReturnsRows() {
+        DatasourceConfiguration dsConfig = createDatasourceConfiguration();
+        Mono<ConnectionContext<ConnectionPool>> connectionContextMono = pluginExecutor
+                .datasourceCreate(dsConfig)
+                .map(connectionPool -> {
+                    instanceConnectionContext = connectionPool;
+                    return connectionPool;
+                });
+
+        ActionConfiguration actionConfiguration = new ActionConfiguration();
+        actionConfiguration.setBody("-- appsmith-mcp:v1 sha256=" + "0".repeat(64)
+                + " (written by the Appsmith MCP server, editing it stops MCP clients from reading it)\n"
+                + "SELECT t.id FROM (SELECT 1 AS id UNION ALL SELECT 2) AS t WHERE t.id > {{binding1}} ORDER BY t.id;");
+
+        List<Property> pluginSpecifiedTemplates = new ArrayList<>();
+        pluginSpecifiedTemplates.add(new Property("preparedStatement", "true"));
+        actionConfiguration.setPluginSpecifiedTemplates(pluginSpecifiedTemplates);
+
+        ExecuteActionDTO executeActionDTO = new ExecuteActionDTO();
+        List<Param> params = new ArrayList<>();
+        Param param1 = new Param();
+        param1.setKey("binding1");
+        param1.setValue("1");
+        param1.setClientDataType(ClientDataType.NUMBER);
+        params.add(param1);
+        executeActionDTO.setParams(params);
+
+        Mono<ActionExecutionResult> executeMono = connectionContextMono.flatMap(
+                conn -> pluginExecutor.executeParameterized(conn, executeActionDTO, dsConfig, actionConfiguration));
+
+        StepVerifier.create(executeMono)
+                .assertNext(result -> {
+                    assertTrue(result.getIsExecutionSuccess());
+                    ArrayNode rows = (ArrayNode) result.getBody();
+                    assertEquals(1, rows.size());
+                    assertEquals(2, rows.get(0).get("id").asInt());
+                })
+                .verifyComplete();
+    }
+
+    /**
+     * The MCP compiler emits isNull and notNull filters as `<=>` on MySQL, because this plugin refuses the IS keyword
+     * in a prepared statement. The SQL shape matches app/client/packages/mcp/src/builder/query.test.ts. Change both
+     * together.
+     */
+    @Test
+    public void testNullSafeEqualityWithPreparedStatement() {
+        DatasourceConfiguration dsConfig = createDatasourceConfiguration();
+        Mono<ConnectionContext<ConnectionPool>> connectionContextMono = pluginExecutor
+                .datasourceCreate(dsConfig)
+                .map(connectionPool -> {
+                    instanceConnectionContext = connectionPool;
+                    return connectionPool;
+                });
+
+        ActionConfiguration actionConfiguration = new ActionConfiguration();
+        actionConfiguration.setBody("SELECT t.id FROM (SELECT 1 AS id, NULL AS owner UNION ALL SELECT 2, 'ada') AS t"
+                + " WHERE t.owner <=> NULL AND t.id > {{binding1}} UNION ALL"
+                + " SELECT t.id FROM (SELECT 3 AS id, NULL AS owner UNION ALL SELECT 4, 'bob') AS t"
+                + " WHERE NOT (t.owner <=> NULL) AND t.id > {{binding1}} ORDER BY id;");
+
+        List<Property> pluginSpecifiedTemplates = new ArrayList<>();
+        pluginSpecifiedTemplates.add(new Property("preparedStatement", "true"));
+        actionConfiguration.setPluginSpecifiedTemplates(pluginSpecifiedTemplates);
+
+        ExecuteActionDTO executeActionDTO = new ExecuteActionDTO();
+        List<Param> params = new ArrayList<>();
+        Param param1 = new Param();
+        param1.setKey("binding1");
+        param1.setValue("0");
+        param1.setClientDataType(ClientDataType.NUMBER);
+        params.add(param1);
+        executeActionDTO.setParams(params);
+
+        Mono<ActionExecutionResult> executeMono = connectionContextMono.flatMap(
+                conn -> pluginExecutor.executeParameterized(conn, executeActionDTO, dsConfig, actionConfiguration));
+
+        StepVerifier.create(executeMono)
+                .assertNext(result -> {
+                    assertTrue(result.getIsExecutionSuccess());
+                    ArrayNode rows = (ArrayNode) result.getBody();
+                    // Row 1 has a null owner (isNull). Row 4 has an owner (notNull).
+                    assertEquals(2, rows.size());
+                    assertEquals(1, rows.get(0).get("id").asInt());
+                    assertEquals(4, rows.get(1).get("id").asInt());
+                })
+                .verifyComplete();
     }
 
     @Test
@@ -1318,7 +1431,8 @@ public class MySqlPluginTest {
 
     @Test
     public void testNullObjectWithPreparedStatement() {
-        pluginExecutor = spy(new MySqlPlugin.MySqlPluginExecutor());
+        pluginExecutor =
+                spy(new MySqlPlugin.MySqlPluginExecutor(new MockConnectionPoolConfig(), ObservationRegistry.NOOP));
         doReturn(false).when(pluginExecutor).isIsOperatorUsed(any());
         DatasourceConfiguration dsConfig = createDatasourceConfiguration();
         Mono<ConnectionContext<ConnectionPool>> connectionContextMono = pluginExecutor
@@ -1771,5 +1885,31 @@ public class MySqlPluginTest {
                     assertEquals("_sshHost_22", endpointIdentifier);
                 })
                 .verifyComplete();
+    }
+
+    /**
+     * The blocking work in datasourceCreate() (connection-context creation and pool construction) must not run on
+     * the subscribing thread; the server invokes it from the continuation of a Redis-backed feature-flag check.
+     * This test uses a Standard-connection configuration, so it verifies the scheduler hop for the callable as a
+     * whole; the SSH tunnel path inside getConnectionContext is covered by SSHUtilsTest.
+     */
+    @Test
+    public void datasourceCreate_doesNotRunOnTheSubscribingThread() {
+        DatasourceConfiguration dsConfig = createDatasourceConfiguration();
+        Scheduler caller = Schedulers.newSingle("caller-event-loop");
+        try {
+            StepVerifier.create(pluginExecutor.datasourceCreate(dsConfig).subscribeOn(caller))
+                    .assertNext(connectionContext -> {
+                        instanceConnectionContext = connectionContext;
+                        assertNotNull(connectionContext.getConnection());
+                        String thread = Thread.currentThread().getName();
+                        assertFalse(
+                                thread.startsWith("caller-event-loop"),
+                                "datasourceCreate completed on the subscribing thread: " + thread);
+                    })
+                    .verifyComplete();
+        } finally {
+            caller.dispose();
+        }
     }
 }

@@ -8,17 +8,26 @@ import {
 } from "ee/utils/BusinessFeatures/brandingPageHelpers";
 import { useFeatureFlag } from "utils/hooks/useFeatureFlag";
 import { FEATURE_FLAG } from "ee/entities/FeatureFlag";
-import { getTenantConfig } from "ee/selectors/tenantSelectors";
+import { getOrganizationConfig } from "ee/selectors/organizationSelectors";
 import { useSelector } from "react-redux";
+import { getShouldShowBaseUrlMissingBanner } from "selectors/usersSelectors";
+import { useIsMobileDevice } from "utils/hooks/useDeviceDetect";
+import {
+  DESKTOP_BANNER_OFFSET,
+  MOBILE_BANNER_OFFSET,
+} from "pages/common/bannerOffsets";
 
-export const Wrapper = styled.section<{ isFixed?: boolean }>`
+export const Wrapper = styled.section<{
+  isFixed?: boolean;
+  bannerOffset?: number;
+}>`
   ${(props) =>
     props.isFixed
       ? `margin: 0;
   position: fixed;
-  top: ${props.theme.homePage.header}px;
+  top: ${props.theme.homePage.header + (props.bannerOffset || 0)}px;
   width: 100%;`
-      : `margin-top: ${props.theme.homePage.header}px;`}
+      : `margin-top: ${props.theme.homePage.header + (props.bannerOffset || 0)}px;`}
   && .fade {
     position: relative;
   }
@@ -40,10 +49,13 @@ export const Wrapper = styled.section<{ isFixed?: boolean }>`
   }
 `;
 
-export const PageBody = styled.div<{ isSavable?: boolean }>`
+export const PageBody = styled.div<{
+  isSavable?: boolean;
+  bannerOffset?: number;
+}>`
   height: calc(
-    100vh - ${(props) => props.theme.homePage.header}px -
-      ${(props) => (props.isSavable ? "84px" : "0px")}
+    100vh -
+      ${(props) => props.theme.homePage.header + (props.bannerOffset || 0)}px
   );
   display: flex;
   flex-direction: column;
@@ -68,8 +80,19 @@ export function PageWrapper(props: PageWrapperProps) {
   const isBrandingEnabled = useFeatureFlag(
     FEATURE_FLAG?.license_branding_enabled,
   );
-  const tentantConfig = useSelector(getTenantConfig);
-  const { instanceName } = tentantConfig;
+  const organizationConfig = useSelector(getOrganizationConfig);
+  const { instanceName } = organizationConfig;
+  const isMobile = useIsMobileDevice();
+  // Match PageHeader: when the base-url-missing banner is visible, push content
+  // below it for both fixed (Admin Settings) and non-fixed wrappers so consumers
+  // do not need to compensate. License-banner pages (e.g. /applications) still
+  // apply their own license offset separately.
+  const showBaseUrlBanner = useSelector(getShouldShowBaseUrlMissingBanner);
+  const bannerOffset = showBaseUrlBanner
+    ? isMobile
+      ? MOBILE_BANNER_OFFSET
+      : DESKTOP_BANNER_OFFSET
+    : 0;
 
   const titleSuffix = useMemo(
     () => getHTMLPageTitle(isBrandingEnabled, instanceName),
@@ -82,11 +105,13 @@ export function PageWrapper(props: PageWrapperProps) {
   );
 
   return (
-    <Wrapper isFixed={isFixed}>
+    <Wrapper bannerOffset={bannerOffset} isFixed={isFixed}>
       <Helmet>
         <title>{pageTitle}</title>
       </Helmet>
-      <PageBody isSavable={isSavable}>{props.children}</PageBody>
+      <PageBody bannerOffset={bannerOffset} isSavable={isSavable}>
+        {props.children}
+      </PageBody>
     </Wrapper>
   );
 }

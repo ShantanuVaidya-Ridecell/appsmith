@@ -1,9 +1,9 @@
 package com.appsmith.server.datasources.base;
 
 import com.appsmith.external.constants.AnalyticsEvents;
+import com.appsmith.external.constants.PluginConstants;
 import com.appsmith.external.enums.FeatureFlagEnum;
 import com.appsmith.external.models.Datasource;
-import com.appsmith.external.models.DatasourceConfiguration;
 import com.appsmith.external.models.DatasourceStorage;
 import com.appsmith.external.models.DatasourceStorageDTO;
 import com.appsmith.external.models.DatasourceTestResult;
@@ -15,6 +15,8 @@ import com.appsmith.server.acl.AclPermission;
 import com.appsmith.server.acl.PolicyGenerator;
 import com.appsmith.server.constants.FieldName;
 import com.appsmith.server.constants.RateLimitConstants;
+import com.appsmith.server.datasourcestorages.base.DatasourceCredentialBindingResult;
+import com.appsmith.server.datasourcestorages.base.DatasourceCredentialsRequiredException;
 import com.appsmith.server.datasourcestorages.base.DatasourceStorageService;
 import com.appsmith.server.domains.Plugin;
 import com.appsmith.server.domains.User;
@@ -22,6 +24,7 @@ import com.appsmith.server.domains.Workspace;
 import com.appsmith.server.dtos.DBOpsType;
 import com.appsmith.server.exceptions.AppsmithError;
 import com.appsmith.server.exceptions.AppsmithException;
+import com.appsmith.server.helpers.DryOpsUtils;
 import com.appsmith.server.helpers.PluginExecutorHelper;
 import com.appsmith.server.plugins.base.PluginService;
 import com.appsmith.server.ratelimiting.RateLimitService;
@@ -47,12 +50,9 @@ import reactor.core.observability.micrometer.Micrometer;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
-import reactor.util.function.Tuple2;
-import reactor.util.function.Tuples;
 
 import java.time.Duration;
 import java.time.Instant;
-import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -93,13 +93,15 @@ public class DatasourceServiceCEImpl implements DatasourceServiceCE {
     private final RateLimitService rateLimitService;
     private final FeatureFlagService featureFlagService;
     private final ObservationRegistry observationRegistry;
-
     // Defines blocking duration for test as well as connection created for query execution
     // This will block the creation of datasource connection for 5 minutes, in case of more than 3 failed connection
     // attempts
     private final Integer BLOCK_TEST_API_DURATION = 5;
     private final AppsmithException TOO_MANY_REQUESTS_EXCEPTION =
             new AppsmithException(AppsmithError.TOO_MANY_FAILED_DATASOURCE_CONNECTION_REQUESTS);
+
+    private record DatasourceTestContext(
+            DatasourceStorage datasourceStorage, DatasourceCredentialBindingResult credentialBindingResult) {}
 
     @Autowired
     public DatasourceServiceCEImpl(
@@ -142,7 +144,60 @@ public class DatasourceServiceCEImpl implements DatasourceServiceCE {
 
     @Override
     public Mono<Datasource> create(Datasource datasource) {
-        return createEx(datasource, workspacePermission.getDatasourceCreatePermission(), false, null);
+        return validatePluginNotDeprecated(datasource)
+                .then(Mono.defer(() -> createWithoutDeprecationCheck(datasource)));
+    }
+
+    @Override
+    public Mono<Datasource> createWithoutDeprecationCheck(Datasource datasource) {
+        return workspacePermission
+                .getDatasourceCreatePermission()
+                .flatMap(permission -> createEx(datasource, permission, false, null));
+    }
+
+    /**
+     * Plugins for which creating new datasources is blocked because the plugin is deprecated.
+     * EE overrides this to extend the blocked list (e.g. appsmith-agent-plugin).
+     */
+    protected Set<String> getDeprecatedPluginPackageNames() {
+        return Set.of(PluginConstants.PackageName.APPSMITH_AI_PLUGIN);
+    }
+
+    private Mono<Void> validatePluginNotDeprecated(Datasource datasource) {
+        // Only block brand-new datasources. Calls that carry an id are storage-saves for datasources that already
+        // exist and must keep working so users can keep using them until they migrate. A missing pluginId falls
+        // through to the INVALID_PARAMETER validation in createEx.
+        if (hasText(datasource.getId()) || !hasText(datasource.getPluginId())) {
+            return Mono.empty();
+        }
+
+        return pluginService
+                .findById(datasource.getPluginId())
+                .filter(plugin -> getDeprecatedPluginPackageNames().contains(plugin.getPackageName()))
+                .flatMap(plugin -> Mono.<Void>error(
+                        new AppsmithException(AppsmithError.DEPRECATED_DATASOURCE_PLUGIN, plugin.getName())));
+    }
+
+    @Override
+    public Mono<Void> validateNewQueryCreationAllowed(Datasource datasource) {
+        if (datasource == null) {
+            return Mono.empty();
+        }
+
+        // Saved datasources are resolved by id with a permission-scoped read so this guard can't be used to probe
+        // datasources the user can't see; embedded ones (blank id) are checked by the pluginId on the payload so a
+        // crafted embedded Appsmith AI datasource can't slip past the block. A datasource with neither falls
+        // through to the usual downstream validation.
+        Mono<Datasource> datasourceMono = hasText(datasource.getId())
+                ? findById(datasource.getId(), datasourcePermission.getReadPermission())
+                : Mono.just(datasource);
+
+        return datasourceMono
+                .filter(resolvedDatasource -> hasText(resolvedDatasource.getPluginId()))
+                .flatMap(resolvedDatasource -> pluginService.findById(resolvedDatasource.getPluginId()))
+                .filter(plugin -> getDeprecatedPluginPackageNames().contains(plugin.getPackageName()))
+                .flatMap(plugin -> Mono.<Void>error(
+                        new AppsmithException(AppsmithError.DEPRECATED_PLUGIN_QUERY_CREATION, plugin.getName())));
     }
 
     // TODO: Check usage
@@ -233,13 +288,8 @@ public class DatasourceServiceCEImpl implements DatasourceServiceCE {
                             .create(datasourceStorage, isDryOps)
                             .map(datasourceStorage1 -> {
                                 if (datasourceStorageDryRunQueries != null && isDryOps) {
-                                    List<DatasourceStorage> datasourceStorages =
-                                            datasourceStorageDryRunQueries.get(SAVE);
-                                    if (datasourceStorages == null) {
-                                        datasourceStorages = new ArrayList<>();
-                                    }
-                                    datasourceStorages.add(datasourceStorage1);
-                                    datasourceStorageDryRunQueries.put(SAVE, datasourceStorages);
+                                    // Import shares this map across concurrent creates, so add under its lock.
+                                    DryOpsUtils.addDryOp(datasourceStorageDryRunQueries, SAVE, datasourceStorage1);
                                 }
                                 return datasourceStorage1;
                             });
@@ -311,8 +361,12 @@ public class DatasourceServiceCEImpl implements DatasourceServiceCE {
             return Mono.error(new AppsmithException(AppsmithError.INVALID_PARAMETER, FieldName.ID));
         }
 
+        // The path parameter selects the datasource and request data cannot retarget the persisted document.
+        datasource.setId(id);
         // Since policies are a server only concept, first set the empty set (set by constructor) to null
         datasource.setPolicies(null);
+        // The workspace a datasource belongs to is fixed at creation. Never take it from an update body.
+        datasource.setWorkspaceId(null);
         // this is important to avoid polluting the collection with configuration when we are saving the datasource
         // check method docstring for description
         datasource.nullifyStorageReplicaFields();
@@ -477,21 +531,30 @@ public class DatasourceServiceCEImpl implements DatasourceServiceCE {
             DatasourceStorageDTO datasourceStorageDTO, String activeEnvironmentId) {
         DatasourceStorage datasourceStorage =
                 datasourceStorageService.createDatasourceStorageFromDatasourceStorageDTO(datasourceStorageDTO);
-        return this.isEndpointBlockedForConnectionRequest(datasourceStorage).flatMap(isBlocked -> {
+        Mono<Void> datasourceTestAuthorization = Mono.empty();
+        if (!hasText(datasourceStorage.getDatasourceId())) {
+            if (!hasText(datasourceStorage.getWorkspaceId())) {
+                return Mono.error(new AppsmithException(AppsmithError.INVALID_PARAMETER, FieldName.WORKSPACE_ID));
+            }
+
+            datasourceTestAuthorization = workspacePermission
+                    .getDatasourceCreatePermission()
+                    .flatMap(permission -> workspaceService.findById(datasourceStorage.getWorkspaceId(), permission))
+                    .switchIfEmpty(Mono.error(new AppsmithException(AppsmithError.UNAUTHORIZED_ACCESS)))
+                    .then();
+        }
+
+        Mono<Boolean> isEndpointBlockedMono = datasourceTestAuthorization.then(
+                Mono.defer(() -> this.isEndpointBlockedForConnectionRequest(datasourceStorage)));
+        return isEndpointBlockedMono.flatMap(isBlocked -> {
             if (!isBlocked) {
-                final Mono<DatasourceStorage> datasourceStorageMono;
+                final Mono<DatasourceTestContext> datasourceStorageMono;
 
                 // Ideally there should also be a check for missing environmentId,
                 // however since we are falling back to default this step is not required here.
 
                 // Cases where the datasource hasn't been saved yet
                 if (!hasText(datasourceStorage.getDatasourceId())) {
-
-                    if (!hasText(datasourceStorage.getWorkspaceId())) {
-                        return Mono.error(
-                                new AppsmithException(AppsmithError.INVALID_PARAMETER, FieldName.WORKSPACE_ID));
-                    }
-
                     datasourceStorageMono = getTrueEnvironmentId(
                                     datasourceStorage.getWorkspaceId(),
                                     datasourceStorage.getEnvironmentId(),
@@ -499,17 +562,17 @@ public class DatasourceServiceCEImpl implements DatasourceServiceCE {
                                     null)
                             .map(trueEnvironmentId -> {
                                 datasourceStorage.setEnvironmentId(trueEnvironmentId);
-                                return datasourceStorage;
+                                return new DatasourceTestContext(datasourceStorage, null);
                             });
                 } else {
 
                     datasourceStorageMono = findById(
-                                    datasourceStorage.getDatasourceId(), datasourcePermission.getExecutePermission())
+                                    datasourceStorage.getDatasourceId(), datasourcePermission.getReadPermission())
                             .zipWhen(dbDatasource -> getTrueEnvironmentId(
                                     dbDatasource.getWorkspaceId(),
                                     datasourceStorage.getEnvironmentId(),
                                     dbDatasource.getPluginId(),
-                                    null))
+                                    environmentPermission.getExecutePermission()))
                             .flatMap(tuple2 -> {
                                 Datasource datasource = tuple2.getT1();
                                 String trueEnvironmentId = tuple2.getT2();
@@ -521,36 +584,39 @@ public class DatasourceServiceCEImpl implements DatasourceServiceCE {
                             .flatMap(tuple2 -> {
                                 Datasource datasource = tuple2.getT1();
                                 DatasourceStorage datasourceStorage1 = tuple2.getT2();
-                                DatasourceConfiguration datasourceConfiguration =
-                                        datasourceStorage1.getDatasourceConfiguration();
-                                if (datasourceConfiguration == null
-                                        || datasourceConfiguration.getAuthentication() == null) {
-                                    return Mono.just(datasourceStorage);
-                                }
-
                                 String trueEnvironmentId = datasourceStorage1.getEnvironmentId();
-                                // Fetch any fields that maybe encrypted from the db if the datasource being tested does
+                                // Fetch any fields that maybe encrypted from the db if the datasource being
+                                // tested does
                                 // not have those fields set.
-                                // This scenario would happen whenever an existing datasource is being tested and no
-                                // changes are present in the encrypted field, because encrypted fields are not sent
+                                // This scenario would happen whenever an existing datasource is being tested
+                                // and no
+                                // changes are present in the encrypted field, because encrypted fields are not
+                                // sent
                                 // over the network after encryption back to the client
 
                                 if (!hasText(datasourceStorage.getId())) {
-                                    return Mono.just(datasourceStorage);
+                                    return Mono.just(new DatasourceTestContext(datasourceStorage, null));
                                 }
 
                                 return datasourceStorageService
                                         .findByDatasourceAndEnvironmentIdForExecution(datasource, trueEnvironmentId)
-                                        .map(dbDatasourceStorage -> {
-                                            copyNestedNonNullProperties(datasourceStorage, dbDatasourceStorage);
-                                            return dbDatasourceStorage;
-                                        })
-                                        .switchIfEmpty(Mono.just(datasourceStorage));
+                                        .map(dbDatasourceStorage -> datasourceStorageService.bindStoredCredentials(
+                                                datasourceStorage1, dbDatasourceStorage))
+                                        .map(bindingResult -> new DatasourceTestContext(
+                                                bindingResult.datasourceStorage(), bindingResult))
+                                        .switchIfEmpty(Mono.just(new DatasourceTestContext(datasourceStorage, null)))
+                                        .onErrorResume(
+                                                DatasourceCredentialsRequiredException.class,
+                                                error -> sendCredentialsRequiredTestEvent(datasourceStorage1, error)
+                                                        .then(Mono.error(error)));
                             })
                             .switchIfEmpty(Mono.error(new AppsmithException(AppsmithError.UNAUTHORIZED_ACCESS)));
                 }
                 return datasourceStorageMono
-                        .flatMap(datasourceStorageService::checkEnvironment)
+                        .flatMap(context -> datasourceStorageService
+                                .checkEnvironment(context.datasourceStorage())
+                                .map(checkedStorage ->
+                                        new DatasourceTestContext(checkedStorage, context.credentialBindingResult())))
                         .flatMap(this::verifyDatasourceAndTest);
             } else {
                 return Mono.just(new DatasourceTestResult(TOO_MANY_REQUESTS_EXCEPTION.getMessage()));
@@ -558,7 +624,30 @@ public class DatasourceServiceCEImpl implements DatasourceServiceCE {
         });
     }
 
-    protected Mono<DatasourceTestResult> verifyDatasourceAndTest(DatasourceStorage datasourceStorage) {
+    private Mono<Void> sendCredentialsRequiredTestEvent(
+            DatasourceStorage datasourceStorage, DatasourceCredentialsRequiredException error) {
+        return datasourceStorageService
+                .getEnvironmentNameFromEnvironmentIdForAnalytics(datasourceStorage.getEnvironmentId())
+                .flatMap(environmentName -> {
+                    Map<String, Object> analyticsProperties =
+                            getAnalyticsPropertiesForTestEventStatus(datasourceStorage, false, error, environmentName);
+                    analyticsProperties.put(FieldName.CONNECTION_CONFIGURATION_CHANGED, true);
+                    analyticsProperties.put(
+                            FieldName.CREDENTIAL_SOURCE,
+                            DatasourceCredentialBindingResult.CredentialSource.REQUEST.getAnalyticsValue());
+                    analyticsProperties.put(
+                            FieldName.CHANGED_CONNECTION_SETTING_GROUPS, error.getChangedConnectionSettingGroups());
+                    analyticsProperties.put(
+                            FieldName.CONNECTION_TEST_RESULT, FieldName.CONNECTION_TEST_RESULT_CREDENTIALS_REQUIRED);
+                    return analyticsService
+                            .sendObjectEvent(
+                                    AnalyticsEvents.DS_TEST_EVENT_FAILED, datasourceStorage, analyticsProperties)
+                            .then();
+                });
+    }
+
+    protected Mono<DatasourceTestResult> verifyDatasourceAndTest(DatasourceTestContext context) {
+        DatasourceStorage datasourceStorage = context.datasourceStorage();
         return Mono.justOrEmpty(datasourceStorage)
                 .flatMap(datasourceStorageService::validateDatasourceConfiguration)
                 .zipWith(datasourceStorageService.getEnvironmentNameFromEnvironmentIdForAnalytics(
@@ -603,23 +692,34 @@ public class DatasourceServiceCEImpl implements DatasourceServiceCE {
                                                 return Mono.just(datasourceTestResult);
                                             })
                                             .flatMap(datasourceTestResult1 -> {
+                                                Map<String, Object> analyticsProperties =
+                                                        getAnalyticsPropertiesForTestEventStatus(
+                                                                datasourceStorage,
+                                                                datasourceTestResult1,
+                                                                environmentName);
+                                                addCredentialBindingProperties(
+                                                        analyticsProperties,
+                                                        context.credentialBindingResult(),
+                                                        FieldName.CONNECTION_TEST_RESULT_FAILED);
                                                 return analyticsService
                                                         .sendObjectEvent(
                                                                 AnalyticsEvents.DS_TEST_EVENT_FAILED,
                                                                 datasourceStorage,
-                                                                getAnalyticsPropertiesForTestEventStatus(
-                                                                        datasourceStorage,
-                                                                        datasourceTestResult1,
-                                                                        environmentName))
+                                                                analyticsProperties)
                                                         .thenReturn(datasourceTestResult1);
                                             });
                                 } else {
+                                    Map<String, Object> analyticsProperties = getAnalyticsPropertiesForTestEventStatus(
+                                            datasourceStorage, datasourceTestResult, environmentName);
+                                    addCredentialBindingProperties(
+                                            analyticsProperties,
+                                            context.credentialBindingResult(),
+                                            FieldName.CONNECTION_TEST_RESULT_SUCCEEDED);
                                     return analyticsService
                                             .sendObjectEvent(
                                                     AnalyticsEvents.DS_TEST_EVENT_SUCCESS,
                                                     datasourceStorage,
-                                                    getAnalyticsPropertiesForTestEventStatus(
-                                                            datasourceStorage, datasourceTestResult, environmentName))
+                                                    analyticsProperties)
                                             .thenReturn(datasourceTestResult);
                                 }
                             })
@@ -630,14 +730,46 @@ public class DatasourceServiceCEImpl implements DatasourceServiceCE {
                 });
     }
 
+    private void addCredentialBindingProperties(
+            Map<String, Object> analyticsProperties,
+            DatasourceCredentialBindingResult bindingResult,
+            String connectionTestResult) {
+        analyticsProperties.put(FieldName.CONNECTION_TEST_RESULT, connectionTestResult);
+        if (bindingResult != null) {
+            analyticsProperties.put(
+                    FieldName.CONNECTION_CONFIGURATION_CHANGED, bindingResult.connectionConfigurationChanged());
+            analyticsProperties.put(
+                    FieldName.CREDENTIAL_SOURCE,
+                    bindingResult.credentialSource().getAnalyticsValue());
+            analyticsProperties.put(
+                    FieldName.CHANGED_CONNECTION_SETTING_GROUPS, bindingResult.changedConnectionSettingGroups());
+        }
+    }
+
     protected Mono<DatasourceTestResult> testDatasourceViaPlugin(DatasourceStorage datasourceStorage) {
         Mono<PluginExecutor> pluginExecutorMono = pluginExecutorHelper
                 .getPluginExecutor(pluginService.findById(datasourceStorage.getPluginId()))
                 .switchIfEmpty(Mono.error(new AppsmithException(
                         AppsmithError.NO_RESOURCE_FOUND, FieldName.PLUGIN, datasourceStorage.getPluginId())));
 
-        return pluginExecutorMono.flatMap(pluginExecutor -> ((PluginExecutor<Object>) pluginExecutor)
-                .testDatasource(datasourceStorage.getDatasourceConfiguration()));
+        // Feature flagging implementation is added here as a potential fix to dynamoDB query timeouts problem
+        // This is a temporary fix and will be removed once we get the confirmation from the user that issue is resolved
+        // Even if the issue is not resolved, we will know that fix does not work and hence will be removing the code in
+        // any case
+        // https://github.com/appsmithorg/appsmith/issues/39426 Created task here to remove this flag
+        // This implementation ensures that none of the existing plugins have any impact due to feature flagging, hence
+        // if else condition
+        return featureFlagService
+                .check(FeatureFlagEnum.release_dynamodb_connection_time_to_live_enabled)
+                .flatMap(isDynamoDBConnectionTimeToLiveEnabled -> {
+                    if (isDynamoDBConnectionTimeToLiveEnabled) {
+                        return pluginExecutorMono.flatMap(pluginExecutor -> ((PluginExecutor<Object>) pluginExecutor)
+                                .testDatasource(datasourceStorage.getDatasourceConfiguration(), true));
+                    } else {
+                        return pluginExecutorMono.flatMap(pluginExecutor -> ((PluginExecutor<Object>) pluginExecutor)
+                                .testDatasource(datasourceStorage.getDatasourceConfiguration()));
+                    }
+                });
     }
 
     /*
@@ -724,6 +856,11 @@ public class DatasourceServiceCEImpl implements DatasourceServiceCE {
     @Override
     public Mono<Datasource> findById(String id, AclPermission aclPermission) {
         return repository.findById(id, aclPermission);
+    }
+
+    @Override
+    public Flux<Datasource> findAllByIds(List<String> ids, AclPermission aclPermission) {
+        return repository.findAllByIds(ids, aclPermission);
     }
 
     @Override
@@ -839,8 +976,9 @@ public class DatasourceServiceCEImpl implements DatasourceServiceCE {
 
     @Override
     public Mono<Datasource> archiveById(String id) {
-        return repository
-                .findById(id, datasourcePermission.getDeletePermission())
+        return datasourcePermission
+                .getDeletePermission()
+                .flatMap(permission -> repository.findById(id, permission))
                 .switchIfEmpty(
                         Mono.error(new AppsmithException(AppsmithError.NO_RESOURCE_FOUND, FieldName.DATASOURCE, id)))
                 .zipWhen(datasource -> newActionRepository.countByDatasourceId(datasource.getId()))
@@ -909,39 +1047,24 @@ public class DatasourceServiceCEImpl implements DatasourceServiceCE {
     }
 
     /**
-     * Sets isRecentlyCreated flag to the datasources that were created recently.
-     * It finds the most recent `recentlyUsedCount` numbers of datasources based on the `createdAt` field and set
-     * the flag on for them.
-     *
+     * Sets isRecentlyCreated flag on the most recently created datasources.
+     * This is a best-effort UX hint — failures here must never break the datasource listing API.
      * @param datasourceList    List datasources
      * @param recentlyUsedCount How many should be marked as recently created
      */
     private void markRecentlyUsed(List<Datasource> datasourceList, int recentlyUsedCount) {
-        if (CollectionUtils.isEmpty(datasourceList)) { // list is null or empty, nothing to do
+        if (CollectionUtils.isEmpty(datasourceList)) {
             return;
         }
 
-        // Here are the steps that we're following here:
-        // 1. Put the index of each datasource and the createdDate into a list of Tuple2<Integer, Instant>
-        // 2. Sort that list based on createdDate in descending order
-        // 3. Take first `recentlyUsedCount` numbers of Tuple2 from the list
-        // 4. Fetch corresponding datasource using the index of Tuple2 and set the recentlyUsed=true
-
-        List<Tuple2<Integer, Instant>> indexAndCreatedDates = new ArrayList<>(datasourceList.size());
-
-        for (int i = 0; i < datasourceList.size(); i++) {
-            Datasource datasource = datasourceList.get(i);
-            indexAndCreatedDates.add(Tuples.of(i, datasource.getCreatedAt()));
-        }
-
-        // provide a comparator to sort Tuple2<Integer, Instant> in reversed order of Instant
-        indexAndCreatedDates.sort(Comparator.comparing(Tuple2::getT2, Comparator.reverseOrder()));
-
-        // set the flag based on indexes from indexAndCreatedDates
-        for (int i = 0; i < recentlyUsedCount && i < indexAndCreatedDates.size(); i++) {
-            Tuple2<Integer, Instant> objects = indexAndCreatedDates.get(i);
-            Datasource datasource = datasourceList.get(objects.getT1());
-            datasource.setIsRecentlyCreated(true);
+        try {
+            datasourceList.stream()
+                    .filter(ds -> ds.getCreatedAt() != null)
+                    .sorted(Comparator.comparing(Datasource::getCreatedAt, Comparator.reverseOrder()))
+                    .limit(recentlyUsedCount)
+                    .forEach(ds -> ds.setIsRecentlyCreated(true));
+        } catch (Exception e) {
+            log.warn("Failed to mark recently created datasources", e);
         }
     }
 

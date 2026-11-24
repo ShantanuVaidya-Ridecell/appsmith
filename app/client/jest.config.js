@@ -10,7 +10,7 @@ module.exports = {
     "jest-canvas-mock",
     "<rootDir>/test/__mocks__/reactMarkdown.tsx",
   ],
-  roots: ["<rootDir>/src"],
+  roots: ["<rootDir>/src", "<rootDir>/cypress/scripts"],
   transform: {
     "^.+\\.(png|js|ts|tsx)$": [
       "ts-jest",
@@ -39,7 +39,7 @@ module.exports = {
   moduleFileExtensions: ["ts", "tsx", "js", "jsx", "json", "node", "css"],
   moduleDirectories: ["node_modules", "src", "test"],
   transformIgnorePatterns: [
-    "<rootDir>/node_modules/(?!codemirror|konva|react-dnd|dnd-core|@babel|(@blueprintjs)|@github|lodash-es|@draft-js-plugins|react-documents|linkedom|assert-never|axios|usehooks-ts|date-fns)",
+    "<rootDir>/node_modules/(?!codemirror|konva|react-dnd|dnd-core|@babel|(@blueprintjs)|@github|lodash-es|@draft-js-plugins|react-documents|linkedom|assert-never|axios|usehooks-ts|date-fns|nanoid)",
   ],
   moduleNameMapper: {
     "\\.(css|less)$": "<rootDir>/test/__mocks__/styleMock.js",
@@ -82,6 +82,9 @@ module.exports = {
       smartLook: {
         id: parseConfig("__APPSMITH_SMART_LOOK_ID__"),
       },
+      betterbugs: {
+        apiKey: parseConfig("__APPSMITH_BETTERBUGS_API_KEY__"),
+      },
       segment: {
         apiKey: parseConfig("__APPSMITH_SEGMENT_KEY__"),
         ceKey: parseConfig("__APPSMITH_SEGMENT_CE_KEY__"),
@@ -108,7 +111,7 @@ module.exports = {
         sha: parseConfig("__APPSMITH_VERSION_SHA__"),
         releaseDate: parseConfig("__APPSMITH_VERSION_RELEASE_DATE__"),
       },
-      intercomAppID: "APP_ID",
+      pylonAppID: "APP_ID",
       mailEnabled: parseConfig("__APPSMITH_MAIL_ENABLED__"),
       disableIframeWidgetSandbox: parseConfig(
         "__APPSMITH_DISABLE_IFRAME_WIDGET_SANDBOX__",

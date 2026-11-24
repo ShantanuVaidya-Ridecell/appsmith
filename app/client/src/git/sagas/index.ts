@@ -41,6 +41,8 @@ import { fetchGlobalSSHKeySaga } from "./fetchGlobalSSHKeySaga";
 import gitImportSaga from "./gitImportSaga";
 import mergeSaga from "./mergeSaga";
 import discardSaga from "./discardSaga";
+import pretagSaga from "./pretagSaga";
+import { updateGeneratedSSHKeySaga } from "./updateGeneratedSSHKeySaga";
 
 const blockingActionSagas: Record<
   string,
@@ -86,6 +88,9 @@ const blockingActionSagas: Record<
   // autocommit
   [gitArtifactActions.triggerAutocommitInit.type]: triggerAutocommitSaga,
 
+  // pretag
+  [gitArtifactActions.pretagInit.type]: pretagSaga,
+
   // EE
   ...blockingActionSagasExtended,
 };
@@ -103,6 +108,7 @@ const nonBlockingActionSagas: Record<
   [gitArtifactActions.fetchSSHKeyInit.type]: fetchSSHKeySaga,
   [gitArtifactActions.generateSSHKeyInit.type]: generateSSHKeySaga,
   [gitGlobalActions.fetchGlobalSSHKeyInit.type]: fetchGlobalSSHKeySaga,
+  [gitGlobalActions.updateGeneratedSSHKeyInit.type]: updateGeneratedSSHKeySaga,
 
   // EE
   ...nonBlockingActionSagasExtended,

@@ -36,7 +36,8 @@ export class JSEditor {
   public settingsTriggerLocator = "[data-testid='t--js-settings-trigger']";
   public contextMenuTriggerLocator = "[data-testid='t--more-action-trigger']";
   public runFunctionSelectLocator = "[data-testid='t--js-function-run']";
-  public listOfJsObjects = "[data-testid='t--tabs-container']>div>span";
+  public listOfJsDismissibleTabs =
+    "[data-testid='t--tabs-container'] .editor-tab";
 
   public toolbar = new PluginEditorToolbar(
     this.runButtonLocator,
@@ -49,14 +50,14 @@ export class JSEditor {
   private _jsObjectParseErrorCallout =
     "div.t--js-response-parse-error-call-out";
 
-  private _onPageLoadSwitch = (functionName: string) =>
-    `.${functionName}-on-page-load-setting
-    input[role="switch"]`;
-  private _onPageLoadSwitchStatus = (functionName: string) =>
-    `//div[contains(@class, '${functionName}-on-page-load-setting')]//label/input`;
+  private _runBehaviourSwitch = (functionName: string) =>
+    `.${functionName}-run-behavior-setting
+    input[role="combobox"]`;
+  private __runBehaviourSwitchStatus = (functionName: string) =>
+    `.${functionName}-run-behavior-setting .rc-select-selection-item`;
 
-  private _jsObjName = ".editor-tab.active > .ads-v2-text";
-  public _jsObjTxt = ".editor-tab.active > .ads-v2-text input";
+  public _jsObjName = this.locator._activeEntityTab;
+  public _jsObjTxt = this.locator._activeEntityTabInput;
   public _newJSobj = "span:contains('New JS object')";
   private _bindingsClose = ".t--entity-property-close";
   public _propertyList = ".binding";
@@ -78,6 +79,7 @@ export class JSEditor {
   _getJSFunctionSettingsId = (JSFunctionName: string) =>
     `${JSFunctionName}-settings`;
   _asyncJSFunctionSettings = `.t--async-js-function-settings`;
+  _editor = ".js-editor";
   _debugCTA = `button.js-editor-debug-cta`;
   _lineinJsEditor = (lineNumber: number) =>
     ":nth-child(" + lineNumber + ") > .CodeMirror-line";
@@ -93,6 +95,8 @@ export class JSEditor {
   _addJSObj = '[data-testid="t--ide-tabs-add-button"]';
   _jsPageActions = ".entity-context-menu";
   _moreActions = '[data-testid="t--more-action-trigger"]';
+  _dropdownOption = (runBehaviour: string) =>
+    `.rc-select-item-option-content [data-testid='t--label-${runBehaviour}']`;
   //#endregion
 
   //#region constants
@@ -241,14 +245,20 @@ export class JSEditor {
     PageLeftPane.assertPresence(renameVal);
   }
 
+  public DeleteJSObjectFromContextMenu() {
+    cy.get(this.contextMenuTriggerLocator).click();
+    cy.contains("Delete").should("be.visible").click();
+    cy.contains("Are you sure?").should("be.visible").click();
+  }
+
   public RenameJSObjFromExplorer(entityName: string, renameVal: string) {
     this.ee.ActionContextMenuByEntityName({
       entityNameinLeftSidebar: entityName,
       action: "Rename",
     });
-    cy.xpath(this.locator._entityNameEditing(entityName)).type(
-      renameVal + "{enter}",
-    );
+    cy.get(this.locator._entityNameEditing)
+      .clear()
+      .type(renameVal + "{enter}");
     PageLeftPane.assertPresence(renameVal);
   }
 
@@ -288,20 +298,30 @@ export class JSEditor {
     cy.get(this._bindingsClose).click({ force: true });
   }
 
-  public VerifyAsyncFuncSettings(funName: string, onLoad = true) {
+  public VerifyAsyncFuncSettings(
+    funName: string,
+    runBehaviour: "On page load" | "Manual",
+  ) {
     this.toolbar.toggleSettings();
-    this.agHelper.AssertExistingCheckedState(
-      this._onPageLoadSwitchStatus(funName),
-      onLoad.toString(),
+    this.agHelper.GetNAssertContains(
+      this.__runBehaviourSwitchStatus(funName),
+      runBehaviour,
     );
     this.toolbar.toggleSettings();
   }
 
-  public EnableDisableAsyncFuncSettings(funName: string, onLoad = true) {
+  public EnableDisableAsyncFuncSettings(
+    funName: string,
+    runBehaviour: "On page load" | "Manual",
+  ) {
     // Navigate to Settings tab
     this.toolbar.toggleSettings();
-    // Set onPageLoad
-    this.agHelper.CheckUncheck(this._onPageLoadSwitch(funName), onLoad);
+    // Set runBehaviour to On page load
+    this.agHelper.GetNClick(this._runBehaviourSwitch(funName));
+    this.agHelper.GetNClickByContains(
+      this._dropdownOption(runBehaviour),
+      runBehaviour,
+    );
     // Return to code tab
     this.toolbar.toggleSettings();
   }

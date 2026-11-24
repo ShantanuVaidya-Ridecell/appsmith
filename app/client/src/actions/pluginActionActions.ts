@@ -20,21 +20,32 @@ import type { EventLocation } from "ee/utils/analyticsUtilTypes";
 import type { GenerateDestinationIdInfoReturnType } from "ee/sagas/helpers";
 import type { Span } from "instrumentation/types";
 import type { EvaluationReduxAction } from "./EvaluationReduxActionTypes";
+import type { ActionRunBehaviourType } from "PluginActionEditor/types/PluginActionTypes";
 
-export const createActionRequest = (payload: Partial<Action>) => {
+export const createActionRequest = (
+  payload: Partial<Action>,
+  onSuccess?: ReduxAction<unknown>,
+) => {
   return {
     type: ReduxActionTypes.CREATE_ACTION_REQUEST,
     payload,
+    onSuccess,
   };
 };
-export const createActionInit = (payload: Partial<Action>) => {
+export const createActionInit = (
+  payload: Partial<Action>,
+  onSuccess?: ReduxAction<unknown>,
+) => {
   return {
     type: ReduxActionTypes.CREATE_ACTION_INIT,
     payload,
+    onSuccess,
   };
 };
 
-export const createActionSuccess = (payload: Action) => {
+export const createActionSuccess = (
+  payload: Action & { shouldRedirectToQueryEditor?: boolean },
+) => {
   return {
     type: ReduxActionTypes.CREATE_ACTION_SUCCESS,
     payload,
@@ -180,6 +191,25 @@ export const deleteAction = (payload: {
 }) => {
   return {
     type: ReduxActionTypes.DELETE_ACTION_INIT,
+    payload,
+  };
+};
+
+export interface DeleteHiddenPluginActionsPayload {
+  actions: Array<{ id: string; name: string }>;
+  // Datasources the deleted queries used. Each is deleted only if no other
+  // query in the workspace uses it (the server enforces this).
+  datasourceIds: string[];
+  onComplete?: (removedCount: number) => void;
+}
+
+// Deletes the queries of hidden plugins (see isHiddenPlugin), such as
+// Appsmith AI, from the editor banner.
+export const deleteHiddenPluginActions = (
+  payload: DeleteHiddenPluginActionsPayload,
+) => {
+  return {
+    type: ReduxActionTypes.DELETE_HIDDEN_PLUGIN_ACTIONS_INIT,
     payload,
   };
 };
@@ -341,29 +371,29 @@ export const executePageLoadActions = (
   };
 };
 
-export const setActionsToExecuteOnPageLoad = (
+export const setActionsRunBehaviour = (
   actions: Array<{
-    executeOnLoad: boolean;
+    runBehaviour: ActionRunBehaviourType;
     id: string;
     name: string;
   }>,
 ) => {
   return {
-    type: ReduxActionTypes.SET_ACTION_TO_EXECUTE_ON_PAGELOAD,
+    type: ReduxActionTypes.SET_ACTION_RUN_BEHAVIOR,
     payload: actions,
   };
 };
 
-export const setJSActionsToExecuteOnPageLoad = (
+export const setJSActionsRunBehaviour = (
   actions: Array<{
-    executeOnLoad: boolean;
+    runBehaviour: ActionRunBehaviourType;
     id: string;
     name: string;
     collectionId?: string;
   }>,
 ) => {
   return {
-    type: ReduxActionTypes.SET_JS_ACTION_TO_EXECUTE_ON_PAGELOAD,
+    type: ReduxActionTypes.SET_JS_ACTION_RUN_BEHAVIOR,
     payload: actions,
   };
 };

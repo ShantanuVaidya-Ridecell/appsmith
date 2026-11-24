@@ -11,12 +11,13 @@ import com.appsmith.server.helpers.ce.bridge.Bridge;
 import com.appsmith.server.helpers.ce.bridge.BridgeUpdate;
 import com.appsmith.server.repositories.UsagePulseRepository;
 import com.appsmith.server.services.ConfigService;
+import com.appsmith.server.services.OrganizationService;
 import com.appsmith.server.services.SessionUserService;
-import com.appsmith.server.services.TenantService;
 import com.appsmith.server.services.UserService;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.codec.digest.DigestUtils;
-import org.apache.commons.lang.StringUtils;
+import org.apache.commons.lang3.StringUtils;
 import reactor.core.publisher.Mono;
 
 import java.time.Instant;
@@ -25,6 +26,7 @@ import static java.lang.Boolean.FALSE;
 import static java.lang.Boolean.TRUE;
 
 @RequiredArgsConstructor
+@Slf4j
 public class UsagePulseServiceCEImpl implements UsagePulseServiceCE {
 
     private final UsagePulseRepository repository;
@@ -33,7 +35,7 @@ public class UsagePulseServiceCEImpl implements UsagePulseServiceCE {
 
     private final UserService userService;
 
-    private final TenantService tenantService;
+    private final OrganizationService organizationService;
 
     private final ConfigService configService;
 
@@ -50,12 +52,15 @@ public class UsagePulseServiceCEImpl implements UsagePulseServiceCE {
         if (null == usagePulseDTO.getViewMode()) {
             return Mono.error(new AppsmithException(AppsmithError.INVALID_PARAMETER, FieldName.VIEW_MODE));
         } else if (FALSE.equals(usagePulseDTO.getViewMode()) && usagePulseDTO.getAnonymousUserId() != null) {
-            // We don't expect anonymous user to have access to edit mode
-            return Mono.error(new AppsmithException(AppsmithError.INVALID_PARAMETER, FieldName.ANONYMOUS_USER_ID));
+            log.warn(
+                    "Ignoring usage pulse: anonymous user attempted edit-mode pulse. viewMode={}, hasAnonymousId={}",
+                    usagePulseDTO.getViewMode(),
+                    usagePulseDTO.getAnonymousUserId() != null);
+            return Mono.empty();
         }
 
         // TODO remove this condition after multi-tenancy is introduced
-        if (TRUE.equals(commonConfig.isCloudHosting())) {
+        if (TRUE.equals(commonConfig.getIsCloudHosting())) {
             return Mono.just(new UsagePulse());
         }
 
@@ -64,21 +69,20 @@ public class UsagePulseServiceCEImpl implements UsagePulseServiceCE {
         usagePulse.setViewMode(usagePulseDTO.getViewMode());
 
         Mono<User> currentUserMono = sessionUserService.getCurrentUser();
-        // TODO: Change to getCurrentTenantId once multi-tenancy in introduced
-        Mono<String> tenantIdMono = tenantService.getDefaultTenantId();
+        Mono<String> organizationIdMono = organizationService.getCurrentUserOrganizationId();
         Mono<String> instanceIdMono = configService.getInstanceId();
 
-        return Mono.zip(currentUserMono, tenantIdMono, instanceIdMono).flatMap(tuple -> {
+        return Mono.zip(currentUserMono, organizationIdMono, instanceIdMono).flatMap(tuple -> {
             User user = tuple.getT1();
-            String tenantId = tuple.getT2();
+            String organizationId = tuple.getT2();
             String instanceId = tuple.getT3();
-            usagePulse.setTenantId(tenantId);
+            usagePulse.setOrganizationId(organizationId);
             usagePulse.setInstanceId(instanceId);
 
             if (user.isAnonymous()) {
-                if (null == usagePulseDTO.getAnonymousUserId()) {
-                    return Mono.error(
-                            new AppsmithException(AppsmithError.INVALID_PARAMETER, FieldName.ANONYMOUS_USER_ID));
+                if (StringUtils.isBlank(usagePulseDTO.getAnonymousUserId())) {
+                    log.warn("Ignoring usage pulse: missing anonymous user id for anonymous user.");
+                    return Mono.empty();
                 }
                 usagePulse.setIsAnonymousUser(true);
                 usagePulse.setUser(usagePulseDTO.getAnonymousUserId());

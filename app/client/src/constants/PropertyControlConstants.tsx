@@ -3,14 +3,14 @@ import type {
   ValidationResponse,
   ValidationTypes,
 } from "constants/WidgetValidation";
-import type { EvaluationSubstitutionType } from "entities/DataTree/dataTreeFactory";
 import type { CodeEditorExpected } from "components/editorComponents/CodeEditor";
 import type { UpdateWidgetPropertyPayload } from "actions/controlActions";
 import type { AdditionalDynamicDataTree } from "utils/autocomplete/customTreeTypeDefCreator";
 import type { Stylesheet } from "entities/AppTheming";
 import type { ReduxActionType } from "actions/ReduxActionTypes";
-import type { PropertyUpdates } from "WidgetProvider/constants";
+import type { PropertyUpdates } from "WidgetProvider/types";
 import type { WidgetProps } from "widgets/BaseWidget";
+import type { EvaluationSubstitutionType } from "constants/EvaluationConstants";
 
 const ControlTypes = getPropertyControlTypes();
 
@@ -53,6 +53,19 @@ export interface PropertyPaneSectionConfig {
   // TODO: Fix this the next time the file is edited
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   hidden?: (props: any, propertyPath: string) => boolean;
+  /**
+   * @param props - Current widget properties
+   * @param propertyPath - Path to the widget property
+   * @returns - True if the section should be disabled, false otherwise
+   */
+  // TODO: Fix this the next time the file is edited
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  shouldDisableSection?: (props: any, propertyPath: string) => boolean;
+  /**
+   * Help text to show when section is disabled.
+   * Appears as a tooltip when hovering over the disabled section.
+   */
+  disabledHelpText?: string;
   /**
    * when true, the section will be open by default.
    * Note: Seems like this is not used anywhere.
@@ -206,6 +219,28 @@ export interface PropertyPaneControlConfig {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   hidden?: (props: any, propertyPath: string) => boolean;
   /**
+   * callback function to determine if the property should be disabled.
+
+   * @param props - Current widget properties
+   * @param propertyPath - Path to the widget property
+   * @returns - True if the property should be disabled, false otherwise
+   */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  shouldDisableSection?: (props: any, propertyPath: string) => boolean;
+  /**
+   * Help text to show when property is disabled.
+   * Appears as a tooltip when hovering over the disabled property.
+   */
+  disabledHelpText?: string;
+  /**
+   * When true and `shouldDisableSection` returns true, the pane shows the
+   * property's raw stored value as read-only text. A binding shows as its
+   * `{{ }}` source, not its evaluated result. Objects and arrays show
+   * nothing. When false or unset, a disabled property shows no value, as
+   * before.
+   */
+  showValueWhenDisabled?: boolean;
+  /**
    * If true, the property is hidden.
    * Note: hidden and invisible do the same thing but differently. hidden uses a callback to determine if the property should be hidden.
    * invisible is a boolean flag to hide the property.
@@ -293,6 +328,11 @@ export interface PropertyPaneControlConfig {
    * will depend on the control type and its individual requirements.
    */
   controlConfig?: Record<string, unknown>;
+  /**
+   * Text for the empty field of a `COLOR_PICKER` control. When unset, the
+   * field shows its own default text. Other controls ignore it.
+   */
+  colorPlaceholderText?: string;
   /**
    * The default value of the property.
    */

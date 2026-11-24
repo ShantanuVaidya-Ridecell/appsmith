@@ -26,7 +26,6 @@ import com.appsmith.server.helpers.ImportExportUtils;
 import com.appsmith.server.imports.importable.ImportableService;
 import com.appsmith.server.imports.internal.artifactbased.ArtifactBasedImportService;
 import com.appsmith.server.migrations.JsonSchemaMigration;
-import com.appsmith.server.repositories.DryOperationRepository;
 import com.appsmith.server.repositories.PermissionGroupRepository;
 import com.appsmith.server.services.AnalyticsService;
 import com.appsmith.server.services.SessionUserService;
@@ -37,6 +36,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.core.io.buffer.DataBufferUtils;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.http.MediaType;
 import org.springframework.http.codec.multipart.Part;
 import org.springframework.stereotype.Service;
@@ -69,7 +69,6 @@ public class ImportServiceCEImpl implements ImportServiceCE {
     private final GsonBuilder gsonBuilder;
     private final ArtifactExchangeJsonAdapter artifactExchangeJsonAdapter;
     private final JsonSchemaMigration jsonSchemaMigration;
-    private final DryOperationRepository dryOperationRepository;
 
     /**
      * This method provides the importService specific to the artifact based on the ArtifactType.
@@ -100,50 +99,61 @@ public class ImportServiceCEImpl implements ImportServiceCE {
         };
     }
 
-    /**
-     * This method takes a file part and makes a Json entity which implements the ArtifactExchangeJson interface
-     *
-     * @param filePart : filePart from which the contents would be made
-     * @return : Json entity which implements ArtifactExchangeJson
-     */
-    public Mono<? extends ArtifactExchangeJson> extractArtifactExchangeJson(Part filePart) {
-
-        final MediaType contentType = filePart.headers().getContentType();
+    @Override
+    public Mono<String> readFilePartToString(Part file) {
+        final MediaType contentType = file.headers().getContentType();
         if (contentType == null || !ALLOWED_CONTENT_TYPES.contains(contentType)) {
             log.error("Invalid content type, {}", contentType);
             return Mono.error(new AppsmithException(AppsmithError.VALIDATION_FAILURE, INVALID_JSON_FILE));
         }
 
-        return DataBufferUtils.join(filePart.content())
-                .map(dataBuffer -> {
-                    byte[] data = new byte[dataBuffer.readableByteCount()];
-                    dataBuffer.read(data);
-                    DataBufferUtils.release(dataBuffer);
-                    return new String(data);
-                })
-                .map(jsonString -> {
-                    gsonBuilder.registerTypeAdapter(ArtifactExchangeJson.class, artifactExchangeJsonAdapter);
-                    Gson gson = gsonBuilder.create();
-                    return gson.fromJson(jsonString, ArtifactExchangeJson.class);
-                });
+        return DataBufferUtils.join(file.content()).map(dataBuffer -> {
+            byte[] data = new byte[dataBuffer.readableByteCount()];
+            dataBuffer.read(data);
+            DataBufferUtils.release(dataBuffer);
+            return new String(data);
+        });
+    }
+
+    /**
+     * This method takes JSON content and makes a JSON entity which implements the ArtifactExchangeJson interface.
+     *
+     * @param jsonString JSON string to parse
+     * @return JSON entity which implements ArtifactExchangeJson
+     */
+    @Override
+    public Mono<? extends ArtifactExchangeJson> extractArtifactExchangeJson(String jsonString) {
+        return Mono.fromCallable(() -> {
+            gsonBuilder.registerTypeAdapter(ArtifactExchangeJson.class, artifactExchangeJsonAdapter);
+            Gson gson = gsonBuilder.create();
+            return gson.fromJson(jsonString, ArtifactExchangeJson.class);
+        });
+    }
+
+    @Override
+    public Mono<? extends ArtifactImportDTO> extractArtifactExchangeJsonAndSaveArtifact(
+            Part filePart, String workspaceId, String artifactId) {
+        return readFilePartToString(filePart)
+                .flatMap(jsonContents ->
+                        extractArtifactExchangeJsonAndSaveArtifact(jsonContents, workspaceId, artifactId));
     }
 
     /**
      * Hydrates an Artifact within the specified workspace by saving the provided JSON file.
      *
-     * @param filePart    The filePart representing the Artifact object to be saved.
+     * @param jsonContents    The jsonContents representing the Artifact object to be saved.
      *                    The Artifact implements the Artifact interface.
      * @param workspaceId The identifier for the destination workspace.
      */
     @Override
     public Mono<? extends ArtifactImportDTO> extractArtifactExchangeJsonAndSaveArtifact(
-            Part filePart, String workspaceId, String artifactId) {
+            String jsonContents, String workspaceId, String artifactId) {
 
         if (StringUtils.isEmpty(workspaceId)) {
             return Mono.error(new AppsmithException(AppsmithError.INVALID_PARAMETER, FieldName.WORKSPACE_ID));
         }
 
-        Mono<ArtifactImportDTO> importedContextMono = extractArtifactExchangeJson(filePart)
+        Mono<ArtifactImportDTO> importedContextMono = extractArtifactExchangeJson(jsonContents)
                 .zipWhen(contextJson -> {
                     if (StringUtils.isEmpty(artifactId)) {
                         return importNewArtifactInWorkspaceFromJson(workspaceId, contextJson);
@@ -182,10 +192,7 @@ public class ImportServiceCEImpl implements ImportServiceCE {
                 getArtifactBasedImportService(artifactExchangeJson);
         return permissionGroupRepository
                 .getCurrentUserPermissionGroups()
-                .zipWhen(userPermissionGroup -> {
-                    return Mono.just(contextBasedImportService.getImportArtifactPermissionProviderForImportingArtifact(
-                            userPermissionGroup));
-                })
+                .zipWhen(contextBasedImportService::getImportArtifactPermissionProviderForImportingArtifact)
                 .flatMap(tuple2 -> {
                     Set<String> userPermissionGroup = tuple2.getT1();
                     ImportArtifactPermissionProvider permissionProvider = tuple2.getT2();
@@ -416,7 +423,21 @@ public class ImportServiceCEImpl implements ImportServiceCE {
         Mono<? extends ArtifactExchangeJson> migratedArtifactJsonMono = artifactBasedImportService
                 .migrateArtifactExchangeJson(branchedArtifactId, artifactExchangeJson)
                 .flatMap(importedDoc -> {
-                    // Step 2: Validation of artifact Json
+                    // Step 1.5: Defensive identity-field sanitisation of the incoming JSON.
+                    // Nulls primary keys, base-branch pointers, audit fields, policies and git metadata on
+                    // every reachable domain object before any downstream service consumes the payload.
+                    // This prevents a crafted or otherwise polluted JSON from overwriting existing DB
+                    // documents via attacker-controlled ids. Retains {@code gitSyncId} and name-based
+                    // cross-references which are the legitimate glue the importer rewires via name-maps.
+                    //
+                    // Datasource is sanitised centrally (it is a cross-cutting entity shared across all
+                    // artifact types). Artifact-specific entities (pages, actions, collections, modules,
+                    // module instances, themes, jslibs) are sanitised by the artifact-based import
+                    // service, which delegates to each per-entity ImportableService.
+                    datasourceImportableService.sanitizeEntitiesInJsonForImport(importedDoc);
+                    artifactBasedImportService.sanitizeJsonForImport(importedDoc);
+
+                    // Step 2: Validation of artifact JSON
                     // check for validation error and raise exception if error found
                     String errorField = validateArtifactExchangeJson(importedDoc);
                     if (!errorField.isEmpty()) {
@@ -512,28 +533,43 @@ public class ImportServiceCEImpl implements ImportServiceCE {
                             importableArtifactMono,
                             importedDoc)))
                     .then(importableArtifactMono)
-                    .flatMap(importableArtifact -> updateImportableEntities(
-                            artifactBasedImportService,
-                            importableArtifact,
-                            mappedImportableResourcesDTO,
-                            importingMetaDTO))
-                    .flatMap(importableArtifact ->
-                            updateImportableArtifact(artifactBasedImportService, importableArtifact))
+                    .flatMap(importedArtifact -> {
+                        return artifactBasedImportService.updateImportableEntities(
+                                importedArtifact, mappedImportableResourcesDTO, importingMetaDTO);
+                    })
+                    .flatMap(artifactBasedImportService::updateImportableArtifact)
                     .onErrorResume(throwable -> {
                         String errorMessage = ImportExportUtils.getErrorMessage(throwable);
                         log.error("Error importing {}. Error: {}", artifactContextString, errorMessage, throwable);
+
+                        if (throwable instanceof AppsmithException appsmithException
+                                && appsmithException.getError() == AppsmithError.INVALID_PARAMETER) {
+                            return Mono.error(throwable);
+                        }
+                        if (throwable instanceof DuplicateKeyException) {
+                            return Mono.error(new AppsmithException(
+                                    AppsmithError.ARTIFACT_IMPORT_DUPLICATE_KEY_WRITE_ERROR, "Duplicate artifact key"));
+                        }
                         return Mono.error(new AppsmithException(
                                 AppsmithError.GENERIC_JSON_IMPORT_ERROR, workspaceId, errorMessage));
                     })
-                    // execute dry run for datasource
-                    .flatMap(importableArtifact -> dryOperationRepository
-                            .executeAllDbOps(mappedImportableResourcesDTO)
-                            .thenReturn(importableArtifact))
                     .as(transactionalOperator::transactional);
 
             return importMono
-                    .flatMap(importableArtifact -> sendImportedContextAnalyticsEvent(
-                            artifactBasedImportService, importableArtifact, AnalyticsEvents.IMPORT))
+                    .flatMap(importableArtifact -> {
+                        return artifactBasedImportService
+                                .getImportedArtifactFromDatabase(importableArtifact.getId())
+                                .flatMap(importedArtifactFromDB -> Mono.defer(() -> postImportHook(
+                                                        importedArtifactFromDB)
+                                                .onErrorResume(error -> {
+                                                    log.error("Post import hook failed: {}", error.getMessage(), error);
+                                                    return Mono.empty();
+                                                }))
+                                        .then(sendImportedContextAnalyticsEvent(
+                                                artifactBasedImportService,
+                                                importedArtifactFromDB,
+                                                AnalyticsEvents.IMPORT)));
+                    })
                     .zipWith(currUserMono)
                     .flatMap(tuple -> {
                         Artifact importableArtifact = tuple.getT1();
@@ -552,6 +588,10 @@ public class ImportServiceCEImpl implements ImportServiceCE {
         // means that even if the subscriber has cancelled its subscription, the create method still generates its
         // event.
         return Mono.create(sink -> resultMono.subscribe(sink::success, sink::error, null, sink.currentContext()));
+    }
+
+    protected Mono<Void> postImportHook(Artifact artifact) {
+        return getArtifactBasedImportService(artifact.getArtifactType()).postImportHook(artifact);
     }
 
     /**
@@ -574,36 +614,6 @@ public class ImportServiceCEImpl implements ImportServiceCE {
         }
 
         return errorField;
-    }
-
-    /**
-     * Updates importable entities with the contextDetails.
-     *
-     * @param contextBasedImportService
-     * @param importableArtifact
-     * @param mappedImportableResourcesDTO
-     * @param importingMetaDTO
-     * @return
-     */
-    private Mono<? extends Artifact> updateImportableEntities(
-            ArtifactBasedImportService<?, ?, ?> contextBasedImportService,
-            Artifact importableArtifact,
-            MappedImportableResourcesDTO mappedImportableResourcesDTO,
-            ImportingMetaDTO importingMetaDTO) {
-        return contextBasedImportService.updateImportableEntities(
-                importableArtifact, mappedImportableResourcesDTO, importingMetaDTO);
-    }
-
-    /**
-     * update the importable context with contextSpecific entities after the entities has been created.
-     *
-     * @param contextBasedImportService
-     * @param importableArtifact
-     * @return
-     */
-    private Mono<? extends Artifact> updateImportableArtifact(
-            ArtifactBasedImportService<?, ?, ?> contextBasedImportService, Artifact importableArtifact) {
-        return contextBasedImportService.updateImportableArtifact(importableArtifact);
     }
 
     /**

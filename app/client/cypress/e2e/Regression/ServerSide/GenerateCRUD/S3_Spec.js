@@ -6,6 +6,7 @@ const commonlocators = require("../../../../locators/commonlocators.json");
 
 import {
   agHelper,
+  assertHelper,
   dataSources,
   deployMode,
   homePage,
@@ -16,7 +17,7 @@ import EditorNavigation, {
 
 describe(
   "Generate New CRUD Page Inside from entity explorer",
-  { tags: ["@tag.Datasource", "@tag.Git", "@tag.AccessControl"] },
+  { tags: ["@tag.Datasource", "@tag.AccessControl"] },
   function () {
     let datasourceName;
 
@@ -45,6 +46,7 @@ describe(
 
       //TestData & save datasource
       dataSources.TestSaveDatasource();
+      agHelper.WaitUntilAllToastsDisappear();
       // fetch bucket
       cy.wait("@getDatasourceStructure").should(
         "have.nested.property",
@@ -80,8 +82,7 @@ describe(
     });
 
     it("2. Generate CRUD page from datasource ACTIVE section", function () {
-      cy.NavigateToDSGeneratePage(datasourceName);
-
+      dataSources.GeneratePageForDS(datasourceName);
       // fetch bucket
       cy.wait("@getDatasourceStructure").should(
         "have.nested.property",
@@ -129,12 +130,12 @@ describe(
       cy.fillAmazonS3DatasourceForm();
 
       //TestData source
-      cy.get(".t--test-datasource").click();
-      cy.wait("@testDatasource");
+      dataSources.TestDatasource(true);
+      agHelper.WaitUntilAllToastsDisappear();
 
       //Save source
-      cy.get(".t--save-datasource").click();
-      cy.wait("@saveDatasource");
+      dataSources.SaveDatasource();
+      agHelper.WaitUntilAllToastsDisappear();
 
       //Verify page after save clicked
       // cy.get("@saveDatasource").then((httpResponse) => {

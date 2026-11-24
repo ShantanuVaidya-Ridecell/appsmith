@@ -1,9 +1,9 @@
 import React from "react";
 import { connect } from "react-redux";
 import { createTempDatasourceFromForm } from "actions/datasourceActions";
-import type { AppState } from "ee/reducers";
+import type { DefaultRootState } from "react-redux";
 import AnalyticsUtil from "ee/utils/AnalyticsUtil";
-import { type Plugin, PluginType } from "entities/Plugin";
+import { type Plugin, PluginPackageName, PluginType } from "entities/Plugin";
 import { getAssetUrl, isAirgapped } from "ee/utils/airgapHelpers";
 import {
   DatasourceContainer,
@@ -18,6 +18,7 @@ import {
 } from "ee/constants/messages";
 import { pluginSearchSelector } from "./CreateNewDatasourceHeader";
 import { getPlugins } from "ee/selectors/entitiesSelector";
+import { filterSearch } from "./util";
 
 interface CreateAIPluginsProps {
   pageId: string;
@@ -78,7 +79,7 @@ function CreateAIPlugins(props: CreateAIPluginsProps) {
   );
 }
 
-const mapStateToProps = (state: AppState) => {
+const mapStateToProps = (state: DefaultRootState) => {
   const searchedPlugin = (
     pluginSearchSelector(state, "search") || ""
   ).toLocaleLowerCase();
@@ -86,16 +87,20 @@ const mapStateToProps = (state: AppState) => {
   let plugins = getPlugins(state);
 
   // AI Plugins
-  plugins = plugins
-    .sort((a, b) => {
-      // Sort the AI plugins alphabetically
-      return a.name.localeCompare(b.name);
-    })
-    .filter(
-      (plugin) =>
-        plugin.type === PluginType.AI &&
-        plugin.name.toLocaleLowerCase().includes(searchedPlugin),
-    );
+  plugins = filterSearch(
+    plugins
+      .sort((a, b) => {
+        // Sort the AI plugins alphabetically
+        return a.name.localeCompare(b.name);
+      })
+      .filter(
+        (plugin) =>
+          plugin.type === PluginType.AI &&
+          // Appsmith AI is deprecated — creating new datasources for it is blocked
+          plugin.packageName !== PluginPackageName.APPSMITH_AI,
+      ),
+    searchedPlugin,
+  ) as Plugin[];
 
   return {
     plugins,

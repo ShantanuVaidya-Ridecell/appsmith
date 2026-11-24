@@ -10,9 +10,9 @@ import type {
   PropertyUpdates,
   SnipingModeProperty,
   WidgetCallout,
-} from "WidgetProvider/constants";
+} from "WidgetProvider/types";
 import { COMPACT_MODE_MIN_ROWS } from "WidgetProvider/constants";
-import type { DerivedPropertiesMap } from "WidgetProvider/factory";
+import type { DerivedPropertiesMap } from "WidgetProvider/factory/types";
 import { LabelPosition } from "components/constants";
 import type { ExecutionResult } from "constants/AppsmithActionConstants/ActionConstants";
 import { EventType } from "constants/AppsmithActionConstants/ActionConstants";
@@ -1050,6 +1050,7 @@ class InputWidget extends BaseWidget<InputWidgetProps, WidgetState> {
         inputType={this.props.inputType}
         isInvalid={isInvalid}
         isLoading={this.props.isLoading}
+        isRequired={this.props.isRequired}
         label={this.props.label}
         labelAlignment={this.props.labelAlignment}
         labelPosition={this.props.labelPosition}

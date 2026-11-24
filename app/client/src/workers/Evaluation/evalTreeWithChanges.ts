@@ -1,6 +1,5 @@
 import { dataTreeEvaluator } from "./handlers/evalTree";
 import type { EvalMetaUpdates } from "ee/workers/common/DataTreeEvaluator/types";
-import { makeEntityConfigsAsObjProperties } from "ee/workers/Evaluation/dataTreeUtils";
 import type {
   EvalTreeResponseData,
   EvalWorkerSyncRequest,
@@ -8,14 +7,20 @@ import type {
 } from "./types";
 import { MessageType, sendMessage } from "utils/MessageUtil";
 import { MAIN_THREAD_ACTION } from "ee/workers/Evaluation/evalWorkerActions";
-import type { UpdateDataTreeMessageData } from "sagas/EvalWorkerActionSagas";
+import type { UpdateDataTreeMessageData } from "sagas/types";
 import {
   generateOptimisedUpdatesAndSetPrevState,
   getNewDataTreeUpdates,
   uniqueOrderUpdatePaths,
+  updateEvalProps,
 } from "./helpers";
-import type { DataTreeDiff } from "ee/workers/Evaluation/evaluationUtils";
+import {
+  isDataPath,
+  type DataTreeDiff,
+} from "ee/workers/Evaluation/evaluationUtils";
 import type DataTreeEvaluator from "workers/common/DataTreeEvaluator";
+import type { Diff } from "deep-diff";
+import type { DataTree } from "entities/DataTree/dataTreeTypes";
 
 const getDefaultEvalResponse = (): EvalTreeResponseData => ({
   updates: "[]",
@@ -32,6 +37,7 @@ const getDefaultEvalResponse = (): EvalTreeResponseData => ({
   isNewWidgetAdded: false,
   undefinedEvalValuesMap: {},
   jsVarsCreatedEvent: [],
+  executeReactiveActions: [],
 });
 
 export function evalTreeWithChanges(
@@ -43,7 +49,25 @@ export function evalTreeWithChanges(
   const { data } = request;
   const { metaUpdates = [], updatedValuePaths } = data;
 
-  const pathsToSkipFromEval = updatedValuePaths.map((path) => path.join("."));
+  const unEvalTree = dataTreeEvaluator?.getEvalTree();
+  const filteredUpdatedValuePaths = updatedValuePaths.filter((pathArr) => {
+    if (pathArr[pathArr.length - 1] !== "data") return true;
+
+    const fullPath = pathArr.join(".");
+
+    const entityName = pathArr[0];
+    const entity = unEvalTree?.[entityName];
+
+    if (entity && isDataPath(entity, fullPath)) {
+      return false; // filter out
+    }
+
+    return true; // keep for other entity types
+  });
+
+  const pathsToSkipFromEval = filteredUpdatedValuePaths.map((path) =>
+    path.join("."),
+  );
 
   let setupUpdateTreeResponse = {} as UpdateTreeResponse;
 
@@ -104,6 +128,8 @@ export const evaluateAndGenerateResponse = (
       {},
       dataTreeEvaluator,
       [],
+      undefined,
+      false,
     );
 
     defaultResponse.updates = updates;
@@ -124,14 +150,10 @@ export const evaluateAndGenerateResponse = (
     evalOrder,
     dataTreeEvaluator.oldConfigTree,
     unEvalUpdates,
+    [],
   );
 
-  const dataTree = makeEntityConfigsAsObjProperties(
-    dataTreeEvaluator.evalTree,
-    {
-      evalProps: dataTreeEvaluator.evalProps,
-    },
-  );
+  const dataTree = updateEvalProps(dataTreeEvaluator) || {};
 
   /** Make sure evalMetaUpdates is sanitized to prevent postMessage failure */
   defaultResponse.evalMetaUpdates = JSON.parse(
@@ -140,12 +162,15 @@ export const evaluateAndGenerateResponse = (
 
   defaultResponse.staleMetaIds = updateResponse.staleMetaIds;
   defaultResponse.dependencies = dataTreeEvaluator.inverseDependencies;
+  defaultResponse.executeReactiveActions =
+    updateResponse.executeReactiveActions;
 
   // when additional paths are required to be added as updates, we extract the updates from the data tree using these paths.
   const additionalUpdates = getNewDataTreeUpdates(
     additionalPathsAddedAsUpdates,
     dataTree,
-  );
+  ) as Diff<DataTree, DataTree>[];
+
   // the affected paths is a combination of the eval order and the uneval updates
   // we use this collection to limit the diff between the old and new data tree
   const affectedNodePaths = getAffectedNodesInTheDataTree(
@@ -153,12 +178,15 @@ export const evaluateAndGenerateResponse = (
     evalOrder,
   );
 
-  defaultResponse.updates = generateOptimisedUpdatesAndSetPrevState(
+  const updates = generateOptimisedUpdatesAndSetPrevState(
     dataTree,
     dataTreeEvaluator,
     affectedNodePaths,
     additionalUpdates,
+    true,
   );
+
+  defaultResponse.updates = updates;
   dataTreeEvaluator.undefinedEvalValuesMap =
     dataTreeEvaluator.undefinedEvalValuesMap || {};
 

@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from "react";
 import styled from "styled-components";
 import { connect, useDispatch } from "react-redux";
-import type { AppState } from "ee/reducers";
+import type { DefaultRootState } from "react-redux";
 import AnalyticsUtil from "ee/utils/AnalyticsUtil";
 import {
   Button,
@@ -27,6 +27,7 @@ import {
 } from "@appsmith/ads-old";
 import SuccessTick from "pages/common/SuccessTick";
 import { getAssetUrl } from "ee/utils/airgapHelpers";
+import Interweave from "interweave";
 
 interface Props {
   crudInfoModalOpen: boolean;
@@ -95,7 +96,7 @@ const STEP = {
 
 const DELAY_TIME = 3000;
 
-function InfoContent({
+export function InfoContent({
   successImageUrl,
   successMessage,
 }: {
@@ -105,12 +106,9 @@ function InfoContent({
   return (
     <Content>
       {/* TODO: Replace this with ADS text */}
-      <InfoContentHeadingText
-        className="info-subtitle"
-        dangerouslySetInnerHTML={{
-          __html: successMessage,
-        }}
-      />
+      <InfoContentHeadingText className="info-subtitle">
+        <Interweave content={successMessage} />
+      </InfoContentHeadingText>
       <ImageWrapper>
         <ProgressiveImage
           alt="template information"
@@ -183,7 +181,7 @@ function GenCRUDSuccessModal(props: Props) {
   );
 }
 
-const mapStateToProps = (state: AppState) => ({
+const mapStateToProps = (state: DefaultRootState) => ({
   crudInfoModalOpen: getCrudInfoModalData(state).crudInfoModalOpen,
   generateCRUDSuccessInfo: getCrudInfoModalData(state).generateCRUDSuccessInfo,
 });

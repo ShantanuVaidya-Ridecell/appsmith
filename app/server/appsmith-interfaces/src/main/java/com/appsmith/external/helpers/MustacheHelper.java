@@ -5,7 +5,6 @@ import com.appsmith.external.models.EntityDependencyNode;
 import com.appsmith.external.models.EntityReferenceType;
 import com.appsmith.external.models.MustacheBindingToken;
 import lombok.extern.slf4j.Slf4j;
-import org.apache.commons.text.StringEscapeUtils;
 import org.springframework.beans.BeanWrapper;
 import org.springframework.beans.BeansException;
 import org.springframework.beans.PropertyAccessorFactory;
@@ -341,25 +340,39 @@ public class MustacheHelper {
                 // text
                 // and hence reflecting the value in the rendered string as is.
                 // Example: {{Input.text}} = "This whole string is the value of Input1.text. Even this {{one}}."
-                String bindingValue = keyValueMap.get(token.getValue()
+                String tokenSubstring = token.getValue()
                         .substring(2, token.getValue().length() - 2)
-                        .trim());
-                if (bindingValue != null) {
-                    rendered.append(bindingValue);
-                } else {
+                        .trim();
+                String bindingValue = keyValueMap.get(tokenSubstring);
+                if (!keyValueMap.containsKey(tokenSubstring)) {
                     rendered.append(token.getValue());
+                } else if (bindingValue != null) {
+                    // Handle &quot; and &#34; (HTML-encoded double quotes) inside the binding
+                    // VALUE only, converting them to escaped double quotes (\") so interpolating
+                    // the value into a JSON template keeps the JSON valid.
+                    //
+                    // Scoping to the binding value is deliberate: template literals and
+                    // pass-through content (e.g., binary uploads) must never be mutated by this
+                    // JSON-validity escape. Historically the replacement ran on the fully
+                    // assembled string and corrupted binary data that happened to contain these
+                    // byte sequences. See: https://linear.app/appsmith/issue/V2-3662
+                    rendered.append(escapeHtmlDoubleQuoteEntities(bindingValue));
                 }
             } else {
                 rendered.append(token.getValue());
             }
         }
-        /**
-         * ReplaceAll is used to escape the double quotes symbol with \" so that
-         * JSON remains valid.
-         * &quot; and &#34; both are HTML reserved characters for double quotes (")
-         */
-        return StringEscapeUtils.unescapeHtml4(
-                rendered.toString().replaceAll("&quot;", "\\\\&quot;").replaceAll("&#34;", "\\\\&#34;"));
+        return rendered.toString();
+    }
+
+    private static String escapeHtmlDoubleQuoteEntities(String value) {
+        if (value == null || value.isEmpty()) {
+            return value;
+        }
+        if (value.indexOf('&') < 0) {
+            return value;
+        }
+        return value.replace("&quot;", "\\\"").replace("&#34;", "\\\"");
     }
 
     /**

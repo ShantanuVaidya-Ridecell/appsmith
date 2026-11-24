@@ -4,7 +4,6 @@ import {
   ReduxActionTypes,
 } from "ee/constants/ReduxActionConstants";
 import type {
-  ApplicationPagePayload,
   ApplicationResponsePayload,
   ChangeAppViewAccessRequest,
   CreateApplicationRequest,
@@ -26,13 +25,16 @@ import type {
   UploadNavigationLogoRequest,
 } from "ee/api/ApplicationApi";
 import ApplicationApi from "ee/api/ApplicationApi";
-import { all, call, put, select, take } from "redux-saga/effects";
+import { all, call, fork, put, select, take } from "redux-saga/effects";
 
 import { validateResponse } from "sagas/ErrorSagas";
-import { getCurrentApplicationIdForCreateNewApp } from "ee/selectors/applicationSelectors";
+import {
+  getCurrentApplication,
+  getCurrentApplicationIdForCreateNewApp,
+} from "ee/selectors/applicationSelectors";
 import type { ApiResponse } from "api/ApiResponses";
 import history from "utils/history";
-import type { AppState } from "ee/reducers";
+import type { DefaultRootState } from "react-redux";
 import {
   ApplicationVersion,
   deleteApplicationNavigationLogoSuccessAction,
@@ -48,15 +50,18 @@ import {
   updateApplicationNavigationLogoSuccessAction,
   updateApplicationNavigationSettingAction,
   updateCurrentApplicationEmbedSetting,
+  updateCurrentApplicationDescription,
   updateCurrentApplicationIcon,
   updateCurrentApplicationForkingEnabled,
   updateApplicationThemeSettingAction,
   fetchAllApplicationsOfWorkspace,
+  publishApplication,
 } from "ee/actions/applicationActions";
 import AnalyticsUtil from "ee/utils/AnalyticsUtil";
 import {
   createMessage,
   ERROR_IMPORTING_APPLICATION_TO_WORKSPACE,
+  ERROR_IN_DISABLING_STATIC_URL,
   IMPORT_APP_SUCCESSFUL,
 } from "ee/constants/messages";
 import { APP_MODE } from "entities/App";
@@ -89,7 +94,7 @@ import { isEmpty, merge } from "lodash";
 import { checkAndGetPluginFormConfigsSaga } from "sagas/PluginSagas";
 import { getPageList, getPluginForm } from "ee/selectors/entitiesSelector";
 import { getConfigInitialValues } from "components/formControls/utils";
-import DatasourcesApi from "api/DatasourcesApi";
+import DatasourcesApi from "ee/api/DatasourcesApi";
 import type { SetDefaultPageActionPayload } from "actions/pageActions";
 import { resetApplicationWidgets } from "actions/pageActions";
 import { setCanvasCardsState } from "actions/editorActions";
@@ -97,12 +102,17 @@ import { toast } from "@appsmith/ads";
 import type { User } from "constants/userConstants";
 import { ANONYMOUS_USERNAME } from "constants/userConstants";
 import { getCurrentUser } from "selectors/usersSelectors";
-import { ERROR_CODES } from "ee/constants/ApiConstants";
+import {
+  AXIOS_CONNECTION_ABORTED_CODE,
+  ERROR_CODES,
+  SERVER_ERROR_CODES,
+} from "ee/constants/ApiConstants";
 import { safeCrashAppRequest } from "actions/errorActions";
 import type { IconNames } from "@appsmith/ads";
 import {
   defaultNavigationSetting,
   keysOfNavigationSetting,
+  type NavigationSetting,
 } from "constants/AppConstants";
 import { setAllEntityCollapsibleStates } from "actions/editorContextActions";
 import { getCurrentEnvironmentId } from "ee/selectors/environmentSelectors";
@@ -111,23 +121,60 @@ import {
   getApplicationsOfWorkspace,
   getCurrentWorkspaceId,
 } from "ee/selectors/selectedWorkspaceSelectors";
+import { FAVORITES_KEY } from "ee/constants/workspaceConstants";
+import type { ApplicationPayload } from "entities/Application";
 import equal from "fast-deep-equal";
 import { getFromServerWhenNoPrefetchedResult } from "sagas/helper";
-import { getIsAnvilLayoutEnabled } from "layoutSystems/anvil/integrations/selectors";
 import type { Page } from "entities/Page";
-import type { ApplicationPayload } from "entities/Application";
-
-export const findDefaultPage = (pages: ApplicationPagePayload[] = []) => {
-  const defaultPage = pages.find((page) => page.isDefault) ?? pages[0];
-
-  return defaultPage;
-};
+import { objectKeys } from "@appsmith/utils";
+import { findDefaultPage } from "pages/utils";
+import { getIsAiAgentInstanceEnabled } from "ee/selectors/aiAgentSelectors";
 
 export let windowReference: Window | null = null;
+
+const AI_DATASOURCE_NAME = "AI Datasource";
 
 export function* publishApplicationSaga(
   requestAction: ReduxAction<PublishApplicationRequest>,
 ) {
+  const currentApplication: ApplicationPayload | undefined = yield select(
+    getCurrentApplication,
+  );
+
+  if (currentApplication) {
+    const appName = currentApplication.name;
+    const appId = currentApplication?.id;
+    const pageCount = currentApplication?.pages?.length;
+    const navigationSettingsWithPrefix: Record<
+      string,
+      NavigationSetting[keyof NavigationSetting]
+    > = {};
+
+    if (currentApplication.applicationDetail?.navigationSetting) {
+      const settingKeys = objectKeys(
+        currentApplication.applicationDetail.navigationSetting,
+      ) as Array<keyof NavigationSetting>;
+
+      settingKeys.map((key: keyof NavigationSetting) => {
+        if (currentApplication.applicationDetail?.navigationSetting?.[key]) {
+          const value: NavigationSetting[keyof NavigationSetting] =
+            currentApplication.applicationDetail.navigationSetting[key];
+
+          navigationSettingsWithPrefix[`navigationSetting_${key}`] = value;
+        }
+      });
+    }
+
+    AnalyticsUtil.logEvent("PUBLISH_APP", {
+      appId,
+      appName,
+      pageCount,
+      ...navigationSettingsWithPrefix,
+      isPublic: !!currentApplication?.isPublic,
+      templateTitle: currentApplication?.forkedFromTemplateTitle,
+    });
+  }
+
   try {
     const request = requestAction.payload;
     const response: PublishApplicationResponse = yield call(
@@ -145,10 +192,6 @@ export function* publishApplicationSaga(
       const currentBasePageId: string = yield select(getCurrentBasePageId);
       const currentPageId: string = yield select(getCurrentPageId);
 
-      const appicationViewPageUrl = viewerURL({
-        basePageId: currentBasePageId,
-      });
-
       yield put(
         fetchApplication({
           applicationId,
@@ -156,6 +199,17 @@ export function* publishApplicationSaga(
           mode: APP_MODE.EDIT,
         }),
       );
+
+      // Wait for the fetch application success or error to ensure the application is fetched before getting the view page url
+      // This is to get the latest static url for the application
+      yield take([
+        ReduxActionTypes.FETCH_APPLICATION_SUCCESS,
+        ReduxActionErrorTypes.FETCH_APPLICATION_ERROR,
+      ]);
+
+      const appicationViewPageUrl = viewerURL({
+        basePageId: currentBasePageId,
+      });
 
       // If the tab is opened focus and reload else open in new tab
       if (!windowReference || windowReference.closed) {
@@ -169,6 +223,63 @@ export function* publishApplicationSaga(
   } catch (error) {
     yield put({
       type: ReduxActionErrorTypes.PUBLISH_APPLICATION_ERROR,
+      payload: {
+        error,
+      },
+    });
+  }
+}
+
+export function* redeployApplicationSaga() {
+  try {
+    const currentApplication: ApplicationPayload | undefined = yield select(
+      getCurrentApplication,
+    );
+
+    if (!currentApplication) {
+      throw new Error("Current Application is missing while redeploying App");
+    }
+
+    const applicationId: string = currentApplication.id;
+    const appName: string = currentApplication.name;
+
+    AnalyticsUtil.logEvent("REDEPLOY_APP", {
+      appId: applicationId,
+      appName,
+    });
+    const request: PublishApplicationRequest = {
+      applicationId,
+    };
+    const response: PublishApplicationResponse = yield call(
+      ApplicationApi.publishApplication,
+      request,
+    );
+    const isValidResponse: boolean = yield validateResponse(response);
+
+    if (isValidResponse) {
+      const currentPageId: string = yield select(getCurrentPageId);
+
+      yield put(
+        fetchApplication({
+          applicationId,
+          pageId: currentPageId,
+          mode: APP_MODE.EDIT,
+        }),
+      );
+
+      // Wait for the fetch application success or error to ensure the application is fetched
+      yield take([
+        ReduxActionTypes.FETCH_APPLICATION_SUCCESS,
+        ReduxActionErrorTypes.FETCH_APPLICATION_ERROR,
+      ]);
+
+      yield put({
+        type: ReduxActionTypes.REDEPLOY_APPLICATION_SUCCESS,
+      });
+    }
+  } catch (error) {
+    yield put({
+      type: ReduxActionErrorTypes.REDEPLOY_APPLICATION_ERROR,
       payload: {
         error,
       },
@@ -279,6 +390,7 @@ export function* fetchAppAndPagesSaga(
             isHidden: !!page.isHidden,
             slug: page.slug,
             customSlug: page.customSlug,
+            uniqueSlug: page.uniqueSlug,
             userPermissions: page.userPermissions
               ? page.userPermissions
               : pagePermissionsMap[page.id],
@@ -431,6 +543,14 @@ export function* updateApplicationSaga(
           yield put(updateCurrentApplicationIcon(response.data.icon));
         }
 
+        if (request.description !== undefined) {
+          yield put(
+            updateCurrentApplicationDescription(
+              response.data.description ?? "",
+            ),
+          );
+        }
+
         if (request.embedSetting) {
           yield put(
             updateCurrentApplicationEmbedSetting(response.data.embedSetting),
@@ -476,11 +596,134 @@ export function* updateApplicationSaga(
   }
 }
 
+/**
+ * True when a failed delete may have succeeded on the server (timeout / disconnect /
+ * already-gone), so the workspace app list should be rechecked before showing an error.
+ */
+export function shouldRecoverDeleteApplicationFromError(
+  error: unknown,
+): boolean {
+  const err = error as {
+    code?: string;
+    message?: string;
+    response?: { status?: number };
+  };
+
+  if (
+    err?.code === ERROR_CODES.REQUEST_TIMEOUT ||
+    err?.code === AXIOS_CONNECTION_ABORTED_CODE ||
+    err?.code === "ECONNABORTED" ||
+    err?.code === ERROR_CODES.PAGE_NOT_FOUND
+  ) {
+    return true;
+  }
+
+  if (err?.code && SERVER_ERROR_CODES.RESOURCE_NOT_FOUND.includes(err.code)) {
+    return true;
+  }
+
+  if (err?.response?.status === 404) {
+    return true;
+  }
+
+  // Browser offline / dropped connection mid-request (no Axios timeout code).
+  if (
+    typeof err?.message === "string" &&
+    /network error|failed to fetch/i.test(err.message)
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+export interface DeleteApplicationRecoveryContext {
+  workspaceId: string | undefined;
+  /** Base/default-branch application id — what `/home` lists for Git apps. */
+  baseApplicationId: string | undefined;
+}
+
+/**
+ * Capture workspace + base application id before navigation can change selection.
+ * Editor delete pushes `/applications` without workspaceId; `/home` only returns
+ * base apps, so branch application ids must be compared via baseId.
+ */
+export function* resolveDeleteApplicationRecoveryContext(
+  applicationId: string,
+) {
+  const currentApplication: ApplicationPayload | undefined = yield select(
+    getCurrentApplication,
+  );
+
+  if (
+    currentApplication?.id === applicationId &&
+    currentApplication.workspaceId
+  ) {
+    return {
+      workspaceId: currentApplication.workspaceId,
+      baseApplicationId: currentApplication.baseId || currentApplication.id,
+    };
+  }
+
+  const applications: ApplicationPayload[] = yield select(
+    getApplicationsOfWorkspace,
+  );
+  const match = applications.find(
+    (application) =>
+      application.id === applicationId || application.baseId === applicationId,
+  );
+
+  if (match?.workspaceId) {
+    return {
+      workspaceId: match.workspaceId,
+      baseApplicationId: match.baseId || match.id,
+    };
+  }
+
+  const workspaceId: string = yield select(getCurrentWorkspaceId);
+
+  if (workspaceId && workspaceId !== FAVORITES_KEY) {
+    return {
+      workspaceId,
+      // Best effort when we only know the deleted id (homepage non-Git card).
+      baseApplicationId: applicationId,
+    };
+  }
+
+  return { workspaceId: undefined, baseApplicationId: undefined };
+}
+
+/** True when /home still lists this app (by branch id or base id). */
+export function isApplicationPresentInHomeList(
+  homeApplications: Array<{ id: string; baseId?: string }>,
+  applicationId: string,
+  baseApplicationId?: string,
+): boolean {
+  const idsToMatch = new Set(
+    [applicationId, baseApplicationId].filter(
+      (id): id is string => typeof id === "string" && id.length > 0,
+    ),
+  );
+
+  return homeApplications.some(
+    (application) =>
+      idsToMatch.has(application.id) ||
+      (application.baseId != null && idsToMatch.has(application.baseId)),
+  );
+}
+
 export function* deleteApplicationSaga(
   action: ReduxAction<DeleteApplicationRequest>,
 ) {
+  const request: DeleteApplicationRequest = action.payload;
+  // Capture before the delete awaits — editor delete navigates home immediately and
+  // can reset the selected workspace to workspaces[0] / favorites.
+  const recoveryContext: DeleteApplicationRecoveryContext = yield call(
+    resolveDeleteApplicationRecoveryContext,
+    request.applicationId,
+  );
+
   try {
-    const request: DeleteApplicationRequest = action.payload;
     const response: ApiResponse = yield call(
       ApplicationApi.deleteApplication,
       request,
@@ -495,12 +738,102 @@ export function* deleteApplicationSaga(
       yield call(deleteRecentAppEntities, request.applicationId);
     }
   } catch (error) {
-    yield put({
-      type: ReduxActionErrorTypes.DELETE_APPLICATION_ERROR,
-      payload: {
-        error,
-      },
+    const recovered: boolean = yield call(
+      recoverDeleteApplicationIfAlreadyGone,
+      request.applicationId,
+      error,
+      recoveryContext,
+    );
+
+    if (!recovered) {
+      yield put({
+        type: ReduxActionErrorTypes.DELETE_APPLICATION_ERROR,
+        payload: {
+          error,
+        },
+      });
+    }
+  }
+}
+
+/**
+ * After a flaky delete response, refetch apps for the workspace captured at delete
+ * start. If the base/home row is gone, treat the delete as successful so the
+ * dashboard card clears without a refresh.
+ */
+export function* recoverDeleteApplicationIfAlreadyGone(
+  applicationId: string,
+  error: unknown,
+  recoveryContext: DeleteApplicationRecoveryContext,
+) {
+  if (!shouldRecoverDeleteApplicationFromError(error)) {
+    return false;
+  }
+
+  const { baseApplicationId, workspaceId } = recoveryContext;
+
+  if (!workspaceId || workspaceId === FAVORITES_KEY) {
+    return false;
+  }
+
+  try {
+    const response: FetchApplicationsOfWorkspaceResponse = yield call(
+      ApplicationApi.fetchAllApplicationsOfWorkspace,
+      workspaceId,
+    );
+    const isValidResponse: boolean = yield call(validateResponse, response);
+
+    if (!isValidResponse) {
+      return false;
+    }
+
+    const stillPresent = isApplicationPresentInHomeList(
+      response.data,
+      applicationId,
+      baseApplicationId,
+    );
+
+    if (stillPresent) {
+      return false;
+    }
+
+    const applications = response.data.map((application) => {
+      const defaultPage = findDefaultPage(application.pages);
+
+      return {
+        ...application,
+        defaultPageId: defaultPage?.id,
+        defaultBasePageId: defaultPage?.baseId,
+      };
     });
+
+    // Do not overwrite the homepage list if the user is now viewing another workspace
+    // (common after editor delete → /applications without ?workspaceId=).
+    const currentWorkspaceId: string = yield select(getCurrentWorkspaceId);
+
+    if (currentWorkspaceId === workspaceId) {
+      yield put({
+        type: ReduxActionTypes.FETCH_ALL_APPLICATIONS_OF_WORKSPACE_SUCCESS,
+        payload: applications,
+      });
+    }
+
+    // Prefer base id so selectedWorkspaceReducer removes the homepage card for Git apps.
+    const homeListApplicationId = baseApplicationId || applicationId;
+
+    yield put({
+      type: ReduxActionTypes.DELETE_APPLICATION_SUCCESS,
+      payload: { id: homeListApplicationId },
+    });
+    yield call(deleteRecentAppEntities, applicationId);
+
+    if (homeListApplicationId !== applicationId) {
+      yield call(deleteRecentAppEntities, homeListApplicationId);
+    }
+
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -542,6 +875,7 @@ export function* createApplicationSaga(
     icon: IconNames;
     color: AppColorCode;
     workspaceId: string;
+    layoutSystemType?: LayoutSystemTypes;
     // TODO: Fix this the next time the file is edited
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     resolve: any;
@@ -550,7 +884,14 @@ export function* createApplicationSaga(
     reject: any;
   }>,
 ) {
-  const { applicationName, color, icon, reject, workspaceId } = action.payload;
+  const {
+    applicationName,
+    color,
+    icon,
+    layoutSystemType,
+    reject,
+    workspaceId,
+  } = action.payload;
 
   try {
     const applications: Workspace[] = yield select(getApplicationsOfWorkspace);
@@ -577,19 +918,9 @@ export function* createApplicationSaga(
         icon: icon,
         color: color,
         workspaceId,
-        layoutSystemType: LayoutSystemTypes.FIXED, // Note: This may be provided as an action payload in the future
+        // Defaults to FIXED; callers (e.g. the Anvil create option) may request ANVIL.
+        layoutSystemType: layoutSystemType ?? LayoutSystemTypes.FIXED,
       };
-
-      // SPECIAL HANDLING FOR ANVIL DURING EXPERIMENTATION
-      // Check if Anvil is enabled for the user, If so, default to using
-      // Anvil as the layout system for the new app. Also, we want to hide the navbar for anvil apps
-      const isAnvilEnabled: boolean = yield select(getIsAnvilLayoutEnabled);
-
-      if (isAnvilEnabled) {
-        request.layoutSystemType = LayoutSystemTypes.ANVIL;
-        request.showNavbar = false;
-      }
-      /** EO SPECIAL HANDLING FOR ANVIL DURING EXPERIMENTATION */
 
       const response: CreateApplicationResponse = yield call(
         ApplicationApi.createApplication,
@@ -721,12 +1052,22 @@ export function* forkApplicationSaga(
         yield take(ReduxActionTypes.INITIALIZE_EDITOR_SUCCESS);
       }
 
-      if (response.data.isPartialImport) {
+      // Temporary fix to remove AI Datasource from the unConfiguredDatasourceList
+      // so we can avoid showing the AI Datasource in reconnect datasource modal
+      const filteredUnConfiguredDatasourceList = (
+        response?.data?.unConfiguredDatasourceList || []
+      ).filter(
+        (datasource) => datasource.name !== AI_DATASOURCE_NAME,
+      ) as Datasource[];
+
+      if (
+        response.data.isPartialImport &&
+        filteredUnConfiguredDatasourceList.length > 0
+      ) {
         yield put(
           showReconnectDatasourceModal({
             application: response.data?.application,
-            unConfiguredDatasourceList:
-              response?.data.unConfiguredDatasourceList,
+            unConfiguredDatasourceList: filteredUnConfiguredDatasourceList,
             workspaceId: action.payload.workspaceId,
           }),
         );
@@ -763,6 +1104,7 @@ export function* showReconnectDatasourcesModalSaga(
 
   yield put(setWorkspaceIdForImport({ editorId: application.id, workspaceId }));
   yield put(setPageIdForImport(pageId));
+
   yield put(setIsReconnectingDatasourcesModalOpen({ isOpen: true }));
 }
 
@@ -770,7 +1112,11 @@ export function* importApplicationSaga(
   action: ReduxAction<ImportApplicationRequest>,
 ) {
   try {
-    const response: ApiResponse = yield call(
+    const response: ApiResponse<{
+      unConfiguredDatasourceList: Datasource[];
+      application: ApplicationResponsePayload;
+      isPartialImport: boolean;
+    }> = yield call(
       ApplicationApi.importApplicationToWorkspace,
       action.payload,
     );
@@ -787,28 +1133,29 @@ export function* importApplicationSaga(
 
       if (currentWorkspaceId || currentWorkspace.length > 0) {
         const {
-          // @ts-expect-error: response is of type unknown
           application: { pages },
-          // @ts-expect-error: response is of type unknown
           isPartialImport,
         } = response.data;
 
-        // @ts-expect-error: response is of type unknown
         yield put(importApplicationSuccess(response.data?.application));
 
-        if (isPartialImport) {
+        // Temporary fix to remove AI Datasource from the unConfiguredDatasourceList
+        // so we can avoid showing the AI Datasource in reconnect datasource modal
+        const filteredUnConfiguredDatasourceList = (
+          response?.data?.unConfiguredDatasourceList || []
+        ).filter(
+          (datasource) => datasource.name !== AI_DATASOURCE_NAME,
+        ) as Datasource[];
+
+        if (isPartialImport && filteredUnConfiguredDatasourceList.length > 0) {
           yield put(
             showReconnectDatasourceModal({
-              // @ts-expect-error: response is of type unknown
               application: response.data?.application,
-              unConfiguredDatasourceList:
-                // @ts-expect-error: response is of type unknown
-                response?.data.unConfiguredDatasourceList,
+              unConfiguredDatasourceList: filteredUnConfiguredDatasourceList,
               workspaceId: action.payload.workspaceId,
             }),
           );
         } else {
-          // @ts-expect-error: pages is of type any
           // TODO: Update route params here
           const { application } = response.data;
           const defaultPage = findDefaultPage(pages);
@@ -818,6 +1165,7 @@ export function* importApplicationSaga(
 
           if (isApplicationUrl) {
             const appId = application.id;
+            // @ts-expect-error: defaultPageId does not exist in the application response object
             const pageId = application.defaultPageId;
 
             yield put({
@@ -960,7 +1308,7 @@ export function* initDatasourceConnectionDuringImport(
   }>,
 ) {
   const workspaceId = action.payload.workspaceId;
-
+  const isAgentFlowEnabled: boolean = yield select(getIsAiAgentInstanceEnabled);
   const pluginsAndDatasourcesCalls: boolean = yield failFastApiCalls(
     [fetchPlugins({ workspaceId }), fetchDatasources({ workspaceId })],
     [
@@ -983,14 +1331,18 @@ export function* initDatasourceConnectionDuringImport(
 
   if (!pluginFormCall) return;
 
-  const datasources: Datasource[] = yield select((state: AppState) => {
+  const datasources: Datasource[] = yield select((state: DefaultRootState) => {
     return state.entities.datasources.list;
   });
 
   yield all(
-    datasources.map((datasource: Datasource) =>
-      call(initializeDatasourceWithDefaultValues, datasource),
-    ),
+    datasources.map((datasource: Datasource) => {
+      if (isAgentFlowEnabled) {
+        return fork(initializeDatasourceWithDefaultValues, datasource);
+      }
+
+      return call(initializeDatasourceWithDefaultValues, datasource);
+    }),
   );
 
   if (!action.payload.isPartialImport) {
@@ -1101,6 +1453,262 @@ export function* deleteNavigationLogoSaga(
   } catch (error) {
     yield put({
       type: ReduxActionErrorTypes.DELETE_NAVIGATION_LOGO_ERROR,
+      payload: {
+        error,
+      },
+    });
+  }
+}
+
+export function* publishAnvilApplicationSaga(
+  action: ReduxAction<PublishApplicationRequest>,
+) {
+  try {
+    yield put(publishApplication(action.payload.applicationId));
+  } catch (error) {
+    yield put({
+      type: ReduxActionErrorTypes.PUBLISH_ANVIL_APPLICATION_ERROR,
+      payload: {
+        error,
+      },
+    });
+  }
+}
+
+export function* persistAppSlugSaga(
+  action: ReduxAction<{ slug: string; onSuccess?: () => void }>,
+) {
+  try {
+    const currentApplication: ApplicationPayload | undefined = yield select(
+      getCurrentApplication,
+    );
+
+    if (!currentApplication) {
+      throw new Error("No current application found");
+    }
+
+    const applicationId = currentApplication.id;
+    const { onSuccess, slug } = action.payload;
+
+    const request = {
+      branchedApplicationId: applicationId,
+      uniqueApplicationSlug: slug,
+    };
+
+    const response: ApiResponse = yield call(
+      ApplicationApi.persistAppSlug,
+      applicationId,
+      request,
+    );
+
+    const isValidResponse: boolean = yield validateResponse(response);
+
+    if (isValidResponse) {
+      // Fetch the application again to get updated data
+      yield call(fetchAppAndPagesSaga, {
+        type: ReduxActionTypes.FETCH_APPLICATION_INIT,
+        payload: { applicationId, mode: APP_MODE.EDIT },
+      });
+
+      yield put({
+        type: ReduxActionTypes.PERSIST_APP_SLUG_SUCCESS,
+        payload: {
+          slug,
+        },
+      });
+
+      // Call success callback if provided
+      if (onSuccess) {
+        onSuccess();
+      }
+    }
+  } catch (error) {
+    yield put({
+      type: ReduxActionTypes.PERSIST_APP_SLUG_ERROR,
+      payload: {
+        error,
+        slug: action.payload.slug,
+      },
+    });
+  }
+}
+
+interface ValidateAppSlugResponse {
+  uniqueAppSlug: string;
+  isUniqueSlugAvailable: boolean;
+}
+
+export function* validateAppSlugSaga(action: ReduxAction<{ slug: string }>) {
+  try {
+    const currentApplication: ApplicationPayload | undefined = yield select(
+      getCurrentApplication,
+    );
+
+    if (!currentApplication) {
+      throw new Error("No current application found");
+    }
+
+    const applicationId = currentApplication.id;
+    const { slug } = action.payload;
+
+    const response: ApiResponse<ValidateAppSlugResponse> = yield call(
+      ApplicationApi.validateAppSlug,
+      applicationId,
+      slug,
+    );
+
+    const isValidResponse: boolean = yield validateResponse(response);
+
+    if (isValidResponse) {
+      const { isUniqueSlugAvailable } = response.data;
+
+      if (isUniqueSlugAvailable) {
+        yield put({
+          type: ReduxActionTypes.VALIDATE_APP_SLUG_SUCCESS,
+          payload: {
+            slug,
+            isValid: true,
+          },
+        });
+      } else {
+        yield put({
+          type: ReduxActionTypes.VALIDATE_APP_SLUG_ERROR,
+          payload: {
+            slug,
+            isValid: false,
+          },
+        });
+      }
+    }
+  } catch (error) {
+    yield put({
+      type: ReduxActionTypes.VALIDATE_APP_SLUG_ERROR,
+      payload: {
+        error,
+        slug: action.payload.slug,
+        isValid: false,
+      },
+    });
+  }
+}
+
+export function* enableStaticUrlSaga(
+  action: ReduxAction<{ slug: string; onSuccess?: () => void }>,
+) {
+  try {
+    const currentApplication: ApplicationPayload | undefined = yield select(
+      getCurrentApplication,
+    );
+
+    if (!currentApplication) {
+      throw new Error("No current application found");
+    }
+
+    const applicationId = currentApplication.id;
+    const { onSuccess, slug } = action.payload;
+    const response: ApiResponse = yield call(
+      ApplicationApi.enableStaticUrl,
+      applicationId,
+      { uniqueApplicationSlug: slug },
+    );
+    const isValidResponse: boolean = yield validateResponse(response);
+
+    if (isValidResponse) {
+      yield call(fetchAppAndPagesSaga, {
+        type: ReduxActionTypes.FETCH_APPLICATION_INIT,
+        payload: { applicationId, mode: APP_MODE.EDIT },
+      });
+      yield put({
+        type: ReduxActionTypes.ENABLE_STATIC_URL_SUCCESS,
+      });
+
+      // Call success callback if provided
+      if (onSuccess) {
+        onSuccess();
+      }
+    }
+  } catch (error) {
+    yield put({
+      type: ReduxActionErrorTypes.ENABLE_STATIC_URL_ERROR,
+      payload: {
+        error,
+      },
+    });
+  }
+}
+
+export function* disableStaticUrlSaga(
+  action: ReduxAction<{ onSuccess?: () => void }>,
+) {
+  try {
+    const currentApplication: ApplicationPayload | undefined = yield select(
+      getCurrentApplication,
+    );
+
+    if (!currentApplication) {
+      throw new Error("No current application found");
+    }
+
+    const applicationId = currentApplication.id;
+    const { onSuccess } = action.payload || {};
+
+    const response: ApiResponse = yield call(
+      ApplicationApi.disableStaticUrl,
+      applicationId,
+    );
+    const isValidResponse: boolean = yield validateResponse(response);
+
+    if (isValidResponse) {
+      yield call(fetchAppAndPagesSaga, {
+        type: ReduxActionTypes.FETCH_APPLICATION_INIT,
+        payload: { applicationId, mode: APP_MODE.EDIT },
+      });
+      yield put({
+        type: ReduxActionTypes.DISABLE_STATIC_URL_SUCCESS,
+      });
+
+      // Call success callback if provided
+      if (onSuccess) {
+        onSuccess();
+      }
+    }
+  } catch (error) {
+    yield put({
+      type: ReduxActionErrorTypes.DISABLE_STATIC_URL_ERROR,
+      payload: {
+        show: true,
+        message: createMessage(ERROR_IN_DISABLING_STATIC_URL),
+      },
+    });
+  }
+}
+
+export function* fetchAppSlugSuggestionSaga(
+  action: ReduxAction<{
+    applicationId: string;
+  }>,
+) {
+  try {
+    const { applicationId } = action.payload;
+
+    const response: ApiResponse<string> = yield call(
+      ApplicationApi.fetchAppSlugSuggestion,
+      applicationId,
+    );
+
+    const isValidResponse: boolean = yield validateResponse(response);
+
+    if (isValidResponse) {
+      const uniqueApplicationSlug = response.data;
+
+      yield put({
+        type: ReduxActionTypes.FETCH_APP_SLUG_SUGGESTION_SUCCESS,
+        payload: { uniqueApplicationSlug },
+      });
+    }
+  } catch (error) {
+    yield put({
+      type: ReduxActionErrorTypes.FETCH_APP_SLUG_SUGGESTION_ERROR,
       payload: {
         error,
       },

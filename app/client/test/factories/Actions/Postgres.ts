@@ -31,7 +31,7 @@ export const PostgresFactory = Factory.Sync.makeFactory<QueryAction>({
       },
     ],
   },
-  executeOnLoad: true,
+  runBehaviour: "MANUAL",
   dynamicBindingPathList: [],
   isValid: true,
   invalids: [],
@@ -44,4 +44,7 @@ export const PostgresFactory = Factory.Sync.makeFactory<QueryAction>({
     "execute:actions",
     "manage:actions",
   ],
+  isDirtyMap: {
+    SCHEMA_GENERATION: false,
+  },
 });

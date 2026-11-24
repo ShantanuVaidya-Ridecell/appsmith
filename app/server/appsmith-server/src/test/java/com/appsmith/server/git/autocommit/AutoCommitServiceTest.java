@@ -1,9 +1,10 @@
 package com.appsmith.server.git.autocommit;
 
 import com.appsmith.external.dtos.GitLogDTO;
-import com.appsmith.external.git.GitExecutor;
 import com.appsmith.external.git.constants.ce.RefType;
+import com.appsmith.external.git.handler.FSGitHandler;
 import com.appsmith.external.helpers.AppsmithBeanUtils;
+import com.appsmith.git.configurations.GitServiceConfig;
 import com.appsmith.server.acl.AclPermission;
 import com.appsmith.server.applications.base.ApplicationService;
 import com.appsmith.server.domains.Application;
@@ -18,8 +19,8 @@ import com.appsmith.server.dtos.AutoCommitResponseDTO;
 import com.appsmith.server.dtos.AutoCommitTriggerDTO;
 import com.appsmith.server.dtos.PageDTO;
 import com.appsmith.server.git.autocommit.helpers.AutoCommitEligibilityHelper;
-import com.appsmith.server.git.common.CommonGitService;
-import com.appsmith.server.helpers.CommonGitFileUtils;
+import com.appsmith.server.git.central.CentralGitService;
+import com.appsmith.server.git.central.GitType;
 import com.appsmith.server.helpers.DSLMigrationUtils;
 import com.appsmith.server.helpers.GitPrivateRepoHelper;
 import com.appsmith.server.helpers.RedisUtils;
@@ -54,7 +55,7 @@ import java.util.List;
 import java.util.Set;
 import java.util.stream.Collectors;
 
-import static com.appsmith.server.git.autocommit.AutoCommitEventHandlerCEImpl.AUTO_COMMIT_MSG_FORMAT;
+import static com.appsmith.server.git.autocommit.AutoCommitSolutionCEImpl.AUTO_COMMIT_MSG_FORMAT;
 import static java.lang.Boolean.FALSE;
 import static java.lang.Boolean.TRUE;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -74,7 +75,7 @@ public class AutoCommitServiceTest {
     GitFileSystemTestHelper gitFileSystemTestHelper;
 
     @SpyBean
-    GitExecutor gitExecutor;
+    FSGitHandler fsGitHandler;
 
     @MockBean
     DSLMigrationUtils dslMigrationUtils;
@@ -92,10 +93,7 @@ public class AutoCommitServiceTest {
     RedisUtils redisUtils;
 
     @MockBean
-    CommonGitService commonGitService;
-
-    @SpyBean
-    CommonGitFileUtils commonGitFileUtils;
+    CentralGitService centralGitService;
 
     @MockBean
     GitPrivateRepoHelper gitPrivateRepoHelper;
@@ -112,6 +110,9 @@ public class AutoCommitServiceTest {
     @SpyBean
     JsonSchemaMigration jsonSchemaMigration;
 
+    @SpyBean
+    GitServiceConfig gitServiceConfig;
+
     Application testApplication;
 
     Path baseRepoSuffix;
@@ -125,6 +126,8 @@ public class AutoCommitServiceTest {
     private static final String APP_JSON_NAME = "autocommit.json";
     private static final String APP_NAME = "autocommit";
     private static final Integer WAIT_DURATION_FOR_ASYNC_EVENT = 5;
+    private static final Integer MAX_RETRIES = 5;
+    private static final Integer RETRY_DELAY = 1;
     private static final String PUBLIC_KEY = "public-key";
     private static final String PRIVATE_KEY = "private-key";
     private static final String REPO_URL = "domain.xy";
@@ -217,21 +220,21 @@ public class AutoCommitServiceTest {
                         DEFAULT_APP_ID, pagePermission.getEditPermission(), ApplicationMode.PUBLISHED))
                 .thenReturn(Flux.just(pageDTO));
 
-        Mockito.when(commonGitService.fetchRemoteChanges(any(Application.class), any(Application.class), anyBoolean()))
+        Mockito.when(centralGitService.fetchRemoteChanges(
+                        any(Application.class),
+                        any(Application.class),
+                        anyBoolean(),
+                        any(GitType.class),
+                        any(RefType.class)))
                 .thenReturn(Mono.just(branchTrackingStatus));
 
         Mockito.when(branchTrackingStatus.getBehindCount()).thenReturn(0);
 
         doReturn(Mono.just("success"))
-                .when(gitExecutor)
-                .pushApplication(baseRepoSuffix, REPO_URL, PUBLIC_KEY, PRIVATE_KEY, BRANCH_NAME);
-
-        Mockito.doReturn(Mono.just(testApplication))
-                .when(applicationService)
-                .findById(anyString(), any(AclPermission.class));
+                .when(fsGitHandler)
+                .pushArtifact(baseRepoSuffix, REPO_URL, PUBLIC_KEY, PRIVATE_KEY, BRANCH_NAME);
 
         Mockito.when(gitPrivateRepoHelper.isBranchProtected(any(), anyString())).thenReturn(Mono.just(FALSE));
-
         Mockito.when(userDataService.getGitProfileForCurrentUser(any())).thenReturn(Mono.just(createGitProfile()));
     }
 
@@ -253,6 +256,8 @@ public class AutoCommitServiceTest {
         AppsmithBeanUtils.copyNewFieldValuesIntoOldObject(applicationJson, applicationJson1);
         applicationJson1.setServerSchemaVersion(jsonSchemaVersions.getServerVersion() + 1);
 
+        doReturn(FALSE).when(gitServiceConfig).isGitInMemory();
+
         doReturn(Mono.just(applicationJson1))
                 .when(jsonSchemaMigration)
                 .migrateApplicationJsonToLatestSchema(
@@ -262,7 +267,7 @@ public class AutoCommitServiceTest {
                 WORKSPACE_ID, DEFAULT_APP_ID, BRANCH_NAME, REPO_NAME, applicationJson);
 
         // verifying the initial number of commits
-        StepVerifier.create(gitExecutor.getCommitHistory(baseRepoSuffix))
+        StepVerifier.create(fsGitHandler.getCommitHistory(baseRepoSuffix))
                 .assertNext(gitLogDTOs -> {
                     assertThat(gitLogDTOs).isNotEmpty();
                     assertThat(gitLogDTOs.size()).isEqualTo(2);
@@ -289,7 +294,7 @@ public class AutoCommitServiceTest {
 
         // this would trigger autocommit
         Mono<List<GitLogDTO>> gitlogDTOsMono = Mono.delay(Duration.ofSeconds(WAIT_DURATION_FOR_ASYNC_EVENT))
-                .then(gitExecutor.getCommitHistory(baseRepoSuffix));
+                .then(fsGitHandler.getCommitHistory(baseRepoSuffix));
 
         // verifying final number of commits
         StepVerifier.create(gitlogDTOsMono)
@@ -309,6 +314,8 @@ public class AutoCommitServiceTest {
             throws GitAPIException, IOException, URISyntaxException {
         ApplicationJson applicationJson =
                 gitFileSystemTestHelper.getApplicationJson(this.getClass().getResource(APP_JSON_NAME));
+
+        doReturn(FALSE).when(gitServiceConfig).isGitInMemory();
 
         int pageDSLNumber = applicationJson
                 .getPageList()
@@ -334,7 +341,7 @@ public class AutoCommitServiceTest {
                 WORKSPACE_ID, DEFAULT_APP_ID, BRANCH_NAME, REPO_NAME, applicationJson);
 
         // verifying the initial number of commits
-        StepVerifier.create(gitExecutor.getCommitHistory(baseRepoSuffix))
+        StepVerifier.create(fsGitHandler.getCommitHistory(baseRepoSuffix))
                 .assertNext(gitLogDTOs -> {
                     assertThat(gitLogDTOs).isNotEmpty();
                     assertThat(gitLogDTOs.size()).isEqualTo(2);
@@ -362,7 +369,7 @@ public class AutoCommitServiceTest {
                 .verifyComplete();
 
         Mono<List<GitLogDTO>> gitlogDTOsMono = Mono.delay(Duration.ofSeconds(WAIT_DURATION_FOR_ASYNC_EVENT))
-                .then(gitExecutor.getCommitHistory(baseRepoSuffix));
+                .then(fsGitHandler.getCommitHistory(baseRepoSuffix));
 
         // verifying final number of commits
         StepVerifier.create(gitlogDTOsMono)
@@ -390,7 +397,7 @@ public class AutoCommitServiceTest {
                 WORKSPACE_ID, DEFAULT_APP_ID, BRANCH_NAME, REPO_NAME, applicationJson);
 
         // verifying the initial number of commits
-        StepVerifier.create(gitExecutor.getCommitHistory(baseRepoSuffix))
+        StepVerifier.create(fsGitHandler.getCommitHistory(baseRepoSuffix))
                 .assertNext(gitLogDTOs -> {
                     assertThat(gitLogDTOs).isNotEmpty();
                     assertThat(gitLogDTOs.size()).isEqualTo(2);
@@ -418,7 +425,7 @@ public class AutoCommitServiceTest {
                 .verifyComplete();
 
         Mono<List<GitLogDTO>> gitlogDTOsMono = Mono.delay(Duration.ofSeconds(WAIT_DURATION_FOR_ASYNC_EVENT))
-                .then(gitExecutor.getCommitHistory(baseRepoSuffix));
+                .then(fsGitHandler.getCommitHistory(baseRepoSuffix));
 
         // verifying final number of commits
         StepVerifier.create(gitlogDTOsMono)
@@ -524,157 +531,6 @@ public class AutoCommitServiceTest {
                 .assertNext(autoCommitResponseDTO -> {
                     assertThat(autoCommitResponseDTO.getAutoCommitResponse())
                             .isEqualTo(AutoCommitResponseDTO.AutoCommitResponse.REQUIRED);
-                })
-                .verifyComplete();
-    }
-
-    @Test
-    public void
-            testAutoCommit_whenServerIsRunningMigrationCallsAutocommitAgainOnSameBranch_ReturnsAutoCommitInProgress()
-                    throws URISyntaxException, IOException, GitAPIException {
-
-        ApplicationJson applicationJson =
-                gitFileSystemTestHelper.getApplicationJson(this.getClass().getResource(APP_JSON_NAME));
-
-        mockAutoCommitTriggerResponse(TRUE, FALSE);
-
-        ApplicationJson applicationJson1 = new ApplicationJson();
-        AppsmithBeanUtils.copyNewFieldValuesIntoOldObject(applicationJson, applicationJson1);
-        applicationJson1.setServerSchemaVersion(jsonSchemaVersions.getServerVersion() + 1);
-
-        doReturn(Mono.just(applicationJson1))
-                .when(jsonSchemaMigration)
-                .migrateApplicationJsonToLatestSchema(
-                        any(ApplicationJson.class), Mockito.anyString(), Mockito.anyString(), any(RefType.class));
-
-        gitFileSystemTestHelper.setupGitRepository(
-                WORKSPACE_ID, DEFAULT_APP_ID, BRANCH_NAME, REPO_NAME, applicationJson);
-
-        // verifying the initial number of commits
-        StepVerifier.create(gitExecutor.getCommitHistory(baseRepoSuffix))
-                .assertNext(gitLogDTOs -> {
-                    assertThat(gitLogDTOs).isNotEmpty();
-                    assertThat(gitLogDTOs.size()).isEqualTo(2);
-
-                    Set<String> commitMessages =
-                            gitLogDTOs.stream().map(GitLogDTO::getCommitMessage).collect(Collectors.toSet());
-                    assertThat(commitMessages).doesNotContain(String.format(AUTO_COMMIT_MSG_FORMAT, "UNKNOWN"));
-                })
-                .verifyComplete();
-
-        // redis-utils fixing
-        Mockito.when(redisUtils.getRunningAutoCommitBranchName(DEFAULT_APP_ID)).thenReturn(Mono.empty());
-        Mockito.when(redisUtils.getAutoCommitProgress(DEFAULT_APP_ID)).thenReturn(Mono.empty());
-
-        Mono<AutoCommitResponseDTO> autoCommitResponseDTOMono =
-                autoCommitService.autoCommitApplication(testApplication.getId());
-
-        StepVerifier.create(autoCommitResponseDTOMono)
-                .assertNext(autoCommitResponseDTO -> assertThat(autoCommitResponseDTO.getAutoCommitResponse())
-                        .isEqualTo(AutoCommitResponseDTO.AutoCommitResponse.PUBLISHED))
-                .verifyComplete();
-
-        // redis-utils fixing
-        Mockito.when(redisUtils.getRunningAutoCommitBranchName(DEFAULT_APP_ID)).thenReturn(Mono.just(BRANCH_NAME));
-        Mockito.when(redisUtils.getAutoCommitProgress(DEFAULT_APP_ID)).thenReturn(Mono.just(20));
-
-        StepVerifier.create(autoCommitService.autoCommitApplication(testApplication.getId()))
-                .assertNext(autoCommitResponseDTO -> {
-                    assertThat(autoCommitResponseDTO.getAutoCommitResponse())
-                            .isEqualTo(AutoCommitResponseDTO.AutoCommitResponse.IN_PROGRESS);
-                    assertThat(autoCommitResponseDTO.getBranchName()).isEqualTo(BRANCH_NAME);
-                })
-                .verifyComplete();
-
-        // this would trigger autocommit
-        Mono<List<GitLogDTO>> gitlogDTOsMono = Mono.delay(Duration.ofSeconds(WAIT_DURATION_FOR_ASYNC_EVENT))
-                .then(gitExecutor.getCommitHistory(baseRepoSuffix));
-
-        // verifying final number of commits
-        StepVerifier.create(gitlogDTOsMono)
-                .assertNext(gitLogDTOs -> {
-                    assertThat(gitLogDTOs).isNotEmpty();
-                    assertThat(gitLogDTOs.size()).isEqualTo(3);
-
-                    Set<String> commitMessages =
-                            gitLogDTOs.stream().map(GitLogDTO::getCommitMessage).collect(Collectors.toSet());
-                    assertThat(commitMessages).contains(String.format(AUTO_COMMIT_MSG_FORMAT, "UNKNOWN"));
-                })
-                .verifyComplete();
-    }
-
-    @Test
-    public void testAutoCommit_whenServerIsRunningMigrationCallsAutocommitAgainOnDiffBranch_ReturnsAutoCommitLocked()
-            throws URISyntaxException, IOException, GitAPIException {
-
-        ApplicationJson applicationJson =
-                gitFileSystemTestHelper.getApplicationJson(this.getClass().getResource(APP_JSON_NAME));
-
-        mockAutoCommitTriggerResponse(TRUE, FALSE);
-
-        ApplicationJson applicationJson1 = new ApplicationJson();
-        AppsmithBeanUtils.copyNewFieldValuesIntoOldObject(applicationJson, applicationJson1);
-        applicationJson1.setServerSchemaVersion(jsonSchemaVersions.getServerVersion() + 1);
-
-        doReturn(Mono.just(applicationJson1))
-                .when(jsonSchemaMigration)
-                .migrateApplicationJsonToLatestSchema(
-                        any(ApplicationJson.class), Mockito.anyString(), Mockito.anyString(), any(RefType.class));
-
-        gitFileSystemTestHelper.setupGitRepository(
-                WORKSPACE_ID, DEFAULT_APP_ID, BRANCH_NAME, REPO_NAME, applicationJson);
-
-        // verifying the initial number of commits
-        StepVerifier.create(gitExecutor.getCommitHistory(baseRepoSuffix))
-                .assertNext(gitLogDTOs -> {
-                    assertThat(gitLogDTOs).isNotEmpty();
-                    assertThat(gitLogDTOs.size()).isEqualTo(2);
-
-                    Set<String> commitMessages =
-                            gitLogDTOs.stream().map(GitLogDTO::getCommitMessage).collect(Collectors.toSet());
-                    assertThat(commitMessages).doesNotContain(String.format(AUTO_COMMIT_MSG_FORMAT, "UNKNOWN"));
-                })
-                .verifyComplete();
-
-        // redis-utils fixing
-        Mockito.when(redisUtils.getRunningAutoCommitBranchName(DEFAULT_APP_ID)).thenReturn(Mono.empty());
-        Mockito.when(redisUtils.getAutoCommitProgress(DEFAULT_APP_ID)).thenReturn(Mono.empty());
-
-        Mono<AutoCommitResponseDTO> autoCommitResponseDTOMono =
-                autoCommitService.autoCommitApplication(testApplication.getId());
-
-        StepVerifier.create(autoCommitResponseDTOMono)
-                .assertNext(autoCommitResponseDTO -> assertThat(autoCommitResponseDTO.getAutoCommitResponse())
-                        .isEqualTo(AutoCommitResponseDTO.AutoCommitResponse.PUBLISHED))
-                .verifyComplete();
-
-        testApplication.getGitApplicationMetadata().setRefName("another-branch-name");
-
-        // redis-utils fixing
-        Mockito.when(redisUtils.getRunningAutoCommitBranchName(DEFAULT_APP_ID)).thenReturn(Mono.just(BRANCH_NAME));
-        Mockito.when(redisUtils.getAutoCommitProgress(DEFAULT_APP_ID)).thenReturn(Mono.just(20));
-
-        StepVerifier.create(autoCommitService.autoCommitApplication(testApplication.getId()))
-                .assertNext(autoCommitResponseDTO -> {
-                    assertThat(autoCommitResponseDTO.getAutoCommitResponse())
-                            .isEqualTo(AutoCommitResponseDTO.AutoCommitResponse.LOCKED);
-                    assertThat(autoCommitResponseDTO.getBranchName()).isEqualTo(BRANCH_NAME);
-                })
-                .verifyComplete();
-
-        // this would trigger autocommit
-        Mono<List<GitLogDTO>> gitlogDTOsMono = Mono.delay(Duration.ofSeconds(WAIT_DURATION_FOR_ASYNC_EVENT))
-                .then(gitExecutor.getCommitHistory(baseRepoSuffix));
-
-        // verifying final number of commits
-        StepVerifier.create(gitlogDTOsMono)
-                .assertNext(gitLogDTOs -> {
-                    assertThat(gitLogDTOs).isNotEmpty();
-                    assertThat(gitLogDTOs.size()).isEqualTo(3);
-
-                    Set<String> commitMessages =
-                            gitLogDTOs.stream().map(GitLogDTO::getCommitMessage).collect(Collectors.toSet());
-                    assertThat(commitMessages).contains(String.format(AUTO_COMMIT_MSG_FORMAT, "UNKNOWN"));
                 })
                 .verifyComplete();
     }

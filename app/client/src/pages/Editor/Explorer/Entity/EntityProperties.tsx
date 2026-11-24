@@ -2,8 +2,7 @@ import React, { useCallback, useEffect } from "react";
 import EntityProperty from "./EntityProperty";
 
 import { useDispatch, useSelector } from "react-redux";
-import * as Sentry from "@sentry/react";
-import type { AppState } from "ee/reducers";
+import type { DefaultRootState } from "react-redux";
 import classNames from "classnames";
 import styled from "styled-components";
 import { ReduxActionTypes } from "ee/constants/ReduxActionConstants";
@@ -12,9 +11,9 @@ import { EntityClassNames } from ".";
 import { Button } from "@appsmith/ads";
 import { getEntityProperties } from "ee/pages/Editor/Explorer/Entity/getEntityProperties";
 import store from "store";
-import { ENTITY_TYPE } from "entities/DataTree/dataTreeFactory";
+import { ENTITY_TYPE } from "ee/entities/DataTree/types";
 import { getIDEViewMode } from "selectors/ideSelectors";
-import { EditorViewMode } from "ee/entities/IDE/constants";
+import { EditorViewMode } from "IDE/Interfaces/EditorTypes";
 import { DEFAULT_EXPLORER_PANE_WIDTH } from "constants/AppConstants";
 import { BOTTOM_BAR_HEIGHT } from "components/BottomBar/constants";
 
@@ -31,7 +30,8 @@ const EntityInfoContainer = styled.div`
   box-shadow: var(--ads-v2-shadow-popovers);
 `;
 
-const selectEntityInfo = (state: AppState) => state.ui.explorer.entityInfo;
+const selectEntityInfo = (state: DefaultRootState) =>
+  state.ui.explorer.entityInfo;
 
 export function EntityProperties() {
   const ref = React.createRef<HTMLDivElement>();
@@ -43,7 +43,7 @@ export function EntityProperties() {
   );
 
   const selectedWidgetId = useSelector(
-    (state: AppState) => state.ui.widgetDragResize.lastSelectedWidget,
+    (state: DefaultRootState) => state.ui.widgetDragResize.lastSelectedWidget,
   );
 
   const ideViewMode = useSelector(getIDEViewMode);
@@ -177,4 +177,4 @@ export function EntityProperties() {
   );
 }
 
-export default Sentry.withProfiler(EntityProperties);
+export default EntityProperties;

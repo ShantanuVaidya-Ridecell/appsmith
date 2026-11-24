@@ -17,8 +17,10 @@ import type {
   GitArtifactUIReduxState as GitArtifactUIReduxStateExtended,
 } from "git/ee/store/types";
 import type { FetchGlobalSSHKeyResponseData } from "git/requests/fetchGlobalSSHKeyRequest.types";
-import type { ApplicationPayload } from "entities/Application";
 import type { FetchRefsResponseData } from "git/requests/fetchRefsRequest.types";
+import type { GitArtifactDef } from "git/types";
+import type { PretagResponseData } from "git/requests/pretagRequest.types";
+import type { GitImportRequestParams } from "git/requests/gitImportRequest.types";
 
 export interface GitApiError extends ApiResponseError {
   errorType?: string;
@@ -59,12 +61,15 @@ export interface GitArtifactAPIResponsesReduxState
   triggerAutocommit: GitAsyncStateWithoutValue;
   sshKey: GitAsyncState<FetchSSHKeyResponseData>;
   generateSSHKey: GitAsyncStateWithoutValue;
+  pretag: GitAsyncState<PretagResponseData>;
+  createReleaseTag: GitAsyncStateWithoutValue;
 }
 
 export interface GitArtifactUIReduxState
   extends GitArtifactUIReduxStateExtended {
   initializing: boolean;
   initialized: boolean;
+  currentBranch: string | null;
   connectModalOpen: boolean;
   connectSuccessModalOpen: boolean;
   disconnectBaseArtifactId: string | null;
@@ -82,12 +87,6 @@ export interface GitArtifactUIReduxState
   conflictErrorModalOpen: boolean;
 }
 
-export type GitArtifact = ApplicationPayload;
-
-export interface GitArtifactDef {
-  artifactType: GitArtifactType;
-  baseArtifactId: string;
-}
 export interface GitArtifactReduxState {
   ui: GitArtifactUIReduxState;
   apiResponses: GitArtifactAPIResponsesReduxState;
@@ -100,6 +99,13 @@ export interface GitGlobalReduxState {
   globalSSHKey: GitAsyncState<FetchGlobalSSHKeyResponseData>;
   // ui
   isImportModalOpen: boolean;
+  isGenerateSSHKeyModalOpen: boolean;
+  updateGeneratedSSHKey: GitAsyncStateWithoutValue;
+  importOverrideDetails: {
+    params: GitImportRequestParams;
+    oldArtifactName: string;
+    newArtifactName: string;
+  } | null;
   repoLimitErrorModalOpen: boolean;
 }
 
@@ -114,16 +120,6 @@ export interface GitReduxState {
 }
 
 export interface GitRootState {
-  // will have to remove this later, once metadata is fixed
-  ui: {
-    applications: {
-      currentApplication?: {
-        gitApplicationMetadata?: {
-          branchName: string;
-        };
-      };
-    };
-  };
   git: GitReduxState;
 }
 

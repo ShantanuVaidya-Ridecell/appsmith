@@ -8,6 +8,7 @@ import com.appsmith.server.domains.Plugin;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -18,6 +19,8 @@ public interface DatasourceStorageServiceCE {
     Mono<DatasourceStorage> create(DatasourceStorage datasourceStorage, boolean isDryOps);
 
     Mono<DatasourceStorage> save(DatasourceStorage datasourceStorage);
+
+    Flux<DatasourceStorage> saveAll(List<DatasourceStorage> datasourceStorageList);
 
     Mono<DatasourceStorage> archive(DatasourceStorage datasourceStorage);
 
@@ -30,6 +33,12 @@ public interface DatasourceStorageServiceCE {
     Flux<DatasourceStorage> findStrictlyByDatasourceId(String datasourceId);
 
     Mono<DatasourceStorage> findStrictlyByDatasourceIdAndEnvironmentId(String datasourceId, String environmentId);
+
+    DatasourceStorage mergeStoredCredentialsIfConnectionUnchanged(
+            DatasourceStorage datasourceStorage, DatasourceStorage storedDatasourceStorage);
+
+    DatasourceCredentialBindingResult bindStoredCredentials(
+            DatasourceStorage datasourceStorage, DatasourceStorage storedDatasourceStorage);
 
     Mono<DatasourceStorage> updateDatasourceStorage(
             DatasourceStorage datasourceStorage, String activeEnvironmentId, Boolean IsUserRefreshedUpdate);

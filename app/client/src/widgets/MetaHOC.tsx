@@ -8,7 +8,7 @@ import LOG_TYPE from "entities/AppsmithConsole/logtype";
 import type { ExecuteTriggerPayload } from "constants/AppsmithActionConstants/ActionConstants";
 import { connect } from "react-redux";
 import { getWidgetMetaProps } from "sagas/selectors";
-import type { AppState } from "ee/reducers";
+import type { DefaultRootState } from "react-redux";
 import { error } from "loglevel";
 import WidgetFactory from "WidgetProvider/factory";
 import type BaseWidget from "./BaseWidget";
@@ -90,6 +90,8 @@ function withMeta(WrappedWidget: typeof BaseWidget) {
     runBatchActions = () => {
       const { executeAction } = this.context;
       const batchActionsToRun = Object.entries(this.actionsToExecute);
+
+      if (batchActionsToRun.length === 0) return;
 
       batchActionsToRun.map(([propertyName, actionExecution]) => {
         if (actionExecution && actionExecution.dynamicString && executeAction) {
@@ -335,7 +337,7 @@ function withMeta(WrappedWidget: typeof BaseWidget) {
     }
   }
 
-  const mapStateToProps = (state: AppState, ownProps: WidgetProps) => {
+  const mapStateToProps = (state: DefaultRootState, ownProps: WidgetProps) => {
     return {
       metaState: getWidgetMetaProps(state, ownProps),
     };

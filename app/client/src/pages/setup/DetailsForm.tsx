@@ -23,7 +23,7 @@ import { proficiencyOptions, useCaseOptions } from "./constants";
 import { isAirgapped } from "ee/utils/airgapHelpers";
 import { setFirstTimeUserOnboardingTelemetryCalloutVisibility } from "utils/storage";
 import RadioButtonGroup from "components/editorComponents/RadioButtonGroup";
-import { Space } from "./NonSuperUserProfilingQuestions";
+import CsrfTokenInput from "../UserAuth/CsrfTokenInput";
 
 export interface DetailsFormValues {
   firstName?: string;
@@ -77,6 +77,10 @@ const ButtonWrapper = styled.div`
   gap: ${(props) => props.theme.spaces[4]}px;
 `;
 
+const Space = styled.div`
+  height: 40px;
+`;
+
 export default function DetailsForm(
   props: SetupFormProps & {
     isFirstPage: boolean;
@@ -105,6 +109,7 @@ export default function DetailsForm(
           className={props.isFirstPage ? "block" : "hidden"}
           data-testid="formPage"
         >
+          <CsrfTokenInput />
           <div className="flex flex-row justify-between w-100">
             <StyledFormGroup className="!w-52 t--welcome-form-first-name">
               <FormTextField

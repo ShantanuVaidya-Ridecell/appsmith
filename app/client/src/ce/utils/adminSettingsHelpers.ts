@@ -1,10 +1,14 @@
-import { tenantConfigConnection } from "ee/constants/tenantConstants";
+import { organizationConfigConnection } from "ee/constants/organizationConstants";
 import type {
   AdminConfigType,
   Category,
 } from "ee/pages/AdminSettings/config/types";
-import { ADMIN_SETTINGS_CATEGORY_DEFAULT_PATH } from "constants/routes";
+import {
+  ADMIN_SETTINGS_CATEGORY_DEFAULT_PATH,
+  ADMIN_SETTINGS_CATEGORY_PROFILE_PATH,
+} from "constants/routes";
 import type { User } from "constants/userConstants";
+import set from "lodash/set";
 
 /* settings is the updated & unsaved settings on Admin settings page */
 export const saveAllowed = (
@@ -19,9 +23,10 @@ export const saveAllowed = (
 
   if (connectedMethodsCount === 1) {
     const checkFormLogin =
-        !("APPSMITH_FORM_LOGIN_DISABLED" in settings) && isFormLoginEnabled,
+        settings["isFormLoginEnabled"] !== false && isFormLoginEnabled,
       checkGoogleAuth =
         settings["APPSMITH_OAUTH2_GOOGLE_CLIENT_ID"] !== "" &&
+        settings["isGoogleOAuthEnabled"] !== false &&
         socialLoginList.includes("google"),
       checkGithubAuth =
         settings["APPSMITH_OAUTH2_GITHUB_CLIENT_ID"] !== "" &&
@@ -34,12 +39,19 @@ export const saveAllowed = (
 };
 
 /* get default admin settings path */
-export const getDefaultAdminSettingsPath = (
-  // TODO: Fix this the next time the file is edited
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars, @typescript-eslint/no-explicit-any
-  { isSuperUser, tenantPermissions: any = [] }: Record<string, any>,
-): string => {
-  return ADMIN_SETTINGS_CATEGORY_DEFAULT_PATH;
+export const getDefaultAdminSettingsPath = ({
+  isSuperUser = false,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  organizationPermissions = [],
+}: {
+  isSuperUser: boolean;
+  organizationPermissions: string[];
+}): string => {
+  if (isSuperUser) {
+    return ADMIN_SETTINGS_CATEGORY_DEFAULT_PATH;
+  }
+
+  return ADMIN_SETTINGS_CATEGORY_PROFILE_PATH;
 };
 
 export const showAdminSettings = (user?: User): boolean => {
@@ -52,10 +64,70 @@ export const getLoginUrl = (method: string): string => {
   return urls[method];
 };
 
-export const isTenantConfig = (name: string): boolean => {
-  const fields: string[] = tenantConfigConnection;
+const MCP_CONFIG_FORM_PREFIX = "mcpConfig.";
 
-  return fields.includes(name);
+export const isOrganizationConfig = (name: string): boolean => {
+  const fields: string[] = organizationConfigConnection;
+
+  return fields.includes(name) || name.startsWith(MCP_CONFIG_FORM_PREFIX);
+};
+
+export const flattenOrganizationConfigForSettingsForm = (
+  organizationConfiguration?: Record<string, unknown> | null,
+): Record<string, unknown> => {
+  const configs: Record<string, unknown> = {};
+
+  if (!organizationConfiguration) {
+    return configs;
+  }
+
+  organizationConfigConnection.forEach((key: string) => {
+    if (key === "mcpConfig") {
+      const mcpConfig = organizationConfiguration.mcpConfig;
+
+      if (mcpConfig && typeof mcpConfig === "object") {
+        const mcp = mcpConfig as Record<string, unknown>;
+        const enabled = mcp.enabled === true;
+
+        // Nested paths first: redux-form Field names like "mcpConfig.enabled" use lodash path get.
+        // Dotted keys second: settingsMap / settingsConfig[id] lookups. lodash.set skips nesting
+        // when the dotted own-property already exists.
+        set(configs, "mcpConfig.enabled", enabled);
+        configs["mcpConfig.enabled"] = enabled;
+      }
+
+      return;
+    }
+
+    if (Object.prototype.hasOwnProperty.call(organizationConfiguration, key)) {
+      configs[key] = organizationConfiguration[key];
+    }
+  });
+
+  return configs;
+};
+
+export const nestOrganizationConfigFromSettingsForm = (
+  settings: Record<string, unknown>,
+): Record<string, unknown> => {
+  const config: Record<string, unknown> = {};
+  const mcpConfig: Record<string, unknown> = {};
+  let hasMcpConfig = false;
+
+  for (const each in settings) {
+    if (each.startsWith(MCP_CONFIG_FORM_PREFIX)) {
+      hasMcpConfig = true;
+      mcpConfig[each.slice(MCP_CONFIG_FORM_PREFIX.length)] = settings[each];
+    } else if (organizationConfigConnection.includes(each)) {
+      config[each] = settings[each];
+    }
+  }
+
+  if (hasMcpConfig) {
+    config.mcpConfig = mcpConfig;
+  }
+
+  return config;
 };
 
 export const getWrapperCategory = (
@@ -66,34 +138,53 @@ export const getWrapperCategory = (
   return categories[subCategory || category];
 };
 
-export const getFilteredGeneralCategories = (categories: Category[]) => {
+export const getFilteredOrgCategories = (
+  categories: Category[],
+  isAuditLogsEnabled: boolean,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  isSuperUser?: boolean,
+) => {
   return categories
     ?.map((category: Category) => {
-      return category;
+      if (isSuperUser) {
+        return category;
+      }
+
+      return null;
     })
-    .filter(Boolean);
+    .filter(Boolean) as Category[];
 };
 
-export const getFilteredAclCategories = (
+export const getFilteredUserManagementCategories = (
+  categories: Category[],
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  showAdminSettings: boolean,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  isSuperUser?: boolean,
+) => {
+  return categories
+    ?.map((category: Category) => {
+      if (isSuperUser) {
+        return category;
+      }
+
+      return null;
+    })
+    .filter(Boolean) as Category[];
+};
+
+export const getFilteredInstanceCategories = (
   categories: Category[],
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   isSuperUser?: boolean,
 ) => {
   return categories
     ?.map((category: Category) => {
-      return category;
-    })
-    .filter(Boolean);
-};
+      if (isSuperUser) {
+        return category;
+      }
 
-export const getFilteredOtherCategories = (
-  categories: Category[],
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  isSuperUser?: boolean,
-) => {
-  return categories
-    ?.map((category: Category) => {
-      return category;
+      return null;
     })
-    .filter(Boolean);
+    .filter(Boolean) as Category[];
 };

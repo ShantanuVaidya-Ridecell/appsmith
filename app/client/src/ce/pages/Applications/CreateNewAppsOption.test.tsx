@@ -15,13 +15,17 @@ jest.mock("selectors/gitModSelectors", () => ({
 
 const defaultStoreState = {
   ...unitTestBaseMockStore,
-  tenant: {
-    tenantConfiguration: {},
+  organization: {
+    organizationConfiguration: {},
   },
   entities: {
     ...unitTestBaseMockStore.entities,
     plugins: {
       list: [],
+      upcomingPlugins: {
+        list: [],
+        loading: false,
+      },
     },
     datasources: {
       list: [],

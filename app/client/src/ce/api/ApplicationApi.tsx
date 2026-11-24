@@ -35,6 +35,7 @@ export interface ApplicationPagePayload {
   slug: string;
   isHidden?: boolean;
   customSlug?: string;
+  uniqueSlug?: string;
   userPermissions?: string[];
 }
 
@@ -64,6 +65,7 @@ export interface ApplicationResponsePayload {
   slug: string;
   applicationVersion: ApplicationVersion;
   isPublic?: boolean;
+  connectedWorkflowId?: string;
 }
 
 export interface FetchApplicationPayload {
@@ -115,6 +117,7 @@ export interface UpdateApplicationPayload {
   icon?: string;
   color?: string;
   name?: string;
+  description?: string;
   currentApp?: boolean;
   appLayout?: AppLayoutConfig;
   applicationVersion?: number;
@@ -123,6 +126,7 @@ export interface UpdateApplicationPayload {
     navigationSetting?: NavigationSetting;
     themeSetting?: ThemeSetting;
     appPositioning?: LayoutSystemTypeConfig;
+    htmlLang?: string;
   };
   forkingEnabled?: boolean;
 }
@@ -212,6 +216,7 @@ export interface UpdateApplicationResponse {
   unreadCommentThreads: number;
   color: string;
   icon: IconNames;
+  description?: string;
   slug: string;
   lastDeployedAt: Date;
   evaluationVersion: number;
@@ -515,6 +520,62 @@ export class ApplicationApi extends Api {
     AxiosPromise<ApiResponse<ImportBuildingBlockToApplicationResponse>>
   > {
     return Api.post(`${ApplicationApi.baseURL}/import/partial/block`, request);
+  }
+
+  static async persistAppSlug(
+    applicationId: string,
+    request: {
+      branchedApplicationId: string;
+      uniqueApplicationSlug: string;
+    },
+  ): Promise<AxiosPromise<ApiResponse>> {
+    return Api.patch(
+      `${ApplicationApi.baseURL}/${applicationId}/static-url`,
+      request,
+    );
+  }
+
+  static async validateAppSlug(
+    applicationId: string,
+    uniqueSlug: string,
+  ): Promise<AxiosPromise<ApiResponse>> {
+    return Api.get(
+      `${ApplicationApi.baseURL}/${applicationId}/static-url/${uniqueSlug}`,
+    );
+  }
+
+  static async enableStaticUrl(
+    applicationId: string,
+    request: { uniqueApplicationSlug: string },
+  ): Promise<AxiosPromise<ApiResponse>> {
+    return Api.post(
+      `${ApplicationApi.baseURL}/${applicationId}/static-url`,
+      request,
+    );
+  }
+
+  static async disableStaticUrl(
+    applicationId: string,
+  ): Promise<AxiosPromise<ApiResponse>> {
+    return Api.delete(`${ApplicationApi.baseURL}/${applicationId}/static-url`);
+  }
+
+  static async fetchAppSlugSuggestion(
+    applicationId: string,
+  ): Promise<AxiosPromise<ApiResponse>> {
+    return Api.get(
+      `${ApplicationApi.baseURL}/${applicationId}/static-url/suggest-app-slug`,
+    );
+  }
+
+  static async toggleFavoriteApplication(
+    applicationId: string,
+  ): Promise<AxiosPromise<ApiResponse>> {
+    return Api.put(`v1/users/applications/${applicationId}/favorite`);
+  }
+
+  static async getFavoriteApplications(): Promise<AxiosPromise<ApiResponse>> {
+    return Api.get("v1/users/favoriteApplications");
   }
 }
 

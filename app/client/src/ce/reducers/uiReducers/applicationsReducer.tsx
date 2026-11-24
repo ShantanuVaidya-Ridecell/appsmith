@@ -22,21 +22,23 @@ import {
   defaultNavigationSetting,
   defaultThemeSetting,
 } from "constants/AppConstants";
-import produce from "immer";
+import { create } from "mutative";
 import { isEmpty } from "lodash";
 import type { ApplicationPayload } from "entities/Application";
-import { gitConnectSuccess, type GitConnectSuccessPayload } from "git";
-import type { PayloadAction } from "@reduxjs/toolkit";
 
 export const initialState: ApplicationsReduxState = {
   isSavingAppName: false,
   isErrorSavingAppName: false,
+  isSavingHtmlLang: false,
+  isSavingAppDescription: false,
   isFetchingApplication: false,
   isChangingViewAccess: false,
   applicationList: [],
   creatingApplication: {},
   deletingApplication: false,
   forkingApplication: false,
+  favoriteApplicationIds: [],
+  isFetchingFavorites: false,
   importingApplication: false,
   importedApplication: null,
   isImportAppModalOpen: false,
@@ -47,6 +49,12 @@ export const initialState: ApplicationsReduxState = {
   isErrorSavingNavigationSetting: false,
   isUploadingNavigationLogo: false,
   isDeletingNavigationLogo: false,
+  isPersistingAppSlug: false,
+  isErrorPersistingAppSlug: false,
+  isValidatingAppSlug: false,
+  isApplicationSlugValid: true,
+  isFetchingAppSlugSuggestion: false,
+  appSlugSuggestion: "",
   loadingStates: {
     isFetchingAllRoles: false,
     isFetchingAllUsers: false,
@@ -138,6 +146,16 @@ export const handlers = {
       ...state.currentApplication,
       name: action.payload.name,
       slug: action.payload.slug,
+    },
+  }),
+  [ReduxActionTypes.CURRENT_APPLICATION_DESCRIPTION_UPDATE]: (
+    state: ApplicationsReduxState,
+    action: ReduxAction<string>,
+  ) => ({
+    ...state,
+    currentApplication: {
+      ...state.currentApplication,
+      description: action.payload,
     },
   }),
   [ReduxActionTypes.CURRENT_APPLICATION_ICON_UPDATE]: (
@@ -307,13 +325,27 @@ export const handlers = {
   ) => {
     let isSavingAppName = false;
     let isSavingNavigationSetting = false;
+    let isSavingHtmlLang = false;
+    let isSavingAppDescription = false;
 
     if (action.payload.name) {
       isSavingAppName = true;
     }
 
+    // Presence check: clearing sends description: "" and must still show the spinner.
+    if (action.payload.description !== undefined) {
+      isSavingAppDescription = true;
+    }
+
     if (action.payload.applicationDetail?.navigationSetting) {
       isSavingNavigationSetting = true;
+    }
+
+    // Presence check, not truthiness: clearing the field sends htmlLang: "" (a
+    // real save that should still show the spinner), while unrelated updates omit
+    // htmlLang entirely (undefined).
+    if (action.payload.applicationDetail?.htmlLang !== undefined) {
+      isSavingHtmlLang = true;
     }
 
     return {
@@ -322,11 +354,16 @@ export const handlers = {
       isErrorSavingAppName: false,
       isSavingNavigationSetting,
       isErrorSavingNavigationSetting: false,
-      ...(action.payload.applicationDetail
+      isSavingHtmlLang,
+      isSavingAppDescription,
+      ...(action.payload.applicationDetail && state.currentApplication
         ? {
-            applicationDetail: {
-              ...state.currentApplication?.applicationDetail,
-              ...action.payload.applicationDetail,
+            currentApplication: {
+              ...state.currentApplication,
+              applicationDetail: {
+                ...state.currentApplication?.applicationDetail,
+                ...action.payload.applicationDetail,
+              },
             },
           }
         : {}),
@@ -345,6 +382,8 @@ export const handlers = {
       isErrorSavingAppName: false,
       isSavingNavigationSetting: false,
       isErrorSavingNavigationSetting: false,
+      isSavingHtmlLang: false,
+      isSavingAppDescription: false,
     };
   },
   [ReduxActionErrorTypes.UPDATE_APPLICATION_ERROR]: (
@@ -356,6 +395,8 @@ export const handlers = {
       isErrorSavingAppName: true,
       isSavingNavigationSetting: false,
       isErrorSavingNavigationSetting: true,
+      isSavingHtmlLang: false,
+      isSavingAppDescription: false,
     };
   },
   [ReduxActionTypes.RESET_CURRENT_APPLICATION]: (
@@ -530,7 +571,7 @@ export const handlers = {
     state: ApplicationsReduxState,
     action: ReduxAction<NavigationSetting["logoAssetId"]>,
   ) => {
-    return produce(state, (draftState: ApplicationsReduxState) => {
+    return create(state, (draftState: ApplicationsReduxState) => {
       draftState.isUploadingNavigationLogo = false;
 
       if (
@@ -746,20 +787,179 @@ export const handlers = {
       isSavingNavigationSetting: false,
     };
   },
-  // git
-  [gitConnectSuccess.type]: (
+  [ReduxActionTypes.RESET_APP_SLUG_VALIDATION]: (
     state: ApplicationsReduxState,
-    action: PayloadAction<GitConnectSuccessPayload>,
   ) => {
     return {
       ...state,
-      currentApplication: {
-        ...state.currentApplication,
-        gitApplicationMetadata:
-          action.payload.responseData.gitApplicationMetadata,
-      },
+      isValidatingAppSlug: false,
+      isApplicationSlugValid: true,
     };
   },
+  [ReduxActionTypes.VALIDATE_APP_SLUG]: (state: ApplicationsReduxState) => {
+    return {
+      ...state,
+      isValidatingAppSlug: true,
+      isApplicationSlugValid: true, // Reset to valid while validating
+    };
+  },
+  [ReduxActionTypes.VALIDATE_APP_SLUG_SUCCESS]: (
+    state: ApplicationsReduxState,
+    action: ReduxAction<{ slug: string; isValid: boolean }>,
+  ) => {
+    return {
+      ...state,
+      isValidatingAppSlug: false,
+      isApplicationSlugValid: action.payload.isValid,
+    };
+  },
+  [ReduxActionTypes.VALIDATE_APP_SLUG_ERROR]: (
+    state: ApplicationsReduxState,
+    action: ReduxAction<{ slug: string; isValid: boolean }>,
+  ) => {
+    return {
+      ...state,
+      isValidatingAppSlug: false,
+      isApplicationSlugValid: action.payload.isValid,
+    };
+  },
+  [ReduxActionTypes.FETCH_APP_SLUG_SUGGESTION]: (
+    state: ApplicationsReduxState,
+  ) => {
+    return {
+      ...state,
+      isFetchingAppSlugSuggestion: true,
+      appSlugSuggestion: "",
+    };
+  },
+  [ReduxActionTypes.FETCH_APP_SLUG_SUGGESTION_SUCCESS]: (
+    state: ApplicationsReduxState,
+    action: ReduxAction<{ uniqueApplicationSlug: string }>,
+  ) => {
+    return {
+      ...state,
+      isFetchingAppSlugSuggestion: false,
+      appSlugSuggestion: action.payload.uniqueApplicationSlug,
+    };
+  },
+  [ReduxActionErrorTypes.FETCH_APP_SLUG_SUGGESTION_ERROR]: (
+    state: ApplicationsReduxState,
+  ) => {
+    return {
+      ...state,
+      isFetchingAppSlugSuggestion: false,
+      appSlugSuggestion: "",
+    };
+  },
+  [ReduxActionTypes.ENABLE_STATIC_URL]: (state: ApplicationsReduxState) => {
+    return {
+      ...state,
+      isPersistingAppSlug: true,
+    };
+  },
+  [ReduxActionTypes.ENABLE_STATIC_URL_SUCCESS]: (
+    state: ApplicationsReduxState,
+  ) => {
+    return {
+      ...state,
+      isPersistingAppSlug: false,
+      appSlugSuggestion: "",
+    };
+  },
+  [ReduxActionErrorTypes.ENABLE_STATIC_URL_ERROR]: (
+    state: ApplicationsReduxState,
+  ) => {
+    return {
+      ...state,
+      isPersistingAppSlug: false,
+    };
+  },
+  [ReduxActionTypes.DISABLE_STATIC_URL]: (state: ApplicationsReduxState) => {
+    return {
+      ...state,
+      isPersistingAppSlug: true,
+    };
+  },
+  [ReduxActionTypes.DISABLE_STATIC_URL_SUCCESS]: (
+    state: ApplicationsReduxState,
+  ) => {
+    return {
+      ...state,
+      isPersistingAppSlug: false,
+    };
+  },
+  [ReduxActionErrorTypes.DISABLE_STATIC_URL_ERROR]: (
+    state: ApplicationsReduxState,
+  ) => {
+    return {
+      ...state,
+      isPersistingAppSlug: false,
+    };
+  },
+  [ReduxActionTypes.PERSIST_APP_SLUG]: (state: ApplicationsReduxState) => {
+    return {
+      ...state,
+      isPersistingAppSlug: true,
+    };
+  },
+  [ReduxActionTypes.PERSIST_APP_SLUG_SUCCESS]: (
+    state: ApplicationsReduxState,
+  ) => {
+    return {
+      ...state,
+      isPersistingAppSlug: false,
+    };
+  },
+  [ReduxActionTypes.PERSIST_APP_SLUG_ERROR]: (
+    state: ApplicationsReduxState,
+  ) => {
+    return {
+      ...state,
+      isPersistingAppSlug: false,
+    };
+  },
+  [ReduxActionTypes.TOGGLE_FAVORITE_APPLICATION_SUCCESS]: (
+    state: ApplicationsReduxState,
+    action: ReduxAction<{ applicationId: string; isFavorited: boolean }>,
+  ) => {
+    const { applicationId, isFavorited } = action.payload;
+    const matchedApp = state.applicationList.find(
+      (app) => (app.baseId || app.id) === applicationId,
+    );
+    const canonicalId = matchedApp ? matchedApp.id : applicationId;
+
+    return {
+      ...state,
+      favoriteApplicationIds: isFavorited
+        ? [...state.favoriteApplicationIds, canonicalId]
+        : state.favoriteApplicationIds.filter((id) => id !== canonicalId),
+      applicationList: state.applicationList.map((app) =>
+        (app.baseId || app.id) === applicationId
+          ? { ...app, isFavorited }
+          : app,
+      ),
+    };
+  },
+  [ReduxActionTypes.FETCH_FAVORITE_APPLICATIONS_INIT]: (
+    state: ApplicationsReduxState,
+  ) => ({
+    ...state,
+    isFetchingFavorites: true,
+  }),
+  [ReduxActionTypes.FETCH_FAVORITE_APPLICATIONS_SUCCESS]: (
+    state: ApplicationsReduxState,
+    action: ReduxAction<ApplicationPayload[]>,
+  ) => ({
+    ...state,
+    isFetchingFavorites: false,
+    favoriteApplicationIds: action.payload.map((app) => app.id),
+  }),
+  [ReduxActionErrorTypes.FETCH_FAVORITE_APPLICATIONS_ERROR]: (
+    state: ApplicationsReduxState,
+  ) => ({
+    ...state,
+    isFetchingFavorites: false,
+  }),
 };
 
 const applicationsReducer = createReducer(initialState, handlers);
@@ -771,12 +971,16 @@ export interface ApplicationsReduxState {
   searchKeyword?: string;
   isSavingAppName: boolean;
   isErrorSavingAppName: boolean;
+  isSavingHtmlLang: boolean;
+  isSavingAppDescription: boolean;
   isFetchingApplication: boolean;
   isChangingViewAccess: boolean;
   creatingApplication: creatingApplicationMap;
   createApplicationError?: string;
   deletingApplication: boolean;
   forkingApplication: boolean;
+  favoriteApplicationIds: string[];
+  isFetchingFavorites: boolean;
   currentApplication?: ApplicationPayload;
   importingApplication: boolean;
   importedApplication: unknown;
@@ -791,6 +995,12 @@ export interface ApplicationsReduxState {
   isErrorSavingNavigationSetting: boolean;
   isUploadingNavigationLogo: boolean;
   isDeletingNavigationLogo: boolean;
+  isPersistingAppSlug: boolean;
+  isErrorPersistingAppSlug: boolean;
+  isValidatingAppSlug: boolean;
+  isApplicationSlugValid: boolean;
+  isFetchingAppSlugSuggestion: boolean;
+  appSlugSuggestion: string;
   loadingStates: {
     isFetchingAllRoles: boolean;
     isFetchingAllUsers: boolean;

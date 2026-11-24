@@ -1,6 +1,5 @@
 package com.appsmith.external.git.operations;
 
-import com.appsmith.external.models.ApplicationGitReference;
 import org.json.JSONObject;
 import reactor.core.publisher.Mono;
 
@@ -10,13 +9,14 @@ import java.util.Map;
 import java.util.Set;
 
 public interface FileOperationsCE {
-    void saveMetadataResource(ApplicationGitReference applicationGitReference, Path baseRepo);
 
     boolean saveResource(Object sourceEntity, Path path);
 
     void saveWidgets(JSONObject sourceEntity, String resourceName, Path path);
 
     boolean writeToFile(Object sourceEntity, Path path) throws IOException;
+
+    boolean hasFileChanged(Object sourceEntity, Object fsSourceEntity) throws IOException;
 
     void scanAndDeleteFileForDeletedResources(Set<String> validResources, Path resourceDirectory);
 

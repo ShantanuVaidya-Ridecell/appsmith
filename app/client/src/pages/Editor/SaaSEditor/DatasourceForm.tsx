@@ -16,7 +16,7 @@ import {
 } from "redux-form";
 import type { RouteComponentProps } from "react-router";
 import { connect } from "react-redux";
-import type { AppState } from "ee/reducers";
+import type { DefaultRootState } from "react-redux";
 import {
   getDatasource,
   getPluginImages,
@@ -31,6 +31,7 @@ import { JSONtoForm } from "../DataSourceEditor/JSONtoForm";
 import { normalizeValues, validate } from "components/formControls/utils";
 import {
   getCurrentApplicationId,
+  getCurrentBasePageId,
   getGsheetProjectID,
   getGsheetToken,
 } from "selectors/editorSelectors";
@@ -94,6 +95,10 @@ import { FEATURE_FLAG } from "ee/entities/FeatureFlag";
 import DatasourceTabs from "../DatasourceInfo/DatasorceTabs";
 import { getCurrentApplicationIdForCreateNewApp } from "ee/selectors/applicationSelectors";
 import { convertToPageIdSelector } from "selectors/pageListSelectors";
+import {
+  getIsAiAgentApp,
+  getIsCreatingAgent,
+} from "ee/selectors/aiAgentSelectors";
 
 const ViewModeContainer = styled.div`
   display: flex;
@@ -188,6 +193,7 @@ interface SaasEditorWrappperProps {
   datasourceId: string;
   pageId: string;
   pluginPackageName: string;
+  isCreatingAiAgent?: boolean;
 }
 interface RouteProps {
   datasourceId: string;
@@ -643,7 +649,7 @@ class DatasourceSaaSEditor extends JSONtoForm<Props, State> {
               showingTabsOnViewMode && "saas-form-resizer-content-show-tabs"
             }`}
           >
-            <DSEditorWrapper>
+            <DSEditorWrapper isCreatingAiAgent={this.props.isCreatingAiAgent}>
               <DSDataFilter
                 filterId={this.state.filterParams.id}
                 isInsideReconnectModal={!!isInsideReconnectModal}
@@ -749,7 +755,7 @@ class DatasourceSaaSEditor extends JSONtoForm<Props, State> {
 
 // TODO: Fix this the next time the file is edited
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const mapStateToProps = (state: AppState, props: any) => {
+const mapStateToProps = (state: DefaultRootState, props: any) => {
   // This is only present during onboarding flow
   const currentApplicationIdForCreateNewApp =
     getCurrentApplicationIdForCreateNewApp(state);
@@ -757,7 +763,7 @@ const mapStateToProps = (state: AppState, props: any) => {
     ? currentApplicationIdForCreateNewApp
     : getCurrentApplicationId(state);
 
-  const basePageId = props.match?.params?.basePageId;
+  const basePageId = getCurrentBasePageId(state);
   const pageIdFromUrl = convertToPageIdSelector(state, basePageId);
   const pageId = props.pageId || pageIdFromUrl;
 
@@ -852,6 +858,8 @@ const mapStateToProps = (state: AppState, props: any) => {
   // should plugin be able to preview data
   const isPluginAllowedToPreviewData =
     !!plugin && isEnabledForPreviewData(datasource as Datasource, plugin);
+  const isCreatingAgent = getIsCreatingAgent(state);
+  const isAgentApp = getIsAiAgentApp(state);
 
   return {
     datasource,
@@ -890,6 +898,7 @@ const mapStateToProps = (state: AppState, props: any) => {
     isPluginAuthFailed,
     featureFlags: selectFeatureFlags(state),
     isPluginAllowedToPreviewData,
+    isCreatingAiAgent: isCreatingAgent || isAgentApp,
   };
 };
 

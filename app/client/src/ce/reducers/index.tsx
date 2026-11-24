@@ -2,7 +2,7 @@ import entityReducer from "ee/reducers/entityReducers";
 import uiReducer from "ee/reducers/uiReducers";
 import evaluationsReducer from "reducers/evaluationReducers";
 import { reducer as formReducer } from "redux-form";
-import type { CanvasWidgetsReduxState } from "reducers/entityReducers/canvasWidgetsReducer";
+import type { CanvasWidgetsReduxState } from "ee/reducers/entityReducers/canvasWidgetsReducer";
 import type { EditorReduxState } from "ee/reducers/uiReducers/editorReducer";
 import type { ErrorReduxState } from "reducers/uiReducers/errorReducer";
 import type { ActionDataState } from "ee/reducers/entityReducers/actionsReducer";
@@ -48,14 +48,15 @@ import type { CrudInfoModalReduxState } from "reducers/uiReducers/crudInfoModalR
 import type { FormEvaluationState } from "reducers/evaluationReducers/formEvaluationReducer";
 import type { widgetReflow } from "reducers/uiReducers/reflowReducer";
 import type { AppThemingState } from "reducers/uiReducers/appThemingReducer";
-import type { MainCanvasReduxState } from "reducers/uiReducers/mainCanvasReducer";
+import type { WindowDimensionsState } from "reducers/uiReducers/windowReducer";
+import type { MainCanvasReduxState } from "ee/reducers/uiReducers/mainCanvasReducer";
 import type { SettingsReduxState } from "ee/reducers/settingsReducer";
 import SettingsReducer from "ee/reducers/settingsReducer";
 import type { TriggerValuesEvaluationState } from "reducers/evaluationReducers/triggerReducer";
-import type { CanvasWidgetStructure } from "WidgetProvider/constants";
+import type { CanvasWidgetStructure } from "WidgetProvider/types";
 import type { AppSettingsPaneReduxState } from "reducers/uiReducers/appSettingsPaneReducer";
-import type { TenantReduxState } from "ee/reducers/tenantReducer";
-import tenantReducer from "ee/reducers/tenantReducer";
+import type { OrganizationReduxState } from "ee/reducers/organizationReducer";
+import organizationReducer from "ee/reducers/organizationReducer";
 import type { FocusHistoryState } from "reducers/uiReducers/focusHistoryReducer";
 import type { EditorContextState } from "ee/reducers/uiReducers/editorContextReducer";
 import type { LibraryState } from "reducers/uiReducers/libraryReducer";
@@ -70,6 +71,7 @@ import type { layoutConversionReduxState } from "reducers/uiReducers/layoutConve
 import type { OneClickBindingState } from "reducers/uiReducers/oneClickBindingReducer";
 import type { IDEState } from "reducers/uiReducers/ideReducer";
 import type { PluginActionEditorState } from "PluginActionEditor";
+import type { FirstEvaluationState } from "reducers/evaluationReducers/firstEvaluationReducer";
 
 /* Reducers which are integrated into the core system when registering a pluggable module
     or done so by a module that is designed to be eventually pluggable */
@@ -77,9 +79,17 @@ import type { LayoutElementPositionsReduxState } from "layoutSystems/anvil/integ
 import type { ActiveField } from "reducers/uiReducers/activeFieldEditorReducer";
 import type { SelectedWorkspaceReduxState } from "ee/reducers/uiReducers/selectedWorkspaceReducer";
 import type { ConsolidatedPageLoadState } from "reducers/uiReducers/consolidatedPageLoadReducer";
+import type { CopyEntityToAppReduxState } from "reducers/uiReducers/copyEntityToAppReducer";
 import type { BuildingBlocksReduxState } from "reducers/uiReducers/buildingBlockReducer";
-import type { GitArtifactRootReduxState, GitGlobalReduxState } from "git";
+import type {
+  GitArtifactRootReduxState,
+  GitGlobalReduxState,
+} from "git/store/types";
 import { gitReducer } from "git/store";
+// eslint-disable-next-line @typescript-eslint/no-restricted-imports -- Ask AI is CE-owned; CE cannot add an ee/ shim (pre-push architecture guard).
+import { aiAssistantReducer } from "ce/reducers/aiAssistantReducer";
+// eslint-disable-next-line @typescript-eslint/no-restricted-imports -- Ask AI is CE-owned; CE cannot add an ee/ shim (pre-push architecture guard).
+import type { AIAssistantReduxState } from "ce/reducers/aiAssistantReducer";
 
 export const reducerObject = {
   entities: entityReducer,
@@ -87,9 +97,10 @@ export const reducerObject = {
   evaluations: evaluationsReducer,
   form: formReducer,
   settings: SettingsReducer,
-  tenant: tenantReducer,
+  organization: organizationReducer,
   linting: lintErrorReducer,
   git: gitReducer,
+  aiAssistant: aiAssistantReducer,
 };
 
 export interface AppState {
@@ -143,6 +154,8 @@ export interface AppState {
     activeField: ActiveField;
     ide: IDEState;
     pluginActionEditor: PluginActionEditorState;
+    windowDimensions: WindowDimensionsState;
+    copyEntityToApp: CopyEntityToAppReduxState;
   };
   entities: {
     canvasWidgetsStructure: CanvasWidgetStructure;
@@ -168,6 +181,7 @@ export interface AppState {
     loadingEntities: LoadingEntitiesState;
     formEvaluation: FormEvaluationState;
     triggers: TriggerValuesEvaluationState;
+    firstEvaluation: FirstEvaluationState;
   };
   linting: {
     errors: LintErrorsStore;
@@ -180,9 +194,10 @@ export interface AppState {
   settings: SettingsReduxState;
   // TODO: Fix this the next time the file is edited
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  tenant: TenantReduxState<any>;
+  organization: OrganizationReduxState<any>;
   git: {
     global: GitGlobalReduxState;
     artifacts: GitArtifactRootReduxState;
   };
+  aiAssistant: AIAssistantReduxState;
 }

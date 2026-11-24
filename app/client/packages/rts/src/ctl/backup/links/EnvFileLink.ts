@@ -1,6 +1,7 @@
 import type { Link } from ".";
 import type { BackupState } from "../BackupState";
 import fsPromises from "fs/promises";
+import { serializeEnvFile, writeEnvFile } from "../../env-file";
 
 const SECRETS_WARNING = `
 ***************************** IMPORTANT!!! *****************************
@@ -23,19 +24,27 @@ export class EnvFileLink implements Link {
       "/appsmith-stacks/configuration/docker.env",
       { encoding: "utf8" },
     );
-    let cleanedContent = removeSensitiveEnvData(content);
+    const cleanedContent = removeSensitiveEnvData(content);
+    const values: Record<string, string> = {};
 
     if (this.state.isEncryptionEnabled) {
-      cleanedContent +=
-        "\nAPPSMITH_ENCRYPTION_SALT=" +
-        process.env.APPSMITH_ENCRYPTION_SALT +
-        "\nAPPSMITH_ENCRYPTION_PASSWORD=" +
+      values.APPSMITH_ENCRYPTION_SALT = process.env.APPSMITH_ENCRYPTION_SALT;
+      values.APPSMITH_ENCRYPTION_PASSWORD =
         process.env.APPSMITH_ENCRYPTION_PASSWORD;
+
+      if (
+        !values.APPSMITH_ENCRYPTION_SALT ||
+        !values.APPSMITH_ENCRYPTION_PASSWORD
+      ) {
+        throw new Error(
+          "Encryption password and salt are required for an encrypted backup.",
+        );
+      }
     }
 
-    await fsPromises.writeFile(
+    await writeEnvFile(
       this.state.backupRootPath + "/docker.env",
-      cleanedContent,
+      await serializeEnvFile(cleanedContent, values),
     );
     console.log("Exporting docker environment file done.");
   }
@@ -48,14 +57,20 @@ export class EnvFileLink implements Link {
 }
 
 export function removeSensitiveEnvData(content: string): string {
-  // Remove encryption and Mongodb data from docker.env
+  // Strip instance-specific secrets from the backed-up docker.env. Redis values
+  // are stripped (in addition to encryption / MongoDB / DB URL) so the source
+  // instance's Redis password does not overwrite the target's during restore.
+  // These values are re-injected from the restoring instance's environment.
   const output_lines = [];
 
   content.split(/\r?\n/).forEach((line) => {
     if (
       !line.startsWith("APPSMITH_ENCRYPTION") &&
       !line.startsWith("APPSMITH_MONGODB") &&
-      !line.startsWith("APPSMITH_DB_URL=")
+      !line.startsWith("APPSMITH_DB_URL=") &&
+      !line.startsWith("APPSMITH_REDIS_URL=") &&
+      !line.startsWith("APPSMITH_REDIS_PASSWORD=") &&
+      !line.startsWith("APPSMITH_BACKUP_ARCHIVE_PASSWORD=")
     ) {
       output_lines.push(line);
     }

@@ -137,6 +137,15 @@ jobs:
     with:
       pr: ${{fromJson(needs.file-check.outputs.pr)}}
       skip-tests: "true"
+  
+  mcp-build:
+    name: mcp-build
+    needs: [file-check]
+    if: success() && needs.file-check.outputs.runId == '0'
+    uses: ./.github/workflows/mcp-build.yml
+    secrets: inherit
+    with:
+      pr: ${{fromJson(needs.file-check.outputs.pr)}}
 
   rts-build:
     name: rts-build
@@ -148,7 +157,7 @@ jobs:
       pr: ${{fromJson(needs.file-check.outputs.pr)}}
 
   build-docker-image:
-    needs: [file-check, client-build, server-build, rts-build]
+    needs: [file-check, client-build, server-build, mcp-build, rts-build]
     # Only run if the build step is successful
     if: success() && needs.file-check.outputs.runId == '0'
     name: build-docker-image
@@ -265,7 +274,7 @@ jobs:
       - name: Get Latest flaky Tests
         shell: bash
         run: |
-          curl --request POST --url https://yatin-s-workspace-jk8ru5.us-east-1.xata.sh/db/CypressKnownFailures:main/tables/CypressKnownFailuires/query --header 'Authorization: Bearer ${{ secrets.XATA_TOKEN }}' --header 'Content-Type: application/json'|jq -r |grep Spec|cut -d ':' -f 2 2> /dev/null|sed 's/"//g'|sed 's/,//g' >  ~/knownfailures
+          touch ~/knownfailures
 
       # Verify CI test failures against known failures
       - name: Verify CI test failures against known failures
@@ -314,7 +323,7 @@ jobs:
             fi      
 
       - name: Add a comment on the PR with new CI failures
-        if: env.ci_test_failed != 'true' && needs.file-check.outputs.pr != '0'
+        if: env.ci_test_failed == 'true' && needs.file-check.outputs.pr != '0'
         uses: peter-evans/create-or-update-comment@v3
         with:
           issue-number: ${{fromJson(needs.file-check.outputs.pr)}}
@@ -328,7 +337,7 @@ jobs:
                 ```
     
       - name: Add a comment on the PR when ci-test-limited is successful
-        if: env.ci_test_failed == 'true' && needs.file-check.outputs.pr != '0'
+        if: env.ci_test_failed != 'true' && needs.file-check.outputs.pr != '0'
         uses: peter-evans/create-or-update-comment@v3
         with:
           issue-number: ${{fromJson(needs.file-check.outputs.pr)}}
@@ -424,7 +433,7 @@ jobs:
       - name: Get Latest flaky Tests
         shell: bash
         run: |
-          curl --request POST --url https://yatin-s-workspace-jk8ru5.us-east-1.xata.sh/db/CypressKnownFailures:main/tables/CypressKnownFailuires/query --header 'Authorization: Bearer ${{ secrets.XATA_TOKEN }}' --header 'Content-Type: application/json'|jq -r |grep Spec|cut -d ':' -f 2 2> /dev/null|sed 's/"//g'|sed 's/,//g' >  ~/knownfailures
+          touch ~/knownfailures
 
       # Verify CI test failures against known failures
       - name: Verify CI test failures against known failures
@@ -473,7 +482,7 @@ jobs:
             fi      
 
       - name: Add a comment on the PR with new CI failures
-        if: env.ci_test_failed != 'true' && needs.file-check.outputs.pr != '0'
+        if: env.ci_test_failed == 'true' && needs.file-check.outputs.pr != '0'
         uses: peter-evans/create-or-update-comment@v3
         with:
           issue-number: ${{fromJson(needs.file-check.outputs.pr)}}
@@ -487,7 +496,7 @@ jobs:
             ```
 
       - name: Add a comment on the PR when ci-test-limited-existing-docker-image is success
-        if: env.ci_test_failed == 'true' && needs.file-check.outputs.pr != '0'
+        if: env.ci_test_failed != 'true' && needs.file-check.outputs.pr != '0'
         uses: peter-evans/create-or-update-comment@v3
         with:
           issue-number: ${{fromJson(needs.file-check.outputs.pr)}}

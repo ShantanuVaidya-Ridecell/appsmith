@@ -90,6 +90,9 @@ import * as m86 from "../migrations/086-migrate-table-server-side-filtering";
 import * as m87 from "../migrations/087-migrate-chart-widget-customechartdata";
 import * as m88 from "../migrations/088-migrate-custom-widget-dynamic-height";
 import * as m89 from "../migrations/089-migrage-table-widget-v2-currentRow-binding";
+import * as m90 from "../migrations/090-migrate-table-compute-value-binding";
+import * as m92 from "../migrations/092-update-ai-chat-widget";
+import * as m94 from "../migrations/094-migrate-table-widget-v2-dynamic-height";
 
 interface Migration {
   functionLookup: {
@@ -931,8 +934,45 @@ const migrations: Migration[] = [
     version: 89,
   },
   {
-    functionLookup: [],
+    functionLookup: [
+      {
+        moduleObj: m90,
+        functionName: "migrateTableComputeValueBinding",
+      },
+    ],
     version: 90,
+  },
+  {
+    // This migration is skipped
+    functionLookup: [],
+    version: 91,
+  },
+  {
+    functionLookup: [
+      {
+        moduleObj: m92,
+        functionName: "migrateAIChatWidget",
+      },
+    ],
+    version: 92,
+  },
+  {
+    functionLookup: [
+      {
+        moduleObj: m90,
+        functionName: "migrateTableComputeValueBinding",
+      },
+    ],
+    version: 93,
+  },
+  {
+    functionLookup: [
+      {
+        moduleObj: m94,
+        functionName: "migrateTableWidgetV2DynamicHeight",
+      },
+    ],
+    version: 94,
   },
 ];
 

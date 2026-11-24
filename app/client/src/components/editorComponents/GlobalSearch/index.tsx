@@ -7,9 +7,8 @@ import React, {
 } from "react";
 import { shallowEqual, useDispatch, useSelector } from "react-redux";
 import styled, { ThemeProvider } from "styled-components";
-import { useParams } from "react-router";
 import history, { NavigationMethod } from "utils/history";
-import type { AppState } from "ee/reducers";
+import type { DefaultRootState } from "react-redux";
 import SearchModal from "./SearchModal";
 import SearchBox from "./SearchBox";
 import SearchResults from "./SearchResults";
@@ -39,13 +38,13 @@ import {
   SEARCH_ITEM_TYPES,
 } from "./utils";
 import { getActionConfig } from "pages/Editor/Explorer/Actions/helpers";
-import type { ExplorerURLParams } from "ee/pages/Editor/Explorer/helpers";
 import { getLastSelectedWidget } from "selectors/ui";
 import AnalyticsUtil from "ee/utils/AnalyticsUtil";
 import useRecentEntities from "./useRecentEntities";
-import { noop } from "lodash";
+import { keyBy, noop } from "lodash";
 import {
   getCurrentPageId,
+  getCurrentBasePageId,
   getPagePermissions,
 } from "selectors/editorSelectors";
 import { getQueryParams } from "utils/URLUtils";
@@ -62,7 +61,7 @@ import {
   datasourcesEditorIdURL,
   jsCollectionIdURL,
 } from "ee/RouteBuilder";
-import { getPlugins } from "ee/selectors/entitiesSelector";
+import { getPlugins, isHiddenPlugin } from "ee/selectors/entitiesSelector";
 import {
   DatasourceCreateEntryPoints,
   TEMP_DATASOURCE_ID,
@@ -107,10 +106,11 @@ const StyledContainer = styled.div<{ category: SearchCategory; query: string }>`
   }
 `;
 
-export const isModalOpenSelector = (state: AppState) =>
+export const isModalOpenSelector = (state: DefaultRootState) =>
   state.ui.globalSearch.modalOpen;
 
-const searchQuerySelector = (state: AppState) => state.ui.globalSearch.query;
+const searchQuerySelector = (state: DefaultRootState) =>
+  state.ui.globalSearch.query;
 
 const getQueryIndexForSorting = (item: SearchItem, query: string) => {
   const title = getItemTitle(item) || "";
@@ -176,18 +176,21 @@ function GlobalSearch() {
     [setQueryInState],
   );
   const category = useSelector(
-    (state: AppState) => state.ui.globalSearch.filterContext.category,
+    (state: DefaultRootState) => state.ui.globalSearch.filterContext.category,
   );
   const plugins = useSelector(getPlugins);
+  const pluginById = useMemo(() => {
+    return keyBy(plugins, "id");
+  }, [plugins]);
   const setCategory = useCallback(
     (category: SearchCategory) => {
       dispatch(setGlobalSearchFilterContext({ category: category }));
     },
     [dispatch],
   );
-  const params = useParams<ExplorerURLParams>();
   const pageIdToBasePageIdMap = useSelector(getPageIdToBasePageIdMap);
   const basePageIdToPageIdMap = useSelector(getBasePageIdToPageIdMap);
+  const currentBasePageId = useSelector(getCurrentBasePageId);
 
   const toggleShow = () => {
     if (modalOpen) {
@@ -220,7 +223,7 @@ function GlobalSearch() {
     setActiveItemIndex(0);
   }, []);
 
-  const reducerDatasources = useSelector((state: AppState) => {
+  const reducerDatasources = useSelector((state: DefaultRootState) => {
     return state.entities.datasources.list.filter(
       (datasource) => datasource.id !== TEMP_DATASOURCE_ID,
     );
@@ -228,17 +231,25 @@ function GlobalSearch() {
   const datasourcesList = useMemo(() => {
     return reducerDatasources.map((datasource) => ({
       ...datasource,
-      pageId: basePageIdToPageIdMap[params?.basePageId],
+      pageId: basePageIdToPageIdMap[currentBasePageId],
     }));
-  }, [basePageIdToPageIdMap, params?.basePageId, reducerDatasources]);
+  }, [basePageIdToPageIdMap, currentBasePageId, reducerDatasources]);
 
   const filteredDatasources = useMemo(() => {
-    if (!query) return datasourcesList;
+    // Skip datasources without a known plugin and those of hidden plugins.
+    const isListed = (datasource: (typeof datasourcesList)[number]) => {
+      const plugin = pluginById[datasource.pluginId];
 
-    return datasourcesList.filter((datasource) =>
-      isMatching(datasource.name, query),
+      return Boolean(plugin?.id) && !isHiddenPlugin(plugin);
+    };
+
+    if (!query) return datasourcesList.filter(isListed);
+
+    return datasourcesList.filter(
+      (datasource) =>
+        isMatching(datasource.name, query) && isListed(datasource),
     );
-  }, [datasourcesList, query]);
+  }, [datasourcesList, pluginById, query]);
   const recentEntities = useRecentEntities();
   const recentEntityIds = recentEntities
     .map((r) => getEntityId(r))

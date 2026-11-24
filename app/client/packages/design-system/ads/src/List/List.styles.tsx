@@ -42,10 +42,14 @@ export const RightControlWrapper = styled.div`
   line-height: normal;
   display: flex;
   align-items: center;
+`;
 
-  button {
-    margin-left: -4px;
-  }
+export const UnsavedChangesWrapper = styled.div`
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
 `;
 
 export const TopContentWrapper = styled.div`
@@ -108,11 +112,24 @@ export const StyledListItem = styled.div<{
 
   &[data-rightcontrolvisibility="hover"] {
     ${RightControlWrapper} {
-      display: none;
+      visibility: hidden;
+      width: 0;
+
+      button.entity-context-menu {
+        visibility: hidden;
+        height: 100%;
+        width: 100%;
+      }
     }
 
     &:hover ${RightControlWrapper} {
-      display: block;
+      visibility: visible;
+      width: auto;
+
+      button.entity-context-menu {
+        visibility: visible;
+        width: 24px;
+      }
     }
   }
 
@@ -126,6 +143,16 @@ export const StyledListItem = styled.div<{
     cursor: not-allowed;
     opacity: var(--ads-v2-opacity-disabled);
     background-color: var(--ads-v2-colors-content-surface-default-bg);
+  }
+
+  &[data-subtle="true"] {
+    .t--entity-name {
+      color: var(--ads-v2-color-fg-subtle);
+    }
+
+    .ads-v2-icon {
+      color: var(--ads-v2-color-fg-subtle);
+    }
   }
 
   &:hover {

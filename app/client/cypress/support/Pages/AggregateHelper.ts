@@ -7,6 +7,9 @@ import { EntityItems } from "./AssertHelper";
 import EditorNavigator from "./EditorNavigation";
 import { EntityType } from "./EditorNavigation";
 import ClickOptions = Cypress.ClickOptions;
+const {
+  SAVE_TRIGGER_DELAY_MS,
+} = require("../../../src/components/editorComponents/CodeEditor/debounceConstants");
 
 type ElementType = string | JQuery<HTMLElement>;
 
@@ -270,8 +273,8 @@ export class AggregateHelper {
 
   public RenameQuery(renameVal: string, willFailError?: string) {
     this.rename({
-      nameLocator: this.locator._queryName,
-      textInputLocator: this.locator._queryNameTxt,
+      nameLocator: this.locator._activeEntityTab,
+      textInputLocator: this.locator._activeEntityTabInput,
       renameVal,
       dblClick: true,
       willFailError,
@@ -295,6 +298,11 @@ export class AggregateHelper {
   }
 
   public AssertAutoSave() {
+    // After fix made in https://github.com/appsmithorg/appsmith/pull/40239 to make save state and nw call in sync
+    // We will need to wait for the debounced time before we make any assertions on save state, otherwise
+    // we might run into situation where absence of save is asserted but save actually hasn't happened
+    // Additional 100ms added to avoid flaky issues that might be caused by race condition.
+    this.Sleep(SAVE_TRIGGER_DELAY_MS + 100);
     let saveStatus = this.CheckForPageSaveError();
     // wait for save query to trigger & n/w call to finish occuring
     if (!saveStatus)
@@ -575,12 +583,14 @@ export class AggregateHelper {
     });
   }
 
-  public WaitUntilEleAppear(selector: string) {
+  // Note: isVisible is required in case where item exists but is not visible ( hidden by css ),
+  // For e.g - search input in select widget is not visible,
+  public WaitUntilEleAppear(selector: string, isVisible = true) {
     cy.waitUntil(
       () =>
         this.GetElement(selector)
           .should("exist")
-          .should("be.visible")
+          .should(isVisible ? "be.visible" : "not.be.visible")
           .its("length")
           .should("be.gte", 1),
       {
@@ -984,12 +994,14 @@ export class AggregateHelper {
           parseSpecialCharSeq: boolean;
           shouldFocus: boolean;
           delay: number;
+          clear: boolean;
         }> = 0,
   ) {
     let index: number;
     let shouldFocus = true;
     let parseSpecialCharSeq = false;
     let delay = 10;
+    let clear = false;
 
     if (typeof indexOrOptions === "number") {
       index = indexOrOptions;
@@ -1001,6 +1013,7 @@ export class AggregateHelper {
         indexOrOptions.shouldFocus !== undefined
           ? indexOrOptions.shouldFocus
           : true;
+      clear = indexOrOptions.clear || false;
     }
 
     const element = this.GetElement(selector).eq(index);
@@ -1010,6 +1023,14 @@ export class AggregateHelper {
     }
 
     if (value === "") return element;
+
+    if (clear) {
+      return element.wait(100).clear().type(value, {
+        parseSpecialCharSequences: parseSpecialCharSeq,
+        delay: delay,
+        force: true,
+      });
+    }
 
     return element.wait(100).type(value, {
       parseSpecialCharSequences: parseSpecialCharSeq,
@@ -1160,7 +1181,7 @@ export class AggregateHelper {
 
   public GetObjectName() {
     //cy.get(this.locator._queryName).invoke("text").then((text) => cy.wrap(text).as("queryName")); or below syntax
-    return cy.get(this.locator._queryName).invoke("text");
+    return cy.get(this.locator._activeEntityTab).invoke("text");
   }
 
   public GetElementLength(selector: string) {
@@ -1310,7 +1331,9 @@ export class AggregateHelper {
     toClear && this.ClearInputText(name);
     cy.xpath(this.locator._inputWidgetValueField(name, isInput))
       .trigger("click")
-      .type(input, { parseSpecialCharSequences: false });
+      .type(input, {
+        parseSpecialCharSequences: false,
+      });
   }
 
   public ClearInputText(name: string, isInput = true) {
@@ -1998,5 +2021,164 @@ export class AggregateHelper {
       cy.spy(win.console, "error").as("error");
       cy.spy(win.console, "warn").as("warn");
     });
+  }
+
+  public waitForEmail({
+    pollInterval,
+    requireHtml = false,
+    targetEmail,
+    targetSubject,
+    timeout,
+  }: {
+    pollInterval: number;
+    timeout: number;
+    targetSubject: string;
+    targetEmail?: string;
+    requireHtml?: boolean;
+  }): Cypress.Chainable<any> {
+    const endTime = Date.now() + timeout;
+    let latestEmail: any = null;
+
+    function parseDate(dateString: string): Date {
+      return new Date(dateString.replace(/ \([A-Za-z\s]*\)$/, ""));
+    }
+
+    function fetchEmail(): Cypress.Chainable<any> {
+      return cy
+        .request("http://localhost:5001/api/v1/maildev-emails")
+        .then((res) => {
+          if (res.status !== 200) {
+            cy.log(`Request failed with status ${res.status}`);
+            return cy.wrap(null);
+          }
+
+          const emails: Array<{
+            headers: {
+              subject: string;
+              date: string;
+              to: string;
+              from: string;
+            };
+            text: string;
+            html?: string;
+          }> = res.body;
+
+          const matchingEmails = emails.filter((email) => {
+            const subjectMatch = email.headers.subject
+              .trim()
+              .toLowerCase()
+              .includes(targetSubject.trim().toLowerCase());
+
+            const recipientMatch = targetEmail
+              ? email.headers.to.trim().toLowerCase() ===
+                targetEmail.trim().toLowerCase()
+              : true;
+
+            // When the caller needs the HTML body, treat a matched email whose
+            // body has not been populated yet as "not yet delivered" and keep
+            // polling, rather than returning it and letting the caller throw on
+            // email.html. Maildev can surface an email's metadata before its
+            // HTML part is parsed, especially under load.
+            const htmlReady =
+              !requireHtml ||
+              (typeof email.html === "string" && email.html.length > 0);
+
+            return subjectMatch && recipientMatch && htmlReady;
+          });
+
+          if (matchingEmails.length > 0) {
+            latestEmail = matchingEmails.reduce((latest, email) => {
+              const emailDate = parseDate(email.headers.date);
+              const latestDate = parseDate(
+                latest?.headers?.date || "1970-01-01",
+              );
+
+              return emailDate > latestDate ? email : latest;
+            }, null);
+
+            if (latestEmail) {
+              cy.log("===== Email Details =====");
+              cy.log(`From: ${latestEmail.headers.from}`);
+              cy.log(`To: ${latestEmail.headers.to}`);
+              cy.log(`Subject: ${latestEmail.headers.subject}`);
+              cy.log("=========================");
+            }
+
+            return cy.wrap(latestEmail);
+          }
+
+          if (Date.now() > endTime) {
+            cy.log("===== Info =====");
+            cy.log(
+              `No email with subject "${targetSubject}" found${
+                targetEmail ? ` for recipient "${targetEmail}"` : ""
+              } within the timeout period.`,
+            );
+            cy.log("================");
+
+            return cy.wrap(null);
+          }
+
+          return cy.wait(pollInterval).then(fetchEmail);
+        });
+    }
+
+    return fetchEmail();
+  }
+
+  public getCanvasWidgetStateByWidgetName(widgetName: string): any {
+    return cy
+      .window()
+      .its("store")
+      .invoke("getState")
+      .then((state) => {
+        const widgets = state.entities.canvasWidgets;
+
+        const widgetId = Object.keys(widgets).find((widgetId) => {
+          if (widgets[widgetId].widgetName === widgetName) {
+            return widgets[widgetId];
+          }
+        });
+
+        if (!widgetId) return null;
+
+        return widgets[widgetId];
+      });
+  }
+
+  public getDatasourceStateByName(datasourceName: string): any {
+    return cy
+      .window()
+      .its("store")
+      .invoke("getState")
+      .then((state) => {
+        const datasources = state.entities.datasources.list;
+
+        const datasource = datasources.find(
+          (datasource: any) => datasource.name === datasourceName,
+        );
+
+        if (!datasource) return null;
+
+        return datasource;
+      });
+  }
+
+  public getActionStateByName(actionName: string): any {
+    return cy
+      .window()
+      .its("store")
+      .invoke("getState")
+      .then((state) => {
+        const actions = state.entities.actions;
+
+        const action = actions.find(
+          (action: any) => action.config.name === actionName,
+        );
+
+        if (!action) return null;
+
+        return action;
+      });
   }
 }

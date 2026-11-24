@@ -7,7 +7,7 @@ import ProductUpdatesModal from "pages/Applications/ProductUpdatesModal";
 import { connect, useDispatch, useSelector } from "react-redux";
 import type { RouteComponentProps } from "react-router";
 import { useParams, withRouter } from "react-router";
-import type { AppState } from "ee/reducers";
+import type { DefaultRootState } from "react-redux";
 import type { InjectedFormProps } from "redux-form";
 import { formValueSelector, reduxForm } from "redux-form";
 import {
@@ -20,6 +20,7 @@ import RestartBanner from "./RestartBanner";
 import SaveAdminSettings from "./SaveSettings";
 import { DisconnectService } from "./DisconnectService";
 import AdminConfig from "ee/pages/AdminSettings/config";
+import { objectKeys } from "@appsmith/utils";
 import type { Setting } from "ee/pages/AdminSettings/config/types";
 import { SettingTypes } from "ee/pages/AdminSettings/config/types";
 import {
@@ -29,7 +30,11 @@ import {
   DISCONNECT_SERVICE_WARNING,
   MANDATORY_FIELDS_ERROR,
 } from "ee/constants/messages";
-import { isTenantConfig, saveAllowed } from "ee/utils/adminSettingsHelpers";
+import {
+  isOrganizationConfig,
+  nestOrganizationConfigFromSettingsForm,
+  saveAllowed,
+} from "ee/utils/adminSettingsHelpers";
 import AnalyticsUtil from "ee/utils/AnalyticsUtil";
 import {
   Wrapper,
@@ -44,9 +49,9 @@ import { toast } from "@appsmith/ads";
 import {
   getIsFormLoginEnabled,
   getThirdPartyAuths,
-} from "ee/selectors/tenantSelectors";
-import { updateTenantConfig } from "ee/actions/tenantActions";
-import { tenantConfigConnection } from "ee/constants/tenantConstants";
+} from "ee/selectors/organizationSelectors";
+import { updateOrganizationConfig } from "ee/actions/organizationActions";
+import { useIsCloudBillingEnabled } from "hooks";
 
 interface FormProps {
   settings: Record<string, string>;
@@ -67,6 +72,38 @@ function getSettingsConfig(category: string, subCategory?: string) {
   return AdminConfig.get(subCategory ?? category);
 }
 
+/**
+ * Checks the settings shown on the current page. The form holds the stored settings of every page. A stored value on
+ * another page could otherwise disable Save here, and its error would never show, because that field is not rendered.
+ */
+export const validate = (
+  // TODO: Fix this the next time the file is edited
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  values: Record<string, any>,
+  props?: { match?: { params?: { category?: string; selected?: string } } },
+) => {
+  // TODO: Fix this the next time the file is edited
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const errors: any = {};
+  const params = props?.match?.params;
+  const pageCategory = params?.selected ?? params?.category;
+
+  _.filter(values, (value, name) => {
+    const category = AdminConfig.settingsMap[name]?.category;
+
+    // Same rule as getSettingsConfig, which hides every setting whose category is not the page's.
+    if (pageCategory && category && category !== pageCategory) return;
+
+    const err_message = AdminConfig.validate(name, value);
+
+    if (err_message) {
+      errors[name] = err_message;
+    }
+  });
+
+  return errors;
+};
+
 export function SettingsForm(
   props: InjectedFormProps & RouteComponentProps & FormProps,
 ) {
@@ -84,57 +121,56 @@ export function SettingsForm(
   const pageTitle = getSettingLabel(
     details?.title || (subCategory ?? category),
   );
+  const BottomComponent = details?.bottomComponent;
   const isFormLoginEnabled = useSelector(getIsFormLoginEnabled);
   const socialLoginList = useSelector(getThirdPartyAuths);
+  const isMultiOrgEnabled = useIsCloudBillingEnabled();
 
-  const updatedTenantSettings = useMemo(
-    () => Object.keys(props.settings).filter((s) => isTenantConfig(s)),
+  const updatedOrganizationSettings = useMemo(
+    () => Object.keys(props.settings).filter((s) => isOrganizationConfig(s)),
     [props.settings],
   );
 
-  // Is there a non-tenant (env) config in this category of settings?
-  const isOnlyTenantConfig = !settingsDetails.find(
+  // Is there a non-organization (env) config in this category of settings?
+  const isOnlyOrganizationConfig = !settingsDetails.find(
     (s) =>
       s.category === (subCategory || category) &&
       s.controlType != SettingTypes.CALLOUT &&
-      !isTenantConfig(s.id),
+      !isOrganizationConfig(s.id),
   );
 
   const saveChangedSettings = () => {
     const settingsKeyLength = Object.keys(props.settings).length;
     const isOnlyEnvSettings =
-      updatedTenantSettings.length === 0 && settingsKeyLength !== 0;
-    const isEnvAndTenantSettings =
-      updatedTenantSettings.length !== 0 &&
-      updatedTenantSettings.length !== settingsKeyLength;
+      updatedOrganizationSettings.length === 0 && settingsKeyLength !== 0;
+    const isEnvAndOrganizationSettings =
+      updatedOrganizationSettings.length !== 0 &&
+      updatedOrganizationSettings.length !== settingsKeyLength;
 
     if (isOnlyEnvSettings) {
       // only env settings
       dispatch(saveSettings(props.settings));
     } else {
-      // only tenant settings
+      // only organization settings
       // TODO: Fix this the next time the file is edited
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const config: any = {};
-
-      for (const each in props.settings) {
-        if (tenantConfigConnection.includes(each)) {
-          config[each] = props.settings[each];
-        }
-      }
+      const config: any = nestOrganizationConfigFromSettingsForm(
+        props.settings,
+      );
 
       dispatch(
-        updateTenantConfig({
-          tenantConfiguration: config,
-          isOnlyTenantSettings: !isEnvAndTenantSettings,
+        updateOrganizationConfig({
+          organizationConfiguration: config,
+          isOnlyOrganizationSettings: !isEnvAndOrganizationSettings,
           needsRefresh: details?.needsRefresh,
+          needsRestart: details?.needsRestart,
         }),
       );
 
-      // both env and tenant settings
-      if (isEnvAndTenantSettings) {
+      // both env and organization settings
+      if (isEnvAndOrganizationSettings) {
         const filteredSettings = Object.keys(props.settings)
-          .filter((key) => !isTenantConfig(key))
+          .filter((key) => !isOrganizationConfig(key))
           .reduce((obj, key) => {
             return Object.assign(obj, {
               [key]: props.settings[key],
@@ -216,7 +252,30 @@ export function SettingsForm(
         }
       }
     });
+
+    // A toggle/checkbox backed by an env variable that is ABSENT from the fetched settings (an env file predating
+    // it) renders from its declared default, so the UI mirrors the runtime default instead of showing unchecked.
+    _.forEach(AdminConfig.settingsMap, (setting, settingName) => {
+      if (
+        (setting.controlType == SettingTypes.TOGGLE ||
+          setting.controlType == SettingTypes.CHECKBOX) &&
+        setting.defaultValue !== undefined &&
+        props.settingsConfig[settingName] === undefined
+      ) {
+        props.settingsConfig[settingName] = setting.defaultValue;
+      }
+    });
     props.initialize(props.settingsConfig);
+
+    // A stored value can fail a check that was added after it was saved. Such a value disables Save. Mark those fields
+    // touched so their errors show now. Otherwise Save is disabled with no reason on screen.
+    const invalidFields = objectKeys(
+      validate(props.settingsConfig, {
+        match: { params: { category, selected: subCategory } },
+      }) as Record<string, string>,
+    );
+
+    if (invalidFields.length) props.touch(...invalidFields);
   };
 
   useEffect(onClear, [subCategory]);
@@ -241,6 +300,7 @@ export function SettingsForm(
     // TODO: Fix this the next time the file is edited
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const updatedSettings: any = {};
+    // Use the initial value to determine if there are enough login methods
     const connectedMethodsCount =
       socialLoginList.length + (isFormLoginEnabled ? 1 : 0);
 
@@ -293,19 +353,21 @@ export function SettingsForm(
           settings={settingsDetails}
           subCategory={subCategory}
         />
+        {BottomComponent ? <BottomComponent /> : null}
         {isSavable && (
           <SaveAdminSettings
-            isOnlyTenantConfig={isOnlyTenantConfig}
+            isOnlyOrganizationConfig={isOnlyOrganizationConfig}
             isSaving={props.isSaving}
             needsRefresh={details?.needsRefresh}
+            needsRestart={details?.needsRestart}
             onClear={onClear}
             onSave={onSave}
             settings={props.settings}
-            updatedTenantSettings={updatedTenantSettings}
+            updatedOrganizationSettings={updatedOrganizationSettings}
             valid={props.valid}
           />
         )}
-        {details?.isConnected && (
+        {details?.isConnected && !isMultiOrgEnabled && (
           <DisconnectService
             disconnect={() => disconnect(settingsDetails)}
             subHeader={createMessage(DISCONNECT_SERVICE_SUBHEADER)}
@@ -324,28 +386,10 @@ export function SettingsForm(
   );
 }
 
-// TODO: Fix this the next time the file is edited
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const validate = (values: Record<string, any>) => {
-  // TODO: Fix this the next time the file is edited
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const errors: any = {};
-
-  _.filter(values, (value, name) => {
-    const err_message = AdminConfig.validate(name, value);
-
-    if (err_message) {
-      errors[name] = err_message;
-    }
-  });
-
-  return errors;
-};
-
 const selector = formValueSelector(SETTINGS_FORM_NAME);
 
 export default withRouter(
-  connect((state: AppState) => {
+  connect((state: DefaultRootState) => {
     const settingsConfig = getSettings(state);
     // TODO: Fix this the next time the file is edited
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -359,7 +403,8 @@ export default withRouter(
     _.forEach(AdminConfig.settingsMap, (setting, name) => {
       const fieldValue = selector(state, name);
       const doNotUpdate =
-        setting.controlType === SettingTypes.CHECKBOX &&
+        (setting.controlType === SettingTypes.CHECKBOX ||
+          setting.controlType === SettingTypes.TOGGLE) &&
         !settingsConfig[name] &&
         !fieldValue;
 

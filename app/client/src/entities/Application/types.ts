@@ -15,6 +15,7 @@ export interface ApplicationPayload {
   name: string;
   color?: string;
   icon?: string;
+  description?: string;
   workspaceId: string;
   defaultPageId: string;
   defaultBasePageId: string;
@@ -38,6 +39,7 @@ export interface ApplicationPayload {
     appPositioning?: LayoutSystemTypeConfig;
     navigationSetting?: NavigationSetting;
     themeSetting?: ThemeSetting;
+    htmlLang?: string;
   };
   collapseInvisibleWidgets?: boolean;
   evaluationVersion?: EvaluationVersion;
@@ -45,4 +47,10 @@ export interface ApplicationPayload {
   isCommunityTemplate?: boolean;
   publishedAppToCommunityTemplate?: boolean;
   forkedFromTemplateTitle?: string;
+  connectedWorkflowId?: string;
+  isFavorited?: boolean;
+  staticUrlSettings?: {
+    enabled: boolean;
+    uniqueSlug: string;
+  };
 }

@@ -3,8 +3,8 @@ import React from "react";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { isValidGitRemoteUrl } from "../../utils";
 import GenerateSSH from "./GenerateSSH";
-import type { GitProvider } from "./ChooseGitProvider";
 import "@testing-library/jest-dom";
+import type { GitProvider } from "../../common/types";
 
 jest.mock("../../utils", () => ({
   isValidGitRemoteUrl: jest.fn(),
@@ -26,7 +26,7 @@ describe("GenerateSSH Component", () => {
 
   it("renders the component correctly", () => {
     render(<GenerateSSH {...defaultProps} />);
-    expect(screen.getByText("Generate SSH key")).toBeInTheDocument();
+    expect(screen.getByText("Configure SSH Key")).toBeInTheDocument();
     expect(
       screen.getByTestId("t--git-connect-remote-input"),
     ).toBeInTheDocument();

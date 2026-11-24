@@ -35,6 +35,7 @@ import reactor.core.publisher.Mono;
 
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -44,6 +45,7 @@ import java.util.Set;
 import java.util.UUID;
 
 import static com.appsmith.external.constants.spans.ActionCollectionSpan.GET_ACTION_COLLECTION_BY_ID;
+import static com.appsmith.external.constants.spans.ce.ActionCollectionSpanCE.GET_ACTION_COLLECTIONS_BY_IDS;
 import static com.appsmith.external.helpers.AppsmithBeanUtils.copyNewFieldValuesIntoOldObject;
 import static java.lang.Boolean.TRUE;
 
@@ -280,13 +282,16 @@ public class ActionCollectionServiceCEImpl extends BaseService<ActionCollectionR
 
     @Override
     public Mono<ActionCollectionDTO> deleteWithoutPermissionUnpublishedActionCollection(String id) {
-        return deleteUnpublishedActionCollection(id, null, actionPermission.getDeletePermission());
+        return actionPermission
+                .getDeletePermission()
+                .flatMap(permission -> deleteUnpublishedActionCollection(id, null, permission));
     }
 
     @Override
     public Mono<ActionCollectionDTO> deleteUnpublishedActionCollection(String id) {
-        return deleteUnpublishedActionCollection(
-                id, actionPermission.getDeletePermission(), actionPermission.getDeletePermission());
+        return actionPermission
+                .getDeletePermission()
+                .flatMap(permission -> deleteUnpublishedActionCollection(id, permission, permission));
     }
 
     @Override
@@ -367,6 +372,14 @@ public class ActionCollectionServiceCEImpl extends BaseService<ActionCollectionR
     }
 
     @Override
+    public Flux<ActionCollection> findAllByIds(List<String> ids, AclPermission aclPermission) {
+        return repository
+                .findAllByIds(ids, aclPermission)
+                .name(GET_ACTION_COLLECTIONS_BY_IDS)
+                .tap(Micrometer.observation(observationRegistry));
+    }
+
+    @Override
     public Mono<ActionCollectionDTO> findActionCollectionDTObyIdAndViewMode(
             String id, Boolean viewMode, AclPermission permission) {
         return this.findById(id, permission)
@@ -374,12 +387,16 @@ public class ActionCollectionServiceCEImpl extends BaseService<ActionCollectionR
     }
 
     @Override
-    public Mono<List<ActionCollection>> archiveActionCollectionByApplicationId(
-            String applicationId, AclPermission permission) {
+    public Mono<Void> archiveActionCollectionByApplicationId(String applicationId, AclPermission permission) {
+        // During bulk application deletion, archive action collections directly without per-entity
+        // analytics/audit-log events and without cascading to child actions. Child actions are separately
+        // archived by NewActionService.archiveActionsByApplicationId in the delete-application flow.
+        // This avoids the OOM caused by hundreds of concurrent audit-log DB operations that previously
+        // exhausted heap memory and crashed the container.
         return repository
                 .findByApplicationId(applicationId, permission, null)
-                .flatMap(this::archiveGivenActionCollection)
-                .collectList();
+                .flatMap(repository::archive, 4)
+                .then();
     }
 
     @Override
@@ -418,10 +435,12 @@ public class ActionCollectionServiceCEImpl extends BaseService<ActionCollectionR
     }
 
     protected Mono<ActionCollection> archiveGivenActionCollection(ActionCollection actionCollection) {
-        Flux<NewAction> unpublishedJsActionsFlux = newActionService.findByCollectionIdAndViewMode(
-                actionCollection.getId(), false, actionPermission.getDeletePermission());
-        Flux<NewAction> publishedJsActionsFlux = newActionService.findByCollectionIdAndViewMode(
-                actionCollection.getId(), true, actionPermission.getDeletePermission());
+        Mono<AclPermission> deleteActionPermissionMono =
+                actionPermission.getDeletePermission().cache();
+        Flux<NewAction> unpublishedJsActionsFlux = deleteActionPermissionMono.flatMapMany(permission ->
+                newActionService.findByCollectionIdAndViewMode(actionCollection.getId(), false, permission));
+        Flux<NewAction> publishedJsActionsFlux = deleteActionPermissionMono.flatMapMany(permission ->
+                newActionService.findByCollectionIdAndViewMode(actionCollection.getId(), true, permission));
         return unpublishedJsActionsFlux
                 .mergeWith(publishedJsActionsFlux)
                 .flatMap(toArchive -> newActionService
@@ -436,6 +455,12 @@ public class ActionCollectionServiceCEImpl extends BaseService<ActionCollectionR
                             return Mono.empty();
                         }))
                 .collectList()
+                .flatMap(newActions -> {
+                    List<ActionDTO> actionDTOs = newActions.stream()
+                            .map(x -> newActionService.generateActionByViewMode(x, false))
+                            .toList();
+                    return newActionService.postProcessDeletedActions(actionDTOs);
+                })
                 .then(repository.archive(actionCollection).thenReturn(actionCollection))
                 .flatMap(deletedActionCollection -> analyticsService.sendDeleteEvent(
                         deletedActionCollection, getAnalyticsProperties(deletedActionCollection)));
@@ -449,7 +474,7 @@ public class ActionCollectionServiceCEImpl extends BaseService<ActionCollectionR
         analyticsProperties.put(
                 "applicationId", ObjectUtils.defaultIfNull(savedActionCollection.getApplicationId(), ""));
         analyticsProperties.put("pageId", ObjectUtils.defaultIfNull(unpublishedCollection.getPageId(), ""));
-        analyticsProperties.put("orgId", ObjectUtils.defaultIfNull(savedActionCollection.getWorkspaceId(), ""));
+        analyticsProperties.put("workspaceId", ObjectUtils.defaultIfNull(savedActionCollection.getWorkspaceId(), ""));
         return analyticsProperties;
     }
 
@@ -526,13 +551,20 @@ public class ActionCollectionServiceCEImpl extends BaseService<ActionCollectionR
     public Mono<ActionCollectionDTO> validateAndSaveCollection(ActionCollection actionCollection) {
         ActionCollectionDTO collectionDTO = actionCollection.getUnpublishedCollection();
 
+        // The new actions are created by a concurrent flatMap below, and each created action is
+        // appended here via doOnNext. Those appends run on different MongoDB/Netty worker threads,
+        // so the list must be thread-safe; a plain ArrayList corrupts under the concurrent writes
+        // (lost entries or ArrayIndexOutOfBoundsException). The list is read only downstream of
+        // collectList(), after every append has completed, so no extra iteration guard is needed.
+        List<ActionDTO> newlyAddedActions = Collections.synchronizedList(new ArrayList<>());
+
         return validateActionCollection(actionCollection)
                 .thenReturn(collectionDTO.getActions())
                 .defaultIfEmpty(List.of())
                 .flatMapMany(Flux::fromIterable)
                 .flatMap(action -> {
                     if (action.getId() == null) {
-                        return createJsAction(actionCollection, action);
+                        return createJsAction(actionCollection, action).doOnNext(newlyAddedActions::add);
                     }
                     // This would occur when the new collection is created by grouping existing actions
                     // This could be a future enhancement for js editor templates,
@@ -541,6 +573,9 @@ public class ActionCollectionServiceCEImpl extends BaseService<ActionCollectionR
                     return Mono.just(action);
                 })
                 .collectList()
+                .flatMap(actions -> newActionService
+                        .postProcessNewlyAddedActions(newlyAddedActions)
+                        .thenReturn(actions))
                 .flatMap(actions -> {
                     // Create collection and return with actions
                     final Mono<ActionCollection> actionCollectionMono = this.create(actionCollection)
@@ -604,6 +639,28 @@ public class ActionCollectionServiceCEImpl extends BaseService<ActionCollectionR
                 .flatMap(this::validateActionCollection)
                 .collectList()
                 .flatMap(repository::bulkUpdate);
+    }
+
+    /**
+     * General purpose bulk update method that directly saves action collections to the database without validation.
+     * This method is optimized for scenarios where the action collections are already validated or when
+     * validation is not required (e.g., refactoring operations, data migrations).
+     *
+     * @param actionCollectionList List of ActionCollection objects to update
+     * @return Mono<Void> indicating completion of the bulk update operation
+     */
+    @Override
+    public Mono<Void> bulkUpdateActionCollections(List<ActionCollection> actionCollectionList) {
+        if (actionCollectionList == null || actionCollectionList.isEmpty()) {
+            return Mono.empty();
+        }
+
+        // Set git sync IDs for action collections that don't have them
+        actionCollectionList.stream()
+                .filter(actionCollection -> actionCollection.getGitSyncId() == null)
+                .forEach(this::setGitSyncIdInActionCollection);
+
+        return repository.bulkUpdate(actionCollectionList);
     }
 
     @Override

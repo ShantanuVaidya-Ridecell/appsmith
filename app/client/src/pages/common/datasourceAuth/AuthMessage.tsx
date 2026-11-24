@@ -1,4 +1,4 @@
-import type { AppState } from "ee/reducers";
+import type { DefaultRootState } from "react-redux";
 import { redirectAuthorizationCode } from "actions/datasourceActions";
 import type { CalloutKind } from "@appsmith/ads";
 import { Callout } from "@appsmith/ads";
@@ -18,11 +18,9 @@ import {
   GOOGLE_SHEETS_ASK_FOR_SUPPORT,
   DATASOURCE_INTERCOM_TEXT,
 } from "ee/constants/messages";
-import { getAppsmithConfigs } from "ee/configs";
+import { isPylonChatAvailable } from "utils/bootPylon";
 import { DocsLink, openDoc } from "constants/DocumentationLinks";
 import type { Plugin } from "entities/Plugin";
-const { intercomAppID } = getAppsmithConfigs();
-
 const StyledAuthMessage = styled.div<{ isInViewMode: boolean }>`
   width: fit-content;
   ${(props) =>
@@ -54,7 +52,7 @@ export default function AuthMessage(props: AuthMessageProps) {
     style = {},
   } = props;
   const dispatch = useDispatch();
-  const pluginType = useSelector((state: AppState) =>
+  const pluginType = useSelector((state: DefaultRootState) =>
     getPluginTypeFromDatasourceId(state, datasource.id),
   );
   const pluginId: string = props?.datasource?.pluginId || "";
@@ -88,11 +86,12 @@ export default function AuthMessage(props: AuthMessageProps) {
             onClick: () => {
               // Triggering intercom here, to understand what exact
               // problem user is facing while creating google sheets datasource
-              if (intercomAppID && window.Intercom) {
-                window.Intercom(
+              if (isPylonChatAvailable()) {
+                window.Pylon(
                   "showNewMessage",
                   createMessage(DATASOURCE_INTERCOM_TEXT),
                 );
+                window.Pylon("show");
               }
             },
           },

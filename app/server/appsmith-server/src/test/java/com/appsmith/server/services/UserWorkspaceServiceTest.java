@@ -325,8 +325,10 @@ public class UserWorkspaceServiceTest {
     @Test
     @WithUserDetails(value = "api_user")
     public void invalid_removeAnotherDeveloperAsDeveloperInWorkspace() {
+        // Ensure neither of the users are super users
         User api_user = userRepository.findByEmail("api_user").block();
         User test_user = userRepository.findByEmail("usertest@usertest.com").block();
+        userUtils.removeInstanceAdmin(List.of(api_user, test_user)).block();
         Workspace workspace = new Workspace();
         workspace.setName("Test org");
         Workspace createdWorkspace = workspaceService.create(workspace).block();
@@ -374,5 +376,114 @@ public class UserWorkspaceServiceTest {
         permissionGroupService
                 .cleanPermissionGroupCacheForUsers(List.of(api_user.getId(), test_user.getId()))
                 .block();
+    }
+
+    @Test
+    @WithUserDetails(value = "api_user")
+    public void updatePermissionGroupForMember_crossWorkspaceInjection_GHSA_h5qf_shouldReject() {
+        // GHSA-h5qf-426x-5mv5 — Missing Authorization on updatePermissionGroupForMember
+        // Verify that supplying a newPermissionGroupId from a DIFFERENT workspace is rejected.
+
+        // Create workspace V (attacker's own — api_user is admin)
+        Workspace workspaceV = new Workspace();
+        workspaceV.setName("GHSA-h5qf WsV attacker");
+        Workspace createdWorkspaceV = workspaceService.create(workspaceV).block();
+
+        // Create workspace W (victim's)
+        Workspace workspaceW = new Workspace();
+        workspaceW.setName("GHSA-h5qf WsW victim");
+        Workspace createdWorkspaceW = workspaceService.create(workspaceW).block();
+
+        List<PermissionGroup> pgV = permissionGroupRepository
+                .findAllById(createdWorkspaceV.getDefaultPermissionGroups())
+                .collectList()
+                .block();
+
+        List<PermissionGroup> pgW = permissionGroupRepository
+                .findAllById(createdWorkspaceW.getDefaultPermissionGroups())
+                .collectList()
+                .block();
+
+        PermissionGroup viewerGroupW = pgW.stream()
+                .filter(pg -> pg.getName().startsWith(FieldName.VIEWER))
+                .findFirst()
+                .get();
+
+        PermissionGroup viewerGroupV = pgV.stream()
+                .filter(pg -> pg.getName().startsWith(FieldName.VIEWER))
+                .findFirst()
+                .get();
+
+        // Add sybil to workspace V as a Viewer (so username resolves in updatePermissionGroupForMember)
+        User sybil = userRepository.findByEmail("usertest@usertest.com").block();
+        if (viewerGroupV.getAssignedToUserIds() == null) {
+            viewerGroupV.setAssignedToUserIds(new HashSet<>());
+        }
+        viewerGroupV.getAssignedToUserIds().add(sybil.getId());
+        permissionGroupRepository.save(viewerGroupV).block();
+        permissionGroupService
+                .cleanPermissionGroupCacheForUsers(List.of(sybil.getId()))
+                .block();
+
+        // EXPLOIT: call updatePermissionGroupForMember on workspace V but with W's viewer group id.
+        // Without the fix this succeeds (cross-workspace injection).
+        // With the fix it must throw ACTION_IS_NOT_AUTHORIZED.
+        UpdatePermissionGroupDTO exploitDTO = new UpdatePermissionGroupDTO();
+        exploitDTO.setUsername("usertest@usertest.com");
+        exploitDTO.setNewPermissionGroupId(viewerGroupW.getId());
+
+        Mono<MemberInfoDTO> exploitMono = userWorkspaceService.updatePermissionGroupForMember(
+                createdWorkspaceV.getId(), exploitDTO, "http://test-origin.test");
+
+        StepVerifier.create(exploitMono)
+                .expectErrorMatches(throwable -> throwable instanceof AppsmithException
+                        && throwable
+                                .getMessage()
+                                .equals(AppsmithError.ACTION_IS_NOT_AUTHORIZED.getMessage(
+                                        "Change permissionGroup of a member")))
+                .verify();
+
+        // Cleanup
+        viewerGroupV.getAssignedToUserIds().remove(sybil.getId());
+        permissionGroupRepository.save(viewerGroupV).block();
+        permissionGroupService
+                .cleanPermissionGroupCacheForUsers(List.of(sybil.getId()))
+                .block();
+    }
+
+    @Test
+    @WithUserDetails(value = "api_user")
+    public void getUserWorkspacesInAlphabeticalOrder_WhenUserHasWorkspaces_ReturnsWorkspacesSortedAlphabetically() {
+
+        List<String> existingWorkspaceNames =
+                workspaceService.getAll().map(Workspace::getName).collectList().block();
+
+        // Arrange: Create multiple workspaces with different names
+        List<String> workspaceNames =
+                new java.util.ArrayList<>(List.of("Zebra Workspace", "Alpha Workspace", "Beta Workspace"));
+        assert existingWorkspaceNames != null;
+        for (String name : workspaceNames) {
+            Workspace workspace = new Workspace();
+            workspace.setName(name);
+            // Ensures default permission groups & current user access are created
+            workspaceService.create(workspace).block();
+        }
+
+        // Act: Call the method to get the user's workspaces in alphabetical order
+        Mono<List<Workspace>> workspacesMono = userWorkspaceService.getUserWorkspacesInAlphabeticalOrder();
+
+        // Assert: Verify the workspaces are returned in alphabetical order
+        StepVerifier.create(workspacesMono)
+                .assertNext(workspaces -> {
+                    assertThat(workspaces).isNotNull();
+                    assertThat(workspaces).hasSize(3 + existingWorkspaceNames.size());
+                    List<String> workspaceNamesList =
+                            workspaces.stream().map(Workspace::getName).collect(Collectors.toList());
+                    workspaceNames.addAll(existingWorkspaceNames);
+                    List<String> sortedExistingWorkspaceNames =
+                            workspaceNames.stream().sorted().toList();
+                    assertThat(workspaceNamesList).containsExactly(sortedExistingWorkspaceNames.toArray(new String[0]));
+                })
+                .verifyComplete();
     }
 }

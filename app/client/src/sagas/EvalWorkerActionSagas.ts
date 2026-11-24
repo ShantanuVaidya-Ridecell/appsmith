@@ -1,4 +1,4 @@
-import { all, call, put, select, spawn, take } from "redux-saga/effects";
+import { all, call, put, spawn, take } from "redux-saga/effects";
 import { ReduxActionTypes } from "ee/constants/ReduxActionConstants";
 import { MAIN_THREAD_ACTION } from "ee/workers/Evaluation/evalWorkerActions";
 import log from "loglevel";
@@ -13,6 +13,7 @@ import { MessageType } from "utils/MessageUtil";
 import type { ResponsePayload } from "../sagas/EvaluationsSaga";
 import {
   executeTriggerRequestSaga,
+  getUnevalTreeWithWidgetsRegistered,
   updateDataTreeHandler,
 } from "../sagas/EvaluationsSaga";
 import { evalWorker } from "utils/workerInstances";
@@ -22,12 +23,9 @@ import isEmpty from "lodash/isEmpty";
 import { sortJSExecutionDataByCollectionId } from "workers/Evaluation/JSObject/utils";
 import type { LintTreeSagaRequestData } from "plugins/Linting/types";
 import { evalErrorHandler } from "./EvalErrorHandler";
-import { getUnevaluatedDataTree } from "selectors/dataTreeSelectors";
+import type { getUnevaluatedDataTree } from "selectors/dataTreeSelectors";
 import { endSpan, startRootSpan } from "instrumentation/generateTraces";
-
-export interface UpdateDataTreeMessageData {
-  workerResponse: EvalTreeResponseData;
-}
+import type { UpdateDataTreeMessageData } from "./types";
 
 // TODO: Fix this the next time the file is edited
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -168,9 +166,8 @@ export function* handleEvalWorkerMessage(message: TMessage<any>) {
     case MAIN_THREAD_ACTION.UPDATE_DATATREE: {
       const { workerResponse } = data as UpdateDataTreeMessageData;
       const rootSpan = startRootSpan("DataTreeFactory.create");
-
       const unEvalAndConfigTree: ReturnType<typeof getUnevaluatedDataTree> =
-        yield select(getUnevaluatedDataTree);
+        yield call(getUnevalTreeWithWidgetsRegistered);
 
       endSpan(rootSpan);
 

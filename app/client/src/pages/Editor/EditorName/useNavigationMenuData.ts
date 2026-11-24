@@ -19,13 +19,15 @@ import {
 import { getCurrentApplication } from "ee/selectors/applicationSelectors";
 import { Colors } from "constants/Colors";
 import { getCurrentApplicationId } from "selectors/editorSelectors";
-import type { ThemeProp } from "WidgetProvider/constants";
+import type { ThemeProp } from "WidgetProvider/types";
 import { toast } from "@appsmith/ads";
-import { DOCS_BASE_URL } from "constants/ThirdPartyConstants";
+import { DOCS_AI_BASE_URL, DOCS_BASE_URL } from "constants/ThirdPartyConstants";
 import { getAppsmithConfigs } from "ee/configs";
+import { isPylonChatAvailable } from "utils/bootPylon";
 import { getCurrentUser } from "selectors/usersSelectors";
+import { getIsAiAgentApp } from "ee/selectors/aiAgentSelectors";
 
-const { cloudHosting, intercomAppID } = getAppsmithConfigs();
+const { cloudHosting } = getAppsmithConfigs();
 
 export interface NavigationMenuDataProps extends ThemeProp {
   editMode: typeof noop;
@@ -43,6 +45,7 @@ export const useNavigationMenuData = ({
   const isApplicationIdPresent = !!(applicationId && applicationId.length > 0);
   const user = useSelector(getCurrentUser);
   const { isIntercomConsentGiven } = user || {};
+  const { disableHelpIcon } = getAppsmithConfigs();
 
   const currentApplication = useSelector(getCurrentApplication);
 
@@ -107,6 +110,8 @@ export const useNavigationMenuData = ({
     }
   }, [applicationId, dispatch, history]);
 
+  const isAgentApp = useSelector(getIsAiAgentApp);
+
   return useMemo(
     () =>
       [
@@ -139,16 +144,17 @@ export const useNavigationMenuData = ({
         {
           text: "divider_2",
           type: MenuTypes.MENU_DIVIDER,
-          isVisible: true,
+          isVisible: !disableHelpIcon,
         },
         {
           text: "Help",
           type: MenuTypes.PARENT,
-          isVisible: true,
+          isVisible: !disableHelpIcon,
           children: [
             {
               text: "Documentation",
-              onClick: () => openExternalLink(DOCS_BASE_URL),
+              onClick: () =>
+                openExternalLink(isAgentApp ? DOCS_AI_BASE_URL : DOCS_BASE_URL),
               type: MenuTypes.MENU,
               isVisible: true,
               startIcon: "book-line",
@@ -160,7 +166,7 @@ export const useNavigationMenuData = ({
                   "https://github.com/appsmithorg/appsmith/issues/new/choose",
                 ),
               type: MenuTypes.MENU,
-              isVisible: true,
+              isVisible: !isAgentApp,
               startIcon: "bug-line",
             },
             {
@@ -168,11 +174,11 @@ export const useNavigationMenuData = ({
               text: "Chat with us",
               onClick: () => {
                 if (cloudHosting || isIntercomConsentGiven) {
-                  window.Intercom("show");
+                  window.Pylon("show");
                 }
               },
               type: MenuTypes.MENU,
-              isVisible: intercomAppID && window.Intercom,
+              isVisible: isPylonChatAvailable(),
             },
           ],
         },
@@ -185,8 +191,11 @@ export const useNavigationMenuData = ({
       hasExportPermission,
       hasDeletePermission,
       deleteApplication,
+      isAgentApp,
       setForkApplicationModalOpen,
       isIntercomConsentGiven,
+      disableHelpIcon,
+      dispatch,
     ],
   );
 };

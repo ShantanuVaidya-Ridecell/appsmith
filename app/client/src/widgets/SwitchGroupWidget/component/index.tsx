@@ -9,7 +9,7 @@ import LabelWithTooltip, {
   labelLayoutStyles,
   LABEL_CONTAINER_CLASS,
 } from "widgets/components/LabelWithTooltip";
-import type { ThemeProp } from "WidgetProvider/constants";
+import type { ThemeProp } from "WidgetProvider/types";
 
 export interface SwitchGroupContainerProps {
   compactMode: boolean;
@@ -71,6 +71,7 @@ function SwitchGroupComponent(props: SwitchGroupComponentProps) {
     labelWidth,
     onChange,
     options,
+    required,
     selected,
     valid,
   } = props;
@@ -95,6 +96,7 @@ function SwitchGroupComponent(props: SwitchGroupComponentProps) {
           helpText={labelTooltip}
           inline={inline}
           isDynamicHeightEnabled={isDynamicHeightEnabled}
+          isRequired={required}
           optionCount={optionCount}
           position={labelPosition}
           text={labelText}

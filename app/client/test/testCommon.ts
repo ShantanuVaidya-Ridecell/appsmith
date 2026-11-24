@@ -1,16 +1,24 @@
+// Populate the widget loader/builder registry for canvas-rendering tests.
+// Production bootstraps this via `import "widgets"` in src/index.tsx (and the
+// eval worker); the SCC-free registry (widgets/registry.ts) is otherwise empty
+// in jest, so editorInitializer/loadAllWidgets registers no builders and widgets
+// don't render ("Widget Builder not registered for widget type ..."). Scoped to
+// this canvas test helper rather than global setup so it doesn't pull widget
+// side effects into unrelated unit tests (e.g. analytics singletons).
+import "widgets";
 import { ReduxActionTypes } from "ee/constants/ReduxActionConstants";
 import { initEditorAction } from "actions/initActions";
 import { setAppMode, updateCurrentPage } from "actions/pageActions";
 import { APP_MODE } from "entities/App";
 import { useDispatch } from "react-redux";
-import type { CanvasWidgetsReduxState } from "reducers/entityReducers/canvasWidgetsReducer";
+import type { CanvasWidgetsReduxState } from "ee/reducers/entityReducers/canvasWidgetsReducer";
 import { getCanvasWidgetsPayload } from "ee/sagas/PageSagas";
 import { editorInitializer } from "utils/editor/EditorUtils";
 import { extractCurrentDSL } from "utils/WidgetPropsUtils";
-import type { AppState } from "ee/reducers";
+import type { DefaultRootState } from "react-redux";
 import type { WidgetEntity } from "ee/entities/DataTree/types";
 import urlBuilder from "ee/entities/URLRedirect/URLAssembly";
-import type { FlattenedWidgetProps } from "reducers/entityReducers/canvasWidgetsStructureReducer";
+import type { FlattenedWidgetProps } from "ee/reducers/entityReducers/canvasWidgetsStructureReducer";
 import type { Page } from "entities/Page";
 import { useEffect, useState } from "react";
 import type { FetchPageResponse } from "api/PageApi";
@@ -143,7 +151,10 @@ const getChildWidgets = (
   return [];
 };
 
-export const mockGetChildWidgets = (state: AppState, widgetId: string) => {
+export const mockGetChildWidgets = (
+  state: DefaultRootState,
+  widgetId: string,
+) => {
   return getChildWidgets(state.entities.canvasWidgets, widgetId);
 };
 
@@ -160,7 +171,7 @@ export const mockCreateCanvasWidget = (
 };
 
 export const mockGetWidgetEvalValues = (
-  state: AppState,
+  state: DefaultRootState,
   widgetName: string,
 ) => {
   return Object.values(state.entities.canvasWidgets).find(

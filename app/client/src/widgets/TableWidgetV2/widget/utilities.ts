@@ -185,6 +185,7 @@ export function getDefaultColumnProperties(
 ): ColumnProperties {
   const columnProps = {
     allowCellWrapping: false,
+    allowHeaderWrapping: false,
     allowSameOptionsInNewRow: true,
     index: index,
     width: DEFAULT_COLUMN_WIDTH,
@@ -210,9 +211,9 @@ export function getDefaultColumnProperties(
     isDiscardVisible: true,
     computedValue: isDerived
       ? ""
-      : `{{${widgetName}.processedTableData.map((currentRow, currentIndex) => ( currentRow["${escapeString(
+      : `{{(() => { const tableData = ${widgetName}.processedTableData || []; return tableData.length > 0 ? tableData.map((currentRow, currentIndex) => (currentRow["${escapeString(
           id,
-        )}"]))}}`,
+        )}"])) : ${escapeString(id)} })()}}`,
     sticky: StickyType.NONE,
     validation: {},
     currencyCode: "USD",
@@ -540,8 +541,11 @@ const EdtiableColumnTypes: string[] = [
   ColumnTypes.CURRENCY,
 ];
 
-export function isColumnTypeEditable(columnType: string) {
-  return EdtiableColumnTypes.includes(columnType);
+export function isColumnTypeEditable(
+  columnType: string,
+  isInfiniteScrollEnabled = false,
+) {
+  return EdtiableColumnTypes.includes(columnType) && !isInfiniteScrollEnabled;
 }
 
 /*
@@ -645,10 +649,18 @@ export const getEditActionColumnProperties = () => ({
   discardButtonColor: Colors.GREEN,
 });
 
-export const getEditActionColumnDynamicProperties = (widgetName: string) => ({
-  isSaveDisabled: `{{${widgetName}.processedTableData.map((currentRow, currentIndex) => ( !${widgetName}.updatedRowIndices.includes(currentIndex)))}}`,
-  isDiscardDisabled: `{{${widgetName}.processedTableData.map((currentRow, currentIndex) => ( !${widgetName}.updatedRowIndices.includes(currentIndex)))}}`,
-});
+export const getEditActionColumnDynamicProperties = (widgetName: string) => {
+  // Match TABLE_COMPUTE_VALUE's IIFE binding so the property pane can unwrap
+  // the per-row expression. The legacy `.map(...)` form displayed as truncated
+  // JS and broke Save/Discard when edited.
+  const disabledExpression = `!${widgetName}.updatedRowIndices.includes(currentIndex)`;
+  const disabledBinding = `{{(() => { const tableData = ${widgetName}.processedTableData || []; return tableData.length > 0 ? tableData.map((currentRow, currentIndex) => (${disabledExpression})) : ${disabledExpression} })()}}`;
+
+  return {
+    isSaveDisabled: disabledBinding,
+    isDiscardDisabled: disabledBinding,
+  };
+};
 
 export const createColumn = (props: TableWidgetProps, baseName: string) => {
   const columns = props.primaryColumns || {};

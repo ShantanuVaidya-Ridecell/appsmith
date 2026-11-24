@@ -14,7 +14,7 @@ import {
   getSimilarTemplatesInit,
   getTemplateInformation,
 } from "actions/templateActions";
-import type { AppState } from "ee/reducers";
+import type { DefaultRootState } from "react-redux";
 import history from "utils/history";
 import { TEMPLATES_PATH } from "constants/routes";
 import { Colors } from "constants/Colors";
@@ -24,7 +24,7 @@ import TemplateDescription from "./Template/TemplateDescription";
 import SimilarTemplates from "./Template/SimilarTemplates";
 import { templateIdUrl } from "ee/RouteBuilder";
 import TemplateViewHeader from "./TemplateViewHeader";
-import { registerEditorWidgets } from "utils/editor/EditorUtils";
+import { registerAllWidgets } from "utils/editor/EditorUtils";
 
 const Wrapper = styled.div`
   overflow: auto;
@@ -142,7 +142,7 @@ export function TemplateView({
 }: TemplateViewProps) {
   const dispatch = useDispatch();
   const similarTemplates = useSelector(
-    (state: AppState) => state.ui.templates.similarTemplates,
+    (state: DefaultRootState) => state.ui.templates.similarTemplates,
   );
   const isFetchingTemplate = useSelector(isFetchingTemplateSelector);
   const workspaceList = useSelector(getForkableWorkspaces);
@@ -154,7 +154,7 @@ export function TemplateView({
   };
 
   useEffect(() => {
-    registerEditorWidgets();
+    registerAllWidgets();
   }, []);
   useEffect(() => {
     dispatch(getTemplateInformation(templateId));

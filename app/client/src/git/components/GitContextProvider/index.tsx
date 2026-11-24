@@ -1,24 +1,34 @@
 import React, { createContext, useContext, useMemo } from "react";
 import type { GitArtifactType } from "git/constants/enums";
-import type { ApplicationPayload } from "entities/Application";
 import type { FetchStatusResponseData } from "git/requests/fetchStatusRequest.types";
-import type { GitArtifactDef } from "git/store/types";
-import type { StatusTreeStruct } from "../StatusChanges/types";
+import type { GitArtifact, GitArtifactDef } from "git/types";
+import type { StatusTreeStruct } from "git/components/StatusChanges/types";
+import type { SSHKeyOption } from "git/components/common/types";
 import type { Workspace } from "ee/constants/workspaceConstants";
 import { noop } from "lodash";
 
 export interface GitContextValue {
   artifactDef: GitArtifactDef | null;
-  artifact: ApplicationPayload | null;
-  artifacts: ApplicationPayload[] | null;
+  artifact: GitArtifact | null;
+  artifacts: GitArtifact[] | null;
   fetchArtifacts: () => void;
   workspace: Workspace | null;
   setImportWorkspaceId: () => void;
   importWorkspaceId: string | null;
-  isCreateArtifactPermitted: boolean;
+  isConnectPermitted: boolean;
+  isManageAutocommitPermitted: boolean;
+  isManageDefaultBranchPermitted: boolean;
+  isManageProtectedBranchesPermitted: boolean;
   statusTransformer: (
     status: FetchStatusResponseData,
   ) => StatusTreeStruct[] | null;
+
+  // SSH key manager
+  sshKeys: SSHKeyOption[] | null;
+  isSSHKeysLoading: boolean;
+  fetchSSHKeys: () => void;
+  isSSHKeyManagerEnabled: boolean;
+  onCreateSSHKey: () => void;
 }
 
 const gitContextInitialValue = {} as GitContextValue;
@@ -33,8 +43,8 @@ interface GitContextProviderProps {
   // artifact
   artifactType: GitArtifactType | null;
   baseArtifactId: string | null;
-  artifact: ApplicationPayload | null;
-  artifacts: ApplicationPayload[] | null;
+  artifact: GitArtifact | null;
+  artifacts: GitArtifact[] | null;
   fetchArtifacts: () => void;
 
   // workspace
@@ -45,12 +55,22 @@ interface GitContextProviderProps {
   importWorkspaceId: string | null;
 
   // permissions
-  isCreateArtifactPermitted: boolean;
+  isConnectPermitted: boolean;
+  isManageAutocommitPermitted: boolean;
+  isManageDefaultBranchPermitted: boolean;
+  isManageProtectedBranchesPermitted: boolean;
 
   // artifactspecific functions
   statusTransformer: (
     status: FetchStatusResponseData,
   ) => StatusTreeStruct[] | null;
+
+  // SSH key manager
+  sshKeys?: SSHKeyOption[] | null;
+  isSSHKeysLoading?: boolean;
+  fetchSSHKeys?: () => void;
+  isSSHKeyManagerEnabled?: boolean;
+  onCreateSSHKey?: () => void;
 
   // children
   children: React.ReactNode;
@@ -65,9 +85,17 @@ export default function GitContextProvider({
   baseArtifactId = null,
   children,
   fetchArtifacts = noop,
+  fetchSSHKeys = noop,
   importWorkspaceId = null,
-  isCreateArtifactPermitted = false,
+  isConnectPermitted = false,
+  isManageAutocommitPermitted = false,
+  isManageDefaultBranchPermitted = false,
+  isManageProtectedBranchesPermitted = false,
+  isSSHKeyManagerEnabled = false,
+  isSSHKeysLoading = false,
+  onCreateSSHKey = noop,
   setImportWorkspaceId = noop,
+  sshKeys = null,
   statusTransformer = NULL_NOOP,
   workspace = null,
 }: GitContextProviderProps) {
@@ -88,8 +116,16 @@ export default function GitContextProvider({
       workspace,
       setImportWorkspaceId,
       importWorkspaceId,
-      isCreateArtifactPermitted,
+      isConnectPermitted,
+      isManageAutocommitPermitted,
+      isManageDefaultBranchPermitted,
+      isManageProtectedBranchesPermitted,
       statusTransformer,
+      sshKeys,
+      isSSHKeysLoading,
+      fetchSSHKeys,
+      isSSHKeyManagerEnabled,
+      onCreateSSHKey,
     }),
     [
       artifactDef,
@@ -99,8 +135,16 @@ export default function GitContextProvider({
       workspace,
       setImportWorkspaceId,
       importWorkspaceId,
-      isCreateArtifactPermitted,
+      isConnectPermitted,
+      isManageAutocommitPermitted,
+      isManageDefaultBranchPermitted,
+      isManageProtectedBranchesPermitted,
       statusTransformer,
+      sshKeys,
+      isSSHKeysLoading,
+      fetchSSHKeys,
+      isSSHKeyManagerEnabled,
+      onCreateSSHKey,
     ],
   );
 

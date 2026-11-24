@@ -13,7 +13,6 @@ describe(
   {
     tags: [
       "@tag.Git",
-      "@tag.GitAutocommit",
       "@tag.Sanity",
       "@tag.TedMigration",
       "@tag.AccessControl",
@@ -34,13 +33,13 @@ describe(
 
         cy.intercept({
           method: "POST",
-          url: "/api/v1/git/auto-commit/app/*",
+          url: "/api/v1/git/applications/*/auto-commit",
         }).as("gitAutocommitTriggerApi");
 
         cy.intercept(
           {
             method: "GET",
-            url: "/api/v1/git/auto-commit/progress/app/*",
+            url: "/api/v1/git/applications/*/auto-commit/progress",
           },
           (req) => {
             req.on("response", (res) => {

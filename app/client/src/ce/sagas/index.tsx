@@ -1,11 +1,13 @@
 import { watchActionExecutionSagas } from "ee/sagas/ActionExecution/ActionExecutionSagas";
 import NavigationSagas from "ee/sagas/NavigationSagas";
 import SuperUserSagas from "ee/sagas/SuperUserSagas";
-import tenantSagas from "ee/sagas/tenantSagas";
+import organizationSagas from "ee/sagas/organizationSagas";
 import userSagas from "ee/sagas/userSagas";
 import workspaceSagas from "ee/sagas/WorkspaceSagas";
+import favoritesSagasListener from "sagas/FavoritesSagas";
 import { watchPluginActionExecutionSagas } from "sagas/ActionExecution/PluginActionSaga";
 import { watchActionSagas } from "sagas/ActionSagas";
+import watchDeleteHiddenPluginActionsSaga from "sagas/DeleteHiddenPluginActionsSaga";
 import apiPaneSagas from "sagas/ApiPaneSagas";
 import applicationSagas from "ee/sagas/ApplicationSagas";
 import appThemingSaga from "sagas/AppThemingSaga";
@@ -21,7 +23,9 @@ import debuggerSagas from "sagas/DebuggerSagas";
 import editorContextSagas from "sagas/editorContextSagas";
 import errorSagas from "sagas/ErrorSagas";
 import evaluationsSaga from "sagas/EvaluationsSaga";
-import formEvaluationChangeListener from "sagas/FormEvaluationSaga";
+import formEvaluationChangeListener, {
+  formEvaluationSagas,
+} from "sagas/FormEvaluationSaga";
 import gitSyncSagas from "sagas/GitSyncSagas";
 import globalSearchSagas from "sagas/GlobalSearchSagas";
 import initSagas from "sagas/InitSagas";
@@ -49,15 +53,21 @@ import communityTemplateSagas from "sagas/CommunityTemplatesSagas";
 import anvilSagas from "layoutSystems/anvil/integrations/sagas";
 import ideSagas from "sagas/IDESaga";
 import sendSideBySideWidgetHoverAnalyticsEventSaga from "sagas/AnalyticsSaga";
+import gitSagas from "git/sagas";
+import PostEvaluationSagas from "sagas/PostEvaluationSagas";
+import copyToAppSagas from "ee/sagas/CopyToAppSagas";
+// eslint-disable-next-line @typescript-eslint/no-restricted-imports -- Ask AI is CE-owned; CE cannot add an ee/ shim (pre-push architecture guard).
+import aiAssistantSagas from "ce/sagas/AIAssistantSagas";
 
 /* Sagas that are registered by a module that is designed to be independent of the core platform */
 import ternSagas from "sagas/TernSaga";
-import gitSagas from "git/sagas";
+import gitApplicationSagas from "git-artifact-helpers/application/sagas";
 
 export const sagas = [
   initSagas,
   pageSagas,
   watchActionSagas,
+  watchDeleteHiddenPluginActionsSaga,
   watchJSActionSagas,
   watchActionExecutionSagas,
   watchPluginActionExecutionSagas,
@@ -81,6 +91,7 @@ export const sagas = [
   onboardingSagas,
   actionExecutionChangeListeners,
   formEvaluationChangeListener,
+  formEvaluationSagas,
   globalSearchSagas,
   debuggerSagas,
   saaSPaneSagas,
@@ -93,7 +104,7 @@ export const sagas = [
   NavigationSagas,
   editorContextSagas,
   AutoHeightSagas,
-  tenantSagas,
+  organizationSagas,
   JSLibrarySaga,
   LintingSaga,
   autoLayoutUpdateSagas,
@@ -108,4 +119,9 @@ export const sagas = [
   ideSagas,
   sendSideBySideWidgetHoverAnalyticsEventSaga,
   gitSagas,
+  gitApplicationSagas,
+  PostEvaluationSagas,
+  favoritesSagasListener,
+  copyToAppSagas,
+  aiAssistantSagas,
 ];

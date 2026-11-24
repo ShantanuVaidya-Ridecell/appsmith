@@ -13,6 +13,9 @@ public class UserProfileCE_DTO {
 
     Set<String> workspaceIds;
 
+    // The id of the caller's own organization (tenant). Null only when the user document has none.
+    String organizationId;
+
     String username;
 
     String name;
@@ -38,6 +41,11 @@ public class UserProfileCE_DTO {
 
     @JsonProperty("isIntercomConsentGiven")
     boolean isIntercomConsentGiven = false;
+
+    // HMAC-SHA256 of the user's email, computed server-side using the Pylon identity
+    // secret. Used by the client to enable Pylon chat widget identity verification.
+    // Null when the secret is unconfigured (e.g. local dev or airgapped builds).
+    String emailVerificationHash;
 
     String photoId;
 

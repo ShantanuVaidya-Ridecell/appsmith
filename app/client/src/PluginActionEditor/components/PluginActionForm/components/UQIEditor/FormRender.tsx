@@ -9,7 +9,7 @@ import { Tag } from "@blueprintjs/core";
 import styled from "styled-components";
 import { UIComponentTypes } from "entities/Plugin";
 import log from "loglevel";
-import * as Sentry from "@sentry/react";
+import { appsmithTelemetry } from "instrumentation";
 import type { FormEvalOutput } from "reducers/evaluationReducers/formEvaluationReducer";
 import {
   checkIfSectionCanRender,
@@ -103,7 +103,7 @@ const FormRender = (props: Props) => {
       }
     } catch (e) {
       log.error(e);
-      Sentry.captureException(e);
+      appsmithTelemetry.captureException(e, { errorName: "FormRenderError" });
 
       return (
         <ErrorComponent
@@ -183,6 +183,7 @@ const FormRender = (props: Props) => {
           <FieldWrapper
             className="uqi-form-wrapper"
             key={`${configProperty}_${idx}`}
+            style={{ ...(section.zoneCustomStyle || {}) }}
           >
             <FormControl config={modifiedSection} formName={formName} />
           </FieldWrapper>
@@ -221,7 +222,15 @@ const FormRender = (props: Props) => {
             ? "single_column"
             : "double_column";
 
-        return <Zone layout={layout}>{children}</Zone>;
+        return (
+          <Zone
+            layout={layout}
+            style={{ ...(section.zoneCustomStyle || {}) }}
+            title={section.title}
+          >
+            {children}
+          </Zone>
+        );
       }
       default:
         return children;

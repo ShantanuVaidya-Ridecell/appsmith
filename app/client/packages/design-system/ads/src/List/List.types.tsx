@@ -16,6 +16,8 @@ export interface ListItemProps {
   onDoubleClick?: () => void;
   /** Whether the list item is disabled. */
   isDisabled?: boolean;
+  /** Whether the list item should be subtle styled, but not disabled. */
+  isSubtle?: boolean;
   /** Whether the list item is selected. */
   isSelected?: boolean;
   /** The size of the list item. */
@@ -36,6 +38,10 @@ export interface ListItemProps {
   id?: string;
   /** customTitleComponent for the list item to use input component for name editing */
   customTitleComponent?: ReactNode | ReactNode[];
+  /** dataTestId which will be used in automated tests */
+  dataTestId?: string;
+  /** Whether to show the unsaved changes indicator */
+  showUnsavedChanges?: boolean;
 }
 
 export interface ListProps {

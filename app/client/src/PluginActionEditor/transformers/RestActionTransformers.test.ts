@@ -15,7 +15,7 @@ import {
 const BASE_ACTION: ApiAction = {
   dynamicBindingPathList: [],
   cacheResponse: "",
-  executeOnLoad: false,
+  runBehaviour: "MANUAL",
   invalids: [],
   isValid: false,
   workspaceId: "",
@@ -39,6 +39,9 @@ const BASE_ACTION: ApiAction = {
       apiContentType: "none",
     },
     timeoutInMillisecond: 5000,
+  },
+  isDirtyMap: {
+    SCHEMA_GENERATION: false,
   },
   jsonPathKeys: [],
   messages: [],

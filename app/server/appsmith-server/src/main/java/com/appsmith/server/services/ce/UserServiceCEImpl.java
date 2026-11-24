@@ -7,9 +7,9 @@ import com.appsmith.server.constants.FieldName;
 import com.appsmith.server.constants.RateLimitConstants;
 import com.appsmith.server.domains.EmailVerificationToken;
 import com.appsmith.server.domains.LoginSource;
+import com.appsmith.server.domains.Organization;
+import com.appsmith.server.domains.OrganizationConfiguration;
 import com.appsmith.server.domains.PasswordResetToken;
-import com.appsmith.server.domains.Tenant;
-import com.appsmith.server.domains.TenantConfiguration;
 import com.appsmith.server.domains.User;
 import com.appsmith.server.domains.UserData;
 import com.appsmith.server.domains.Workspace;
@@ -22,18 +22,23 @@ import com.appsmith.server.dtos.UserSignupDTO;
 import com.appsmith.server.dtos.UserUpdateDTO;
 import com.appsmith.server.exceptions.AppsmithError;
 import com.appsmith.server.exceptions.AppsmithException;
+import com.appsmith.server.helpers.EmailNormalizer;
+import com.appsmith.server.helpers.RedirectHelper;
+import com.appsmith.server.helpers.SecureBaseUrlResolver;
 import com.appsmith.server.helpers.UserServiceHelper;
 import com.appsmith.server.helpers.UserUtils;
+import com.appsmith.server.instanceconfigs.helpers.InstanceVariablesHelper;
 import com.appsmith.server.ratelimiting.RateLimitService;
 import com.appsmith.server.repositories.EmailVerificationTokenRepository;
 import com.appsmith.server.repositories.PasswordResetTokenRepository;
 import com.appsmith.server.repositories.UserRepository;
 import com.appsmith.server.services.AnalyticsService;
 import com.appsmith.server.services.BaseService;
+import com.appsmith.server.services.CacheablePylonHelper;
 import com.appsmith.server.services.EmailService;
+import com.appsmith.server.services.OrganizationService;
 import com.appsmith.server.services.PACConfigurationService;
 import com.appsmith.server.services.SessionUserService;
-import com.appsmith.server.services.TenantService;
 import com.appsmith.server.services.UserDataService;
 import com.appsmith.server.services.WorkspaceService;
 import jakarta.validation.Validator;
@@ -52,6 +57,8 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.web.server.DefaultServerRedirectStrategy;
 import org.springframework.security.web.server.ServerRedirectStrategy;
 import org.springframework.security.web.server.WebFilterExchange;
+import org.springframework.security.web.server.context.ServerSecurityContextRepository;
+import org.springframework.security.web.server.context.WebSessionServerSecurityContextRepository;
 import org.springframework.util.CollectionUtils;
 import org.springframework.util.StringUtils;
 import org.springframework.web.server.ServerWebExchange;
@@ -76,15 +83,14 @@ import java.util.UUID;
 import java.util.regex.Pattern;
 
 import static com.appsmith.server.acl.AclPermission.MANAGE_USERS;
-import static com.appsmith.server.constants.FieldName.DEFAULT;
-import static com.appsmith.server.constants.FieldName.TENANT;
+import static com.appsmith.server.constants.FieldName.ORGANIZATION;
+import static com.appsmith.server.constants.ce.FieldNameCE.USER;
 import static com.appsmith.server.helpers.RedirectHelper.DEFAULT_REDIRECT_URL;
 import static com.appsmith.server.helpers.ValidationUtils.LOGIN_PASSWORD_MAX_LENGTH;
 import static com.appsmith.server.helpers.ValidationUtils.LOGIN_PASSWORD_MIN_LENGTH;
 import static com.appsmith.server.helpers.ValidationUtils.validateUserPassword;
 import static java.lang.Boolean.FALSE;
 import static java.lang.Boolean.TRUE;
-import static org.springframework.security.web.server.context.WebSessionServerSecurityContextRepository.DEFAULT_SPRING_SECURITY_CONTEXT_ATTR_NAME;
 
 @Slf4j
 public class UserServiceCEImpl extends BaseService<UserRepository, User, String> implements UserServiceCE {
@@ -97,20 +103,23 @@ public class UserServiceCEImpl extends BaseService<UserRepository, User, String>
 
     private final CommonConfig commonConfig;
     private final UserDataService userDataService;
-    private final TenantService tenantService;
+    private final OrganizationService organizationService;
     private final UserUtils userUtils;
     private final EmailService emailService;
     private final RateLimitService rateLimitService;
     private final PACConfigurationService pacConfigurationService;
 
     private final UserServiceHelper userPoliciesComputeHelper;
+    private final InstanceVariablesHelper instanceVariablesHelper;
+    private final SecureBaseUrlResolver secureBaseUrlResolver;
+    private final CacheablePylonHelper cacheablePylonHelper;
 
-    private static final WebFilterChain EMPTY_WEB_FILTER_CHAIN = serverWebExchange -> Mono.empty();
+    protected static final WebFilterChain EMPTY_WEB_FILTER_CHAIN = serverWebExchange -> Mono.empty();
     private static final String FORGOT_PASSWORD_CLIENT_URL_FORMAT = "%s/user/resetPassword?token=%s";
     private static final Pattern ALLOWED_ACCENTED_CHARACTERS_PATTERN = Pattern.compile("^[\\p{L} 0-9 .\'\\-]+$");
 
     private static final String EMAIL_VERIFICATION_CLIENT_URL_FORMAT =
-            "%s/user/verify?token=%s&email=%s&redirectUrl=%s";
+            "%s/user/verify?token=%s&email=%s&organizationId=%s&redirectUrl=%s";
 
     private static final String EMAIL_VERIFICATION_ERROR_URL_FORMAT = "/user/verify-error?code=%s&message=%s&email=%s";
     private final EmailVerificationTokenRepository emailVerificationTokenRepository;
@@ -128,13 +137,16 @@ public class UserServiceCEImpl extends BaseService<UserRepository, User, String>
             PasswordEncoder passwordEncoder,
             CommonConfig commonConfig,
             UserDataService userDataService,
-            TenantService tenantService,
+            OrganizationService organizationService,
             UserUtils userUtils,
             EmailVerificationTokenRepository emailVerificationTokenRepository,
             EmailService emailService,
             RateLimitService rateLimitService,
             PACConfigurationService pacConfigurationService,
-            UserServiceHelper userServiceHelper) {
+            UserServiceHelper userServiceHelper,
+            InstanceVariablesHelper instanceVariablesHelper,
+            SecureBaseUrlResolver secureBaseUrlResolver,
+            CacheablePylonHelper cacheablePylonHelper) {
 
         super(validator, repository, analyticsService);
         this.workspaceService = workspaceService;
@@ -143,23 +155,28 @@ public class UserServiceCEImpl extends BaseService<UserRepository, User, String>
         this.passwordEncoder = passwordEncoder;
         this.commonConfig = commonConfig;
         this.userDataService = userDataService;
-        this.tenantService = tenantService;
+        this.organizationService = organizationService;
         this.userUtils = userUtils;
         this.rateLimitService = rateLimitService;
         this.emailVerificationTokenRepository = emailVerificationTokenRepository;
         this.emailService = emailService;
         this.userPoliciesComputeHelper = userServiceHelper;
         this.pacConfigurationService = pacConfigurationService;
+        this.instanceVariablesHelper = instanceVariablesHelper;
+        this.secureBaseUrlResolver = secureBaseUrlResolver;
+        this.cacheablePylonHelper = cacheablePylonHelper;
     }
 
     @Override
     public Mono<User> findByEmail(String email) {
-        return tenantService.getDefaultTenantId().flatMap(tenantId -> findByEmailAndTenantId(email, tenantId));
+        return organizationService
+                .getCurrentUserOrganizationId()
+                .flatMap(organizationId -> findByEmailAndOrganizationId(email, organizationId));
     }
 
     @Override
-    public Mono<User> findByEmailAndTenantId(String email, String tenantId) {
-        return repository.findByEmailAndTenantId(email, tenantId);
+    public Mono<User> findByEmailAndOrganizationId(String email, String organizationId) {
+        return repository.findByEmailAndOrganizationId(email, organizationId);
     }
 
     /**
@@ -181,34 +198,72 @@ public class UserServiceCEImpl extends BaseService<UserRepository, User, String>
             return Mono.error(new AppsmithException(AppsmithError.INVALID_PARAMETER, FieldName.ORIGIN));
         }
 
-        String email = resetUserPasswordDTO.getEmail();
+        // Resolve the secure base URL through the trusted resolver. When APPSMITH_BASE_URL is unset
+        // (and the insecure compatibility flag is off) the resolver returns Mono.empty(), causing
+        // this entire chain to complete without dispatching email — preserving the generic success
+        // response that anti-enumeration relies on. See GHSA-j9gf-vw2f-9hrw.
+        return secureBaseUrlResolver
+                .resolveSecureBaseUrl(resetUserPasswordDTO.getBaseUrl())
+                .flatMap(secureBaseUrl -> {
+                    resetUserPasswordDTO.setBaseUrl(secureBaseUrl);
+                    String email = resetUserPasswordDTO.getEmail();
+                    return processForgotPasswordTokenGeneration(email, resetUserPasswordDTO);
+                });
+    }
+
+    private Mono<Boolean> processForgotPasswordTokenGeneration(
+            String email, ResetUserPasswordDTO resetUserPasswordDTO) {
 
         // Create a random token to be sent out.
         final String token = UUID.randomUUID().toString();
 
         // Check if the user exists in our DB. If not, we will not send a password reset link to the user
-        return repository
-                .findByEmail(email)
-                .switchIfEmpty(repository.findFirstByEmailIgnoreCaseOrderByCreatedAtDesc(email))
-                .switchIfEmpty(
-                        Mono.error(new AppsmithException(AppsmithError.NO_RESOURCE_FOUND, FieldName.USER, email)))
-                .flatMap(user -> {
-                    // an user found with the provided email address
-                    // Generate the password reset link for the user
-                    return passwordResetTokenRepository
-                            .findByEmail(user.getEmail())
-                            .switchIfEmpty(Mono.defer(() -> {
-                                PasswordResetToken passwordResetToken = new PasswordResetToken();
-                                passwordResetToken.setEmail(user.getEmail());
-                                passwordResetToken.setRequestCount(0);
-                                passwordResetToken.setFirstRequestTime(Instant.now());
-                                return Mono.just(passwordResetToken);
-                            }))
-                            .map(resetToken -> {
-                                // check the validity of the token
-                                validateResetLimit(resetToken);
-                                resetToken.setTokenHash(passwordEncoder.encode(token));
-                                return resetToken;
+        return organizationService
+                .getCurrentUserOrganizationId()
+                .flatMap(organizationId -> {
+                    return repository
+                            .findByEmailAndOrganizationId(email, organizationId)
+                            .switchIfEmpty(repository.findFirstByEmailIgnoreCaseAndOrganizationIdOrderByCreatedAtDesc(
+                                    email, organizationId))
+                            // Anti-enumeration (CWE-204, GHSA-fvrq-g89c-fgg6): do not surface a distinct
+                            // NO_RESOURCE_FOUND (HTTP 404) for an unknown email. When no user matches, this inner
+                            // Mono simply stays empty; the token save and email dispatch below are skipped and
+                            // thenReturn(true) still emits the same generic success (HTTP 200, {"data": true}) that
+                            // the valid path returns. This makes the response for an unknown email indistinguishable
+                            // from a known one, so an unauthenticated caller cannot enumerate registered accounts.
+                            // A system-generated account never signs in, so it gets no reset link and the same
+                            // generic success.
+                            .filter(user -> !TRUE.equals(user.getIsSystemGenerated()))
+                            .flatMap(user -> {
+                                // an user found with the provided email address
+                                // Generate the password reset link for the user
+                                return passwordResetTokenRepository
+                                        .findByEmailAndOrganizationId(user.getEmail(), user.getOrganizationId())
+                                        .switchIfEmpty(Mono.defer(() -> {
+                                            PasswordResetToken passwordResetToken = new PasswordResetToken();
+                                            passwordResetToken.setEmail(user.getEmail());
+                                            passwordResetToken.setRequestCount(0);
+                                            passwordResetToken.setOrganizationId(organizationId);
+                                            passwordResetToken.setFirstRequestTime(Instant.now());
+                                            return Mono.just(passwordResetToken);
+                                        }))
+                                        .flatMap(resetToken -> {
+                                            // Track this request and check the per-account reset limit.
+                                            // Anti-enumeration (CWE-204, GHSA-fvrq-g89c-fgg6): when a known
+                                            // account is over its limit we must NOT surface a distinct 429 —
+                                            // that would tell an unauthenticated caller the account exists.
+                                            // Instead we complete the chain empty (skipping the token save and
+                                            // email dispatch below) so thenReturn(true) emits the same generic
+                                            // success returned for the unknown-user and under-limit cases.
+                                            // Anti-spam: over the limit we deliberately do not issue a fresh
+                                            // reset link or send another email; the request count is still
+                                            // tracked so the limit keeps functioning.
+                                            if (!isWithinResetLimit(resetToken)) {
+                                                return Mono.empty();
+                                            }
+                                            resetToken.setTokenHash(passwordEncoder.encode(token));
+                                            return Mono.just(resetToken);
+                                        });
                             });
                 })
                 .flatMap(passwordResetTokenRepository::save)
@@ -232,28 +287,40 @@ public class UserServiceCEImpl extends BaseService<UserRepository, User, String>
     }
 
     /**
-     * This method checks whether the reset request limit has been exceeded.
-     * If the limit has been exceeded, it raises an Exception.
-     * Otherwise, it'll update the counter and date in the resetToken object
+     * Tracks a password-reset request against the per-account limit (max 3 per rolling 24h window)
+     * and reports whether the caller is still within that limit.
+     * <p>
+     * When under the limit the counter is incremented (and the window start stamped on the first
+     * request); when the 24h window has elapsed the counter is reset and the request is allowed.
+     * When the limit is exceeded within the window this returns {@code false} without mutating the
+     * counter, so the limit keeps functioning across subsequent requests.
+     * <p>
+     * This intentionally no longer throws {@link AppsmithError#TOO_MANY_REQUESTS}: on the
+     * unauthenticated forgot-password endpoint a distinct 429 would reveal that the account exists
+     * (CWE-204). Callers treat {@code false} as "complete with the generic success response and send
+     * no email" rather than surfacing a distinguishable error.
      *
      * @param resetToken {@link PasswordResetToken}
+     * @return {@code true} if the request is within the limit and a reset email may be sent;
+     *     {@code false} if the account is over its limit and no email should be sent
      */
-    private void validateResetLimit(PasswordResetToken resetToken) {
+    private boolean isWithinResetLimit(PasswordResetToken resetToken) {
         if (resetToken.getRequestCount() >= 3) {
             Duration duration = Duration.between(resetToken.getFirstRequestTime(), Instant.now());
             long l = duration.toHours();
-            if (l >= 24) { // ok, reset the counter
+            if (l >= 24) { // window elapsed: reset the counter and allow the request
                 resetToken.setRequestCount(1);
                 resetToken.setFirstRequestTime(Instant.now());
-            } else { // too many requests, raise an exception
-                throw new AppsmithException(AppsmithError.TOO_MANY_REQUESTS);
+                return true;
             }
-        } else {
-            resetToken.setRequestCount(resetToken.getRequestCount() + 1);
-            if (resetToken.getFirstRequestTime() == null) {
-                resetToken.setFirstRequestTime(Instant.now());
-            }
+            // too many requests within the window: over the limit
+            return false;
         }
+        resetToken.setRequestCount(resetToken.getRequestCount() + 1);
+        if (resetToken.getFirstRequestTime() == null) {
+            resetToken.setFirstRequestTime(Instant.now());
+        }
+        return true;
     }
 
     private Boolean isEmailVerificationTokenValid(EmailVerificationToken emailVerificationToken) {
@@ -282,8 +349,10 @@ public class UserServiceCEImpl extends BaseService<UserRepository, User, String>
             return Mono.error(new AppsmithException(AppsmithError.INVALID_PARAMETER, FieldName.TOKEN));
         }
 
-        return passwordResetTokenRepository
-                .findByEmail(emailTokenDTO.getEmail())
+        return organizationService
+                .getCurrentUserOrganizationId()
+                .flatMap(organizationId -> passwordResetTokenRepository.findByEmailAndOrganizationId(
+                        emailTokenDTO.getEmail(), organizationId))
                 .switchIfEmpty(Mono.error(new AppsmithException(AppsmithError.INVALID_PASSWORD_RESET)))
                 .map(obj -> this.passwordEncoder.matches(emailTokenDTO.getToken(), obj.getTokenHash()));
     }
@@ -305,12 +374,16 @@ public class UserServiceCEImpl extends BaseService<UserRepository, User, String>
             return Mono.error(new AppsmithException(AppsmithError.INVALID_PARAMETER, FieldName.TOKEN));
         }
 
-        Mono<Tenant> tenantMono = tenantService
-                .getDefaultTenant()
-                .switchIfEmpty(Mono.error(new AppsmithException(AppsmithError.NO_RESOURCE_FOUND, DEFAULT, TENANT)));
+        Mono<Organization> organizationMono = organizationService
+                .getCurrentUserOrganization()
+                .switchIfEmpty(Mono.error(new AppsmithException(AppsmithError.NO_RESOURCE_FOUND, USER, ORGANIZATION)))
+                .cache();
 
-        return passwordResetTokenRepository
-                .findByEmail(emailTokenDTO.getEmail())
+        Mono<String> orgIdMono = organizationMono.map(Organization::getId);
+
+        return organizationMono
+                .flatMap(organization -> passwordResetTokenRepository.findByEmailAndOrganizationId(
+                        emailTokenDTO.getEmail(), organization.getId()))
                 .switchIfEmpty(Mono.error(new AppsmithException(AppsmithError.INVALID_PASSWORD_RESET)))
                 .map(passwordResetToken -> {
                     boolean matches =
@@ -321,65 +394,89 @@ public class UserServiceCEImpl extends BaseService<UserRepository, User, String>
                         return emailTokenDTO.getEmail();
                     }
                 })
-                .flatMap(emailAddress -> repository
-                        .findByEmail(emailAddress)
-                        .switchIfEmpty(Mono.error(
-                                new AppsmithException(AppsmithError.NO_RESOURCE_FOUND, FieldName.USER, emailAddress)))
-                        .zipWith(tenantMono)
-                        .flatMap(tuple -> {
-                            User userFromDb = tuple.getT1();
-                            TenantConfiguration tenantConfiguration =
-                                    tuple.getT2().getTenantConfiguration();
-                            boolean isStrongPasswordPolicyEnabled = tenantConfiguration != null
-                                    && Boolean.TRUE.equals(tenantConfiguration.getIsStrongPasswordPolicyEnabled());
+                .zipWith(orgIdMono)
+                .flatMap(tuple -> {
+                    String emailAddress = tuple.getT1();
+                    String orgId = tuple.getT2();
+                    return repository
+                            .findByEmailAndOrganizationId(emailAddress, orgId)
+                            .switchIfEmpty(Mono.error(new AppsmithException(
+                                    AppsmithError.NO_RESOURCE_FOUND, FieldName.USER, emailAddress)));
+                })
+                .flatMap(this::checkAccountCanBeActivatedByPasswordReset)
+                .zipWith(organizationMono)
+                .flatMap(tuple -> {
+                    User userFromDb = tuple.getT1();
+                    OrganizationConfiguration organizationConfiguration =
+                            tuple.getT2().getOrganizationConfiguration();
+                    boolean isStrongPasswordPolicyEnabled = organizationConfiguration != null
+                            && Boolean.TRUE.equals(organizationConfiguration.getIsStrongPasswordPolicyEnabled());
 
-                            if (!validateUserPassword(user.getPassword(), isStrongPasswordPolicyEnabled)) {
-                                return isStrongPasswordPolicyEnabled
-                                        ? Mono.error(new AppsmithException(
-                                                AppsmithError.INSUFFICIENT_PASSWORD_STRENGTH,
-                                                LOGIN_PASSWORD_MIN_LENGTH,
-                                                LOGIN_PASSWORD_MAX_LENGTH))
-                                        : Mono.error(new AppsmithException(
-                                                AppsmithError.INVALID_PASSWORD_LENGTH,
-                                                LOGIN_PASSWORD_MIN_LENGTH,
-                                                LOGIN_PASSWORD_MAX_LENGTH));
-                            }
+                    if (!validateUserPassword(user.getPassword(), isStrongPasswordPolicyEnabled)) {
+                        return isStrongPasswordPolicyEnabled
+                                ? Mono.error(new AppsmithException(
+                                        AppsmithError.INSUFFICIENT_PASSWORD_STRENGTH,
+                                        LOGIN_PASSWORD_MIN_LENGTH,
+                                        LOGIN_PASSWORD_MAX_LENGTH))
+                                : Mono.error(new AppsmithException(
+                                        AppsmithError.INVALID_PASSWORD_LENGTH,
+                                        LOGIN_PASSWORD_MIN_LENGTH,
+                                        LOGIN_PASSWORD_MAX_LENGTH));
+                    }
 
-                            // User has verified via the forgot password token verfication route. Allow the user to set
-                            // new password.
-                            userFromDb.setPasswordResetInitiated(false);
-                            userFromDb.setPassword(passwordEncoder.encode(user.getPassword()));
+                    // User has verified via the forgot password token verfication route. Allow the user to set
+                    // new password.
+                    userFromDb.setPasswordResetInitiated(false);
+                    userFromDb.setPassword(passwordEncoder.encode(user.getPassword()));
 
-                            // If the user has been invited but has not signed up yet, and is following the route of
-                            // reset
-                            // password flow to set up their password, enable the user's account as well
-                            userFromDb.setIsEnabled(true);
+                    // If the user has been invited but has not signed up yet, and is following the route of
+                    // reset
+                    // password flow to set up their password, enable the user's account as well
+                    userFromDb.setIsEnabled(true);
 
-                            return passwordResetTokenRepository
-                                    .findByEmail(userFromDb.getEmail())
-                                    .switchIfEmpty(Mono.error(new AppsmithException(
-                                            AppsmithError.NO_RESOURCE_FOUND,
-                                            FieldName.TOKEN,
-                                            emailTokenDTO.getToken())))
-                                    .flatMap(passwordResetTokenRepository::delete)
-                                    .then(repository.save(userFromDb))
-                                    .doOnSuccess(result -> {
-                                        // In a separate thread, we delete all other sessions of this user.
-                                        sessionUserService
-                                                .logoutAllSessions(userFromDb.getEmail())
-                                                .subscribeOn(Schedulers.boundedElastic())
-                                                .subscribe();
+                    return organizationService
+                            .getCurrentUserOrganizationId()
+                            .flatMap(organizationId -> passwordResetTokenRepository.findByEmailAndOrganizationId(
+                                    userFromDb.getEmail(), organizationId))
+                            .switchIfEmpty(Mono.error(new AppsmithException(
+                                    AppsmithError.NO_RESOURCE_FOUND, FieldName.TOKEN, emailTokenDTO.getToken())))
+                            .flatMap(passwordResetTokenRepository::delete)
+                            .then(repository.save(userFromDb))
+                            .doOnSuccess(result -> {
+                                // In a separate thread, we delete all other sessions of this user.
+                                sessionUserService
+                                        .logoutAllSessions(userFromDb.getEmail())
+                                        .subscribeOn(Schedulers.boundedElastic())
+                                        .subscribe();
 
-                                        // we reset the counter for user's login attempts once password is reset
-                                        rateLimitService
-                                                .resetCounter(
-                                                        RateLimitConstants.BUCKET_KEY_FOR_LOGIN_API,
-                                                        userFromDb.getEmail())
-                                                .subscribeOn(Schedulers.boundedElastic())
-                                                .subscribe();
-                                    })
-                                    .thenReturn(true);
-                        }));
+                                // we reset the counter for user's login attempts once password is reset
+                                rateLimitService
+                                        .resetCounter(
+                                                RateLimitConstants.BUCKET_KEY_FOR_LOGIN_API, userFromDb.getEmail())
+                                        .subscribeOn(Schedulers.boundedElastic())
+                                        .subscribe();
+                            })
+                            .thenReturn(true);
+                });
+    }
+
+    /**
+     * A password reset also activates an account that is not yet enabled. A system-generated account is never
+     * activated, and an account that is not yet enabled is activated only when signup is allowed for it.
+     */
+    private Mono<User> checkAccountCanBeActivatedByPasswordReset(User userFromDb) {
+        if (TRUE.equals(userFromDb.getIsSystemGenerated())) {
+            return Mono.error(new AppsmithException(AppsmithError.INVALID_PASSWORD_RESET));
+        }
+        if (userFromDb.isEnabled()) {
+            return Mono.just(userFromDb);
+        }
+        return isSignupAllowed(userFromDb).flatMap(isSignupAllowed -> {
+            if (TRUE.equals(isSignupAllowed)) {
+                return Mono.just(userFromDb);
+            }
+            return Mono.error(new AppsmithException(AppsmithError.SIGNUP_DISABLED, userFromDb.getUsername()));
+        });
     }
 
     @Override
@@ -392,39 +489,48 @@ public class UserServiceCEImpl extends BaseService<UserRepository, User, String>
     public Mono<User> userCreate(User user, boolean isAdminUser) {
         // It is assumed here that the user's password has already been encoded.
 
-        // convert the user email to lowercase
-        user.setEmail(user.getEmail().toLowerCase());
+        user.setEmail(EmailNormalizer.normalizeEmail(user.getEmail()));
 
-        Mono<User> userWithTenantMono = Mono.just(user).flatMap(userBeforeSave -> {
-            if (userBeforeSave.getTenantId() == null) {
-                return tenantService.getDefaultTenantId().map(tenantId -> {
-                    userBeforeSave.setTenantId(tenantId);
-                    return userBeforeSave;
-                });
-            }
-            // The tenant has been set already. No need to set the default tenant id.
-            return Mono.just(userBeforeSave);
-        });
-
+        Mono<User> userWithOrgMono =
+                Mono.just(user).flatMap(this::setOrganizationIdForUser).cache();
         // Save the new user
-        return userWithTenantMono
+        return userWithOrgMono
                 .flatMap(this::validateObject)
                 .flatMap(repository::save)
                 .flatMap(this::addUserPoliciesAndSaveToRepo)
                 .flatMap(crudUser -> {
                     if (isAdminUser) {
-                        return userUtils.makeSuperUser(List.of(crudUser)).then(Mono.just(crudUser));
+                        return userUtils
+                                .makeInstanceAdministrator(List.of(crudUser))
+                                .then(Mono.just(crudUser));
                     }
                     return Mono.just(crudUser);
                 })
-                .then(Mono.zip(
-                        repository.findByEmail(user.getUsername()),
-                        userDataService.getForUserEmail(user.getUsername())))
-                .flatMap(tuple -> analyticsService.identifyUser(tuple.getT1(), tuple.getT2()));
+                // The user is identified to analytics on their first login (AuthenticationSuccessHandlerCE), not
+                // here: users created by invites or provisioning may never sign in, and each identify call makes
+                // them a tracked user.
+                .then(userWithOrgMono.flatMap(userWithOrg ->
+                        repository.findByEmailAndOrganizationId(user.getUsername(), userWithOrg.getOrganizationId())));
     }
 
     private Mono<User> addUserPoliciesAndSaveToRepo(User user) {
         return userPoliciesComputeHelper.addPoliciesToUser(user).flatMap(repository::save);
+    }
+
+    protected Mono<Boolean> isSignupAllowed(User user) {
+        return Mono.just(TRUE);
+    }
+
+    /**
+     * Checks if a workspace should be created for a user during signup.
+     * This method can be overridden in EE to add checks for multi-org settings.
+     *
+     * @param user The user for whom to check workspace creation
+     * @return Mono<Boolean> true if workspace should be created, false otherwise
+     */
+    protected Mono<Boolean> shouldCreateWorkspaceForUser(User user) {
+        // In CE, always create workspace
+        return Mono.just(TRUE);
     }
 
     @Override
@@ -437,54 +543,56 @@ public class UserServiceCEImpl extends BaseService<UserRepository, User, String>
             user.setPassword(passwordEncoder.encode(user.getPassword()));
         }
 
-        // If the user doesn't exist, create the user. If the user exists, return a duplicate key exception
-        return repository
-                .findFirstByEmailIgnoreCaseOrderByCreatedAtDesc(user.getUsername())
-                .flatMap(savedUser -> {
-                    if (!savedUser.isEnabled()) {
-                        // First enable the user
-                        savedUser.setIsEnabled(true);
-                        savedUser.setSource(user.getSource());
-                        // In case of form login, store the encrypted password.
-                        savedUser.setPassword(user.getPassword());
-                        return repository.save(savedUser).map(updatedUser -> {
-                            UserSignupDTO userSignupDTO = new UserSignupDTO();
-                            userSignupDTO.setUser(updatedUser);
-                            return userSignupDTO;
-                        });
-                    }
-                    return Mono.error(
-                            new AppsmithException(AppsmithError.USER_ALREADY_EXISTS_SIGNUP, savedUser.getUsername()));
+        // If the user doesn't exist, create the user. If the user exists, refuse the signup
+        return organizationService
+                .getCurrentUserOrganizationId()
+                .flatMap(organizationId -> {
+                    return repository.findFirstByEmailIgnoreCaseAndOrganizationIdOrderByCreatedAtDesc(
+                            user.getUsername(), organizationId);
                 })
+                // Signup creates an account only for an email that has none. An account that already exists is
+                // activated by the password reset link or by single sign-on. The one exception is the first
+                // account of an instance, see activateConfiguredAdminOnInstanceWithNoActiveAccount.
+                .flatMap(savedUser -> activateConfiguredAdminOnInstanceWithNoActiveAccount(savedUser, user))
                 .switchIfEmpty(Mono.defer(() -> {
                     return signupIfAllowed(user)
                             .flatMap(savedUser -> {
                                 final UserSignupDTO userSignupDTO = new UserSignupDTO();
                                 userSignupDTO.setUser(savedUser);
 
-                                return workspaceService
-                                        .createDefault(new Workspace(), savedUser)
-                                        .elapsed()
-                                        .map(pair -> {
-                                            log.debug(
-                                                    "UserServiceCEImpl::Time taken to create default workspace: {} ms",
-                                                    pair.getT1());
-                                            return pair.getT2();
-                                        })
-                                        .map(workspace -> {
-                                            log.debug(
-                                                    "Created blank default workspace for user '{}'.",
-                                                    savedUser.getEmail());
-                                            userSignupDTO.setDefaultWorkspaceId(workspace.getId());
-                                            return userSignupDTO;
-                                        })
-                                        .onErrorResume(e -> {
-                                            log.debug(
-                                                    "Error creating default workspace for user '{}'.",
-                                                    savedUser.getEmail(),
-                                                    e);
-                                            return Mono.just(userSignupDTO);
-                                        });
+                                // Check if we should create a workspace for this user
+                                return shouldCreateWorkspaceForUser(savedUser).flatMap(shouldCreateWorkspace -> {
+                                    if (Boolean.TRUE.equals(shouldCreateWorkspace)) {
+                                        // Create workspace as normal
+                                        return workspaceService
+                                                .createDefault(new Workspace(), savedUser)
+                                                .elapsed()
+                                                .map(pair -> {
+                                                    log.debug(
+                                                            "UserServiceCEImpl::Time taken to create default workspace: {} ms",
+                                                            pair.getT1());
+                                                    return pair.getT2();
+                                                })
+                                                .map(workspace -> {
+                                                    log.debug(
+                                                            "Created blank default workspace for user '{}'.",
+                                                            savedUser.getEmail());
+                                                    userSignupDTO.setDefaultWorkspaceId(workspace.getId());
+                                                    return userSignupDTO;
+                                                })
+                                                .onErrorResume(e -> {
+                                                    log.debug(
+                                                            "Error creating default workspace for user '{}'.",
+                                                            savedUser.getEmail(),
+                                                            e);
+                                                    return Mono.just(userSignupDTO);
+                                                });
+                                    } else {
+                                        // Skip workspace creation
+                                        log.debug("Skipping workspace creation for user: {}", savedUser.getEmail());
+                                        return Mono.just(userSignupDTO);
+                                    }
+                                });
                             })
                             .flatMap(userSignupDTO -> findByEmail(
                                             userSignupDTO.getUser().getEmail())
@@ -501,6 +609,74 @@ public class UserServiceCEImpl extends BaseService<UserRepository, User, String>
     }
 
     /**
+     * An operator can name the admin emails in the instance configuration before anyone has joined. The instance
+     * then holds an account for each of those emails that is not enabled, and no account that is. Signup with one
+     * of those emails activates that account, so the operator can reach a new instance that has no mail and no
+     * single sign-on. As soon as one person has an active account, signup refuses every email that has an account.
+     */
+    private Mono<UserSignupDTO> activateConfiguredAdminOnInstanceWithNoActiveAccount(
+            User savedUser, User signupRequest) {
+        Mono<UserSignupDTO> refusal =
+                Mono.error(new AppsmithException(AppsmithError.USER_ALREADY_EXISTS_SIGNUP, savedUser.getUsername()));
+
+        if (savedUser.isEnabled()
+                || TRUE.equals(savedUser.getIsSystemGenerated())
+                || !isConfiguredAdminEmail(savedUser.getEmail())) {
+            return refusal;
+        }
+
+        return repository.hasNoActivatedUser().flatMap(hasNoActivatedUser -> {
+            if (!TRUE.equals(hasNoActivatedUser)) {
+                return refusal;
+            }
+            return isSignupAllowed(signupRequest).flatMap(isSignupAllowed -> {
+                if (!TRUE.equals(isSignupAllowed)) {
+                    return Mono.error(
+                            new AppsmithException(AppsmithError.SIGNUP_DISABLED, signupRequest.getUsername()));
+                }
+                // Only one signup can enable the account. A signup that finds it already enabled is refused.
+                return repository
+                        .activatePendingAccount(
+                                savedUser.getId(), signupRequest.getPassword(), signupRequest.getSource())
+                        .flatMap(activated -> {
+                            if (!TRUE.equals(activated)) {
+                                return refusal;
+                            }
+                            return repository
+                                    .findById(savedUser.getId())
+                                    .map(updatedUser -> {
+                                        UserSignupDTO userSignupDTO = new UserSignupDTO();
+                                        userSignupDTO.setUser(updatedUser);
+                                        return userSignupDTO;
+                                    })
+                                    .switchIfEmpty(refusal);
+                        });
+            });
+        });
+    }
+
+    /** Whether the email is one of the configured admin emails, whatever case the operator typed. */
+    private boolean isConfiguredAdminEmail(String email) {
+        return commonConfig.getAdminEmails().stream().anyMatch(adminEmail -> adminEmail.equalsIgnoreCase(email));
+    }
+
+    /**
+     * Sets the organization ID for a new user during signup.
+     *
+     * @param user User object for which to set the organization ID
+     * @return Mono<User> with organization ID set
+     */
+    protected Mono<User> setOrganizationIdForUser(User user) {
+        if (user.getOrganizationId() == null) {
+            return organizationService.getCurrentUserOrganizationId().map(organizationId -> {
+                user.setOrganizationId(organizationId);
+                return user;
+            });
+        }
+        return Mono.just(user);
+    }
+
+    /**
      * This function creates a new user in the system. Primarily used by new users signing up for the first time on the
      * platform. This flow also ensures that a default workspace name is created for the user. The new user is then
      * given admin permissions to the default workspace.
@@ -512,37 +688,47 @@ public class UserServiceCEImpl extends BaseService<UserRepository, User, String>
      */
     @Override
     public Mono<User> signupIfAllowed(User user) {
-        boolean isAdminUser = false;
+        Mono<Boolean> isAdminUserMono;
 
         if (!commonConfig.getAdminEmails().contains(user.getEmail())) {
             // If this is not an admin email address, only then do we check if signup should be allowed or not. Being an
             // explicitly set admin email address trumps all everything and signup for this email can never be disabled.
-
-            if (commonConfig.isSignupDisabled()) {
-                // Signing up has been globally disabled. Reject.
-                return Mono.error(new AppsmithException(AppsmithError.SIGNUP_DISABLED, user.getUsername()));
-            }
-
-            final List<String> allowedDomains = user.getSource() == LoginSource.FORM
-                    ? commonConfig.getAllowedDomains()
-                    : commonConfig.getOauthAllowedDomains();
-            if (!CollectionUtils.isEmpty(allowedDomains)
-                    && StringUtils.hasText(user.getEmail())
-                    && user.getEmail().contains("@")
-                    && !allowedDomains.contains(user.getEmail().split("@")[1])) {
-                // There is an explicit whitelist of email address domains that should be allowed. If the new email is
-                // of a different domain, reject.
-                return Mono.error(new AppsmithException(AppsmithError.SIGNUP_DISABLED, user.getUsername()));
-            }
+            isAdminUserMono = organizationService.getCurrentUserOrganization().map(organization -> {
+                OrganizationConfiguration organizationConfiguration =
+                        organization.getOrganizationConfiguration() == null
+                                ? new OrganizationConfiguration()
+                                : organization.getOrganizationConfiguration();
+                if (TRUE.equals(organizationConfiguration.getIsSignupDisabled())) {
+                    // Signing up has been globally disabled. Reject.
+                    throw new AppsmithException(AppsmithError.SIGNUP_DISABLED, user.getUsername());
+                }
+                final List<String> allowedDomains = user.getSource() == LoginSource.FORM
+                        ? commonConfig.getAllowedDomains()
+                        : commonConfig.getOauthAllowedDomains();
+                if (!CollectionUtils.isEmpty(allowedDomains)
+                        && StringUtils.hasText(user.getEmail())
+                        && user.getEmail().contains("@")
+                        && !allowedDomains.contains(user.getEmail().split("@")[1])) {
+                    // There is an explicit whitelist of email address domains that should be allowed. If the new email
+                    // is
+                    // of a different domain, reject.
+                    throw new AppsmithException(AppsmithError.SIGNUP_DISABLED, user.getUsername());
+                }
+                return FALSE;
+            });
         } else {
-            isAdminUser = true;
+            isAdminUserMono = Mono.just(true);
         }
 
         // No special configurations found, allow signup for the new user.
-        return userCreate(user, isAdminUser).elapsed().map(pair -> {
-            log.debug("UserServiceCEImpl::Time taken for create user: {} ms", pair.getT1());
-            return pair.getT2();
-        });
+        return setOrganizationIdForUser(user)
+                .zipWhen(userWithOrgId -> isAdminUserMono)
+                .flatMap(tuple2 -> userCreate(tuple2.getT1(), tuple2.getT2()))
+                .elapsed()
+                .map(pair -> {
+                    log.debug("UserServiceCEImpl::Time taken for create user: {} ms", pair.getT1());
+                    return pair.getT2();
+                });
     }
 
     @Override
@@ -619,7 +805,7 @@ public class UserServiceCEImpl extends BaseService<UserRepository, User, String>
                     .flatMap(user -> updateWithoutPermission(user.getId(), updates)
                             .then(
                                     exchange == null
-                                            ? repository.findByEmail(user.getEmail())
+                                            ? findByEmail(user.getEmail())
                                             : sessionUserService.refreshCurrentUser(exchange)))
                     .cache();
             monos.add(updatedUserMono.then());
@@ -635,8 +821,8 @@ public class UserServiceCEImpl extends BaseService<UserRepository, User, String>
             if (StringUtils.hasLength(allUpdates.getUseCase())) {
                 updates.setUseCase(allUpdates.getUseCase());
             }
-            if (allUpdates.isIntercomConsentGiven()) {
-                updates.setIntercomConsentGiven(true);
+            if (allUpdates.getIsIntercomConsentGiven()) {
+                updates.setIsIntercomConsentGiven(true);
             }
             updatedUserDataMono = userDataService.updateForCurrentUser(updates).cache();
             monos.add(updatedUserDataMono.then());
@@ -659,11 +845,22 @@ public class UserServiceCEImpl extends BaseService<UserRepository, User, String>
     }
 
     @Override
+    public Mono<Boolean> claimSuperUserCreationSlot() {
+        return repository.claimSuperUserCreationSlot();
+    }
+
+    @Override
+    public Mono<Void> releaseSuperUserCreationSlot() {
+        return repository.releaseSuperUserCreationSlot();
+    }
+
+    @Override
     public Mono<UserProfileDTO> buildUserProfileDTO(User user) {
 
         Mono<User> userFromDbMono = findByEmail(user.getEmail()).cache();
 
-        Mono<Boolean> isSuperUserMono = userFromDbMono.flatMap(userUtils::isSuperUser);
+        Mono<Boolean> isSuperUserMono =
+                userFromDbMono.flatMap(userUtils::isSuperUser).defaultIfEmpty(false);
 
         return Mono.zip(
                         isUsersEmpty(),
@@ -680,23 +877,33 @@ public class UserServiceCEImpl extends BaseService<UserRepository, User, String>
 
                     profile.setEmail(userFromDb.getEmail());
                     profile.setWorkspaceIds(userFromDb.getWorkspaceIds());
+                    profile.setOrganizationId(userFromDb.getOrganizationId());
                     profile.setUsername(userFromDb.getUsername());
                     profile.setName(userFromDb.getName());
                     profile.setGender(userFromDb.getGender());
-                    profile.setEmptyInstance(isUsersEmpty);
-                    profile.setAnonymous(userFromDb.isAnonymous());
-                    profile.setEnabled(userFromDb.isEnabled());
+                    profile.setIsEmptyInstance(isUsersEmpty);
+                    profile.setIsAnonymous(userFromDb.isAnonymous());
+                    profile.setIsEnabled(userFromDb.isEnabled());
                     profile.setUseCase(userData.getUseCase());
                     profile.setPhotoId(userData.getProfilePhotoAssetId());
-                    profile.setEnableTelemetry(!commonConfig.isTelemetryDisabled());
+                    profile.setEnableTelemetry(!commonConfig.getIsTelemetryDisabled());
                     // Intercom consent is defaulted to true on cloud hosting
-                    profile.setIntercomConsentGiven(
-                            commonConfig.isCloudHosting() ? true : userData.isIntercomConsentGiven());
-                    profile.setSuperUser(isSuperUser);
-                    profile.setConfigurable(!StringUtils.isEmpty(commonConfig.getEnvFilePath()));
-                    return pacConfigurationService.setRolesAndGroups(
-                            profile, userFromDb, true, commonConfig.isCloudHosting());
+                    profile.setIsIntercomConsentGiven(
+                            commonConfig.getIsCloudHosting() ? true : userData.getIsIntercomConsentGiven());
+                    profile.setIsSuperUser(isSuperUser);
+                    profile.setIsConfigurable(!StringUtils.isEmpty(commonConfig.getEnvFilePath()));
+                    // The Pylon chat identity-verification hash is computed by Cloud Services (which holds the
+                    // secret) and cached per user. If it is unavailable the profile is still returned, just without
+                    // a verified chat session.
+                    return cacheablePylonHelper
+                            .getEmailHash(userFromDb)
+                            .doOnNext(profile::setEmailVerificationHash)
+                            .then(Mono.defer(() -> setRolesAndGroups(profile, userFromDb)));
                 });
+    }
+
+    protected Mono<UserProfileDTO> setRolesAndGroups(UserProfileDTO profile, User user) {
+        return pacConfigurationService.setRolesAndGroups(profile, user, true);
     }
 
     private EmailTokenDTO parseValueFromEncryptedToken(String encryptedToken) {
@@ -712,7 +919,9 @@ public class UserServiceCEImpl extends BaseService<UserRepository, User, String>
 
     @Override
     public Flux<User> getAllByEmails(Set<String> emails, AclPermission permission) {
-        return repository.findAllByEmailIn(emails);
+        return organizationService
+                .getCurrentUserOrganizationId()
+                .flatMapMany(organizationId -> repository.findAllByEmailInAndOrganizationId(emails, organizationId));
     }
 
     @Override
@@ -729,27 +938,48 @@ public class UserServiceCEImpl extends BaseService<UserRepository, User, String>
             return Mono.error(new AppsmithException(AppsmithError.INVALID_PARAMETER, FieldName.ORIGIN));
         }
 
-        String email = resendEmailVerificationDTO.getEmail();
+        // Resolve the secure base URL through the trusted resolver. When APPSMITH_BASE_URL is unset
+        // (and the insecure compatibility flag is off) the resolver returns Mono.empty(), causing
+        // this entire chain to complete without dispatching email. See GHSA-j9gf-vw2f-9hrw.
+        return secureBaseUrlResolver
+                .resolveSecureBaseUrl(resendEmailVerificationDTO.getBaseUrl())
+                .flatMap(secureBaseUrl -> {
+                    resendEmailVerificationDTO.setBaseUrl(secureBaseUrl);
+                    String email = resendEmailVerificationDTO.getEmail();
+                    return processResendEmailVerification(email, resendEmailVerificationDTO, redirectUrl);
+                });
+    }
+
+    private Mono<Boolean> processResendEmailVerification(
+            String email, ResendEmailVerificationDTO resendEmailVerificationDTO, String redirectUrl) {
 
         // Create a random token to be sent out.
         final String token = UUID.randomUUID().toString();
 
         // Check if the user exists in our DB. If not, we will not send the email verification link to the user
-        Mono<User> userMono = repository.findByEmail(email).cache();
-        return userMono.switchIfEmpty(repository.findFirstByEmailIgnoreCaseOrderByCreatedAtDesc(email))
-                .switchIfEmpty(
-                        Mono.error(new AppsmithException(AppsmithError.NO_RESOURCE_FOUND, FieldName.USER, email)))
-                .flatMap(user -> {
+        Mono<User> userMono = organizationService
+                .getCurrentUserOrganizationId()
+                .flatMap(organizationId -> repository
+                        .findByEmailAndOrganizationId(email, organizationId)
+                        .switchIfEmpty(repository.findFirstByEmailIgnoreCaseAndOrganizationIdOrderByCreatedAtDesc(
+                                email, organizationId)))
+                .cache();
+
+        // Verification-email dispatch chain. Anti-enumeration (CWE-204): the unknown-email,
+        // already-verified and verification-not-enabled branches all complete empty instead of throwing a
+        // distinct error (previously 404 / 400), so the thenReturn(true) at the end emits the same generic
+        // success (HTTP 200, {"data": true}) for every case and no email is dispatched. An unauthenticated
+        // caller therefore cannot tell whether the address is registered, already verified, or whether
+        // verification is enabled at the instance level.
+        Mono<Boolean> dispatchMono = userMono.flatMap(user -> {
                     if (TRUE.equals(user.getEmailVerified())) {
-                        return Mono.error(new AppsmithException(AppsmithError.USER_ALREADY_VERIFIED));
+                        // Already verified: send no email, but keep the response indistinguishable.
+                        return Mono.<EmailVerificationToken>empty();
                     }
-                    return tenantService.getTenantConfiguration().flatMap(tenant -> {
-                        Boolean emailVerificationEnabled =
-                                tenant.getTenantConfiguration().isEmailVerificationEnabled();
-                        // Email verification not enabled at tenant
+                    return instanceVariablesHelper.isEmailVerificationEnabled().flatMap(emailVerificationEnabled -> {
+                        // Email verification not enabled at instance level: send no email, response unchanged.
                         if (!TRUE.equals(emailVerificationEnabled)) {
-                            return Mono.error(
-                                    new AppsmithException(AppsmithError.TENANT_EMAIL_VERIFICATION_NOT_ENABLED));
+                            return Mono.<EmailVerificationToken>empty();
                         }
                         return emailVerificationTokenRepository
                                 .findByEmail(user.getEmail())
@@ -759,12 +989,14 @@ public class UserServiceCEImpl extends BaseService<UserRepository, User, String>
                                     emailVerificationToken.setEmail(user.getEmail());
                                     emailVerificationToken.setTokenGeneratedAt(Instant.now());
                                     emailVerificationToken.setTokenHash(passwordEncoder.encode(token));
+                                    emailVerificationToken.setOrganizationId(user.getOrganizationId());
                                     return Mono.just(emailVerificationToken);
                                 }))
                                 .map(emailVerificationToken -> {
                                     // generate new token and update in db
                                     emailVerificationToken.setTokenHash(passwordEncoder.encode(token));
                                     emailVerificationToken.setTokenGeneratedAt(Instant.now());
+                                    emailVerificationToken.setOrganizationId(user.getOrganizationId());
                                     return emailVerificationToken;
                                 });
                     });
@@ -774,9 +1006,11 @@ public class UserServiceCEImpl extends BaseService<UserRepository, User, String>
                 .flatMap(tuple -> {
                     EmailVerificationToken emailVerificationToken = tuple.getT1();
                     User user = tuple.getT2();
-                    List<NameValuePair> nameValuePairs = new ArrayList<>(2);
+                    List<NameValuePair> nameValuePairs = new ArrayList<>(3);
                     nameValuePairs.add(new BasicNameValuePair("email", emailVerificationToken.getEmail()));
                     nameValuePairs.add(new BasicNameValuePair("token", token));
+                    nameValuePairs.add(
+                            new BasicNameValuePair("organizationId", emailVerificationToken.getOrganizationId()));
                     String urlParams = WWWFormCodec.format(nameValuePairs, StandardCharsets.UTF_8);
                     String redirectUrlCopy = redirectUrl;
                     if (redirectUrlCopy == null) {
@@ -787,12 +1021,29 @@ public class UserServiceCEImpl extends BaseService<UserRepository, User, String>
                             resendEmailVerificationDTO.getBaseUrl(),
                             EncryptionHelper.encrypt(urlParams),
                             URLEncoder.encode(emailVerificationToken.getEmail(), StandardCharsets.UTF_8),
+                            emailVerificationToken.getOrganizationId(),
                             redirectUrlCopy);
 
                     return emailService.sendEmailVerificationEmail(
                             user, verificationUrl, resendEmailVerificationDTO.getBaseUrl());
                 })
                 .thenReturn(true);
+
+        // Per-email rate limit (anti-abuse). Applied uniformly on the submitted address so behaviour does
+        // not vary by account existence. Over the limit we skip dispatch and still return the same generic
+        // success — surfacing a distinct 429 here would re-introduce an enumeration oracle on this
+        // unauthenticated endpoint.
+        return rateLimitService
+                .tryIncreaseCounter(
+                        RateLimitConstants.BUCKET_KEY_FOR_RESEND_EMAIL_VERIFICATION_API, email.toLowerCase())
+                .flatMap(withinLimit -> TRUE.equals(withinLimit) ? dispatchMono : Mono.just(true))
+                // Fail open: if the limiter itself errors (e.g. Redis is unreachable), do not block a
+                // legitimate verification email. This runs the same dispatch path regardless of account
+                // state, so it does not reintroduce an enumeration oracle.
+                .onErrorResume(error -> {
+                    log.error("Resend email verification rate limiter errored; failing open.", error);
+                    return dispatchMono;
+                });
     }
 
     private String getEmailVerificationErrorRedirectUrl(AppsmithError appsmithError, String userEmail, Object... args) {
@@ -814,15 +1065,21 @@ public class UserServiceCEImpl extends BaseService<UserRepository, User, String>
             String requestEmail = formData.getFirst("email");
             String requestedToken = formData.getFirst("token");
             String redirectUrl = formData.getFirst("redirectUrl");
+            String organizationId = formData.getFirst("organizationId");
             String enableFirstTimeUserExperienceParam =
                     ObjectUtils.defaultIfNull(formData.getFirst("enableFirstTimeUserExperience"), "false");
 
             String baseUrl = exchange.getRequest().getHeaders().getOrigin();
             if (redirectUrl == null) {
                 redirectUrl = baseUrl + DEFAULT_REDIRECT_URL;
+            } else {
+                // Sanitize user-supplied redirectUrl to prevent open redirect attacks
+                redirectUrl = RedirectHelper.sanitizeRedirectUrl(
+                        redirectUrl, exchange.getRequest().getHeaders());
             }
 
-            String postVerificationRedirectUrl = "/signup-success?redirectUrl=" + redirectUrl
+            String postVerificationRedirectUrl = "/signup-success?redirectUrl="
+                    + URLEncoder.encode(redirectUrl, StandardCharsets.UTF_8)
                     + "&enableFirstTimeUserExperience=" + enableFirstTimeUserExperienceParam;
             String errorRedirectUrl = "";
 
@@ -839,19 +1096,30 @@ public class UserServiceCEImpl extends BaseService<UserRepository, User, String>
 
             try {
                 parsedEmailTokenDTO = parseValueFromEncryptedToken(requestedToken);
-            } catch (ArrayIndexOutOfBoundsException | IllegalStateException | IllegalArgumentException e) {
-                errorRedirectUrl = getEmailVerificationErrorRedirectUrl(
-                        AppsmithError.INVALID_PARAMETER, requestEmail, FieldName.TOKEN);
+            } catch (IllegalStateException | IllegalArgumentException e) {
+                errorRedirectUrl =
+                        getEmailVerificationErrorRedirectUrl(AppsmithError.INVALID_EMAIL_VERIFICATION, requestEmail);
                 return redirectStrategy.sendRedirect(webFilterExchange.getExchange(), URI.create(errorRedirectUrl));
             }
 
-            Mono<WebSession> sessionMono = exchange.getSession();
-            Mono<SecurityContext> securityContextMono = ReactiveSecurityContextHolder.getContext();
-            Mono<User> userMono = repository.findByEmail(parsedEmailTokenDTO.getEmail());
+            if (parsedEmailTokenDTO == null) {
+                errorRedirectUrl =
+                        getEmailVerificationErrorRedirectUrl(AppsmithError.INVALID_EMAIL_VERIFICATION, requestEmail);
+                return redirectStrategy.sendRedirect(webFilterExchange.getExchange(), URI.create(errorRedirectUrl));
+            }
 
             Mono<EmailVerificationToken> emailVerificationTokenMono = emailVerificationTokenRepository
-                    .findByEmail(parsedEmailTokenDTO.getEmail())
-                    .defaultIfEmpty(new EmailVerificationToken());
+                    .findByEmail(requestEmail)
+                    .switchIfEmpty(Mono.error(new AppsmithException(AppsmithError.NO_RESOURCE_FOUND, "email token")));
+
+            Mono<User> userMono = repository
+                    .findByEmailAndOrganizationId(requestEmail, organizationId)
+                    .switchIfEmpty(
+                            Mono.error(new AppsmithException(AppsmithError.NO_RESOURCE_FOUND, "user", requestEmail)));
+
+            Mono<WebSession> sessionMono = exchange.getSession();
+
+            Mono<SecurityContext> securityContextMono = ReactiveSecurityContextHolder.getContext();
 
             return Mono.zip(emailVerificationTokenMono, userMono, sessionMono, securityContextMono)
                     .flatMap(tuple -> {
@@ -867,6 +1135,14 @@ public class UserServiceCEImpl extends BaseService<UserRepository, User, String>
                             return redirectStrategy.sendRedirect(
                                     webFilterExchange.getExchange(), URI.create(errorRedirectUrl1));
                         }
+
+                        if (!Objects.equals(emailVerificationToken.getOrganizationId(), organizationId)) {
+                            errorRedirectUrl1 = getEmailVerificationErrorRedirectUrl(
+                                    AppsmithError.INVALID_PARAMETER, requestEmail, "Organization");
+                            return redirectStrategy.sendRedirect(
+                                    webFilterExchange.getExchange(), URI.create(errorRedirectUrl1));
+                        }
+
                         if (FALSE.equals(isEmailVerificationTokenValid(emailVerificationToken))) {
                             errorRedirectUrl1 = getEmailVerificationErrorRedirectUrl(
                                     AppsmithError.EMAIL_VERIFICATION_TOKEN_EXPIRED, requestEmail);
@@ -889,16 +1165,17 @@ public class UserServiceCEImpl extends BaseService<UserRepository, User, String>
                                     webFilterExchange.getExchange(), URI.create(errorRedirectUrl1));
                         }
 
+                        user.setEmailVerified(TRUE);
                         Authentication authentication =
                                 new UsernamePasswordAuthenticationToken(user, null, user.getAuthorities());
                         securityContext.setAuthentication(authentication);
-                        session.getAttributes().put(DEFAULT_SPRING_SECURITY_CONTEXT_ATTR_NAME, securityContext);
-
-                        user.setEmailVerified(TRUE);
-                        Mono<Void> redirectionMono = redirectStrategy.sendRedirect(
-                                webFilterExchange.getExchange(), URI.create(postVerificationRedirectUrl));
-                        return repository.save(user).then(redirectionMono);
-                    });
+                        // Save the security context in the session
+                        ServerSecurityContextRepository contextRepository =
+                                new WebSessionServerSecurityContextRepository();
+                        return contextRepository.save(exchange, securityContext).then(repository.save(user));
+                    })
+                    .then(redirectStrategy.sendRedirect(
+                            webFilterExchange.getExchange(), URI.create(postVerificationRedirectUrl)));
         });
     }
 }

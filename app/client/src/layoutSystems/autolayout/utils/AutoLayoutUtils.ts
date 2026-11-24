@@ -11,14 +11,14 @@ import {
 import type {
   CanvasWidgetsReduxState,
   FlattenedWidgetProps,
-} from "reducers/entityReducers/canvasWidgetsReducer";
+} from "ee/reducers/entityReducers/canvasWidgetsReducer";
 import { LayoutSystemTypes } from "layoutSystems/types";
 import {
   updatePositionsOfParentAndSiblings,
   updateWidgetPositions,
 } from "layoutSystems/autolayout/utils/positionUtils";
 import { getWidgetWidth } from "./flexWidgetUtils";
-import type { DSLWidget } from "WidgetProvider/constants";
+import type { DSLWidget } from "WidgetProvider/types";
 import { getHumanizedTime, getReadableDateInFormat } from "utils/dayJsUtils";
 import WidgetFactory from "WidgetProvider/factory";
 import { isFunction } from "lodash";

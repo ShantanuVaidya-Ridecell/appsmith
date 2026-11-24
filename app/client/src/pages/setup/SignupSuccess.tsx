@@ -1,17 +1,22 @@
 import { ReduxActionTypes } from "ee/constants/ReduxActionConstants";
 import { requiresAuth } from "pages/UserAuth/requiresAuthHOC";
 import React from "react";
-import { useCallback } from "react";
+import { useCallback, useState } from "react";
 import { useEffect } from "react";
 import { useDispatch, useSelector } from "react-redux";
 import { getCurrentUser } from "selectors/usersSelectors";
 import UserWelcomeScreen from "pages/setup/UserWelcomeScreen";
 import { Center } from "pages/setup/common";
 import { Spinner } from "@appsmith/ads";
-import { isValidLicense } from "ee/selectors/tenantSelectors";
+import {
+  isValidLicense,
+  isWithinAnOrganization,
+} from "ee/selectors/organizationSelectors";
 import { redirectUserAfterSignup } from "ee/utils/signupHelpers";
 import { setUserSignedUpFlag } from "utils/storage";
 import AnalyticsUtil from "ee/utils/AnalyticsUtil";
+import { getIsAiAgentInstanceEnabled } from "ee/selectors/aiAgentSelectors";
+import { useIsCloudBillingEnabled } from "hooks/useIsCloudBillingEnabled";
 
 export function SignupSuccess() {
   const dispatch = useDispatch();
@@ -20,8 +25,13 @@ export function SignupSuccess() {
   const shouldEnableFirstTimeUserOnboarding = urlObject?.searchParams.get(
     "enableFirstTimeUserExperience",
   );
+  const isAiAgentInstanceEnabled = useSelector(getIsAiAgentInstanceEnabled);
+  const isMultiOrgEnabled = useIsCloudBillingEnabled();
   const validLicense = useSelector(isValidLicense);
   const user = useSelector(getCurrentUser);
+  const isOnLoginPage = !useSelector(isWithinAnOrganization);
+
+  const [isRedirecting, setIsRedirecting] = useState(false);
 
   useEffect(() => {
     user?.email && setUserSignedUpFlag(user?.email);
@@ -29,32 +39,65 @@ export function SignupSuccess() {
 
   const isNonInvitedUser = shouldEnableFirstTimeUserOnboarding === "true";
 
-  const redirectUsingQueryParam = useCallback(
-    () =>
-      redirectUserAfterSignup(
+  const redirectUsingQueryParam = useCallback(async () => {
+    if (isRedirecting) return;
+
+    setIsRedirecting(true);
+
+    try {
+      await redirectUserAfterSignup({
         redirectUrl,
         shouldEnableFirstTimeUserOnboarding,
         validLicense,
         dispatch,
-        isNonInvitedUser,
-      ),
-    [],
+        isAiAgentInstanceEnabled,
+        isMultiOrgEnabled,
+        isOnLoginPage,
+      });
+    } catch (err) {
+      setIsRedirecting(false);
+    }
+  }, [
+    dispatch,
+    isNonInvitedUser,
+    isOnLoginPage,
+    redirectUrl,
+    shouldEnableFirstTimeUserOnboarding,
+    validLicense,
+    isAiAgentInstanceEnabled,
+    isMultiOrgEnabled,
+  ]);
+
+  const onGetStarted = useCallback(
+    async (proficiency?: string, useCase?: string) => {
+      dispatch({
+        type: ReduxActionTypes.UPDATE_USER_DETAILS_INIT,
+        payload: {
+          proficiency,
+          useCase,
+        },
+      });
+      AnalyticsUtil.logEvent("GET_STARTED_CLICKED", {
+        proficiency,
+        goal: useCase,
+      });
+      await redirectUsingQueryParam();
+    },
+    [redirectUsingQueryParam],
   );
 
-  const onGetStarted = useCallback((proficiency?: string, useCase?: string) => {
-    dispatch({
-      type: ReduxActionTypes.UPDATE_USER_DETAILS_INIT,
-      payload: {
-        proficiency,
-        useCase,
-      },
-    });
-    AnalyticsUtil.logEvent("GET_STARTED_CLICKED", {
-      proficiency,
-      goal: useCase,
-    });
-    redirectUsingQueryParam();
-  }, []);
+  const shouldAutoRedirect =
+    user?.isSuperUser ||
+    ((user?.role || user?.proficiency) && user?.useCase) ||
+    shouldEnableFirstTimeUserOnboarding !== "true" ||
+    isAiAgentInstanceEnabled ||
+    isMultiOrgEnabled;
+
+  useEffect(() => {
+    if (shouldAutoRedirect && !isRedirecting) {
+      redirectUsingQueryParam();
+    }
+  }, [shouldAutoRedirect, redirectUsingQueryParam, isRedirecting]);
 
   /*
    *  Proceed with redirection,
@@ -64,14 +107,7 @@ export function SignupSuccess() {
    *    We identify an invited user based on `enableFirstTimeUserExperience` flag in url.
    */
   //TODO(Balaji): Factor in case, where user had closed the tab, while filling the form.And logs back in again.
-  if (
-    user?.isSuperUser ||
-    ((user?.role || user?.proficiency) && user?.useCase) ||
-    shouldEnableFirstTimeUserOnboarding !== "true"
-  ) {
-    redirectUsingQueryParam();
-
-    // Showing a loader until the redirect
+  if (shouldAutoRedirect) {
     return (
       <Center>
         <Spinner size="lg" />

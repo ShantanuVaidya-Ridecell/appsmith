@@ -1,7 +1,9 @@
 package com.appsmith.server.services.ce;
 
 import com.appsmith.external.enums.WorkspaceResourceContext;
+import com.appsmith.server.acl.AclPermission;
 import com.appsmith.server.constants.FieldName;
+import com.appsmith.server.domains.Application;
 import com.appsmith.server.domains.Asset;
 import com.appsmith.server.domains.GitProfile;
 import com.appsmith.server.domains.User;
@@ -20,12 +22,14 @@ import com.appsmith.server.services.AnalyticsService;
 import com.appsmith.server.services.AssetService;
 import com.appsmith.server.services.BaseService;
 import com.appsmith.server.services.FeatureFlagService;
+import com.appsmith.server.services.OrganizationService;
 import com.appsmith.server.services.SessionUserService;
-import com.appsmith.server.services.TenantService;
+import com.appsmith.server.solutions.ApplicationPermission;
 import com.appsmith.server.solutions.ReleaseNotesService;
 import jakarta.validation.Validator;
 import org.apache.commons.lang3.ObjectUtils;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.http.codec.multipart.Part;
 import org.springframework.util.StringUtils;
 import org.springframework.web.server.ServerWebExchange;
@@ -34,6 +38,7 @@ import reactor.util.function.Tuple2;
 
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 
@@ -54,13 +59,23 @@ public class UserDataServiceCEImpl extends BaseService<UserDataRepository, UserD
 
     private final ApplicationRepository applicationRepository;
 
-    private final TenantService tenantService;
+    private final ApplicationPermission applicationPermission;
+
+    private final OrganizationService organizationService;
 
     private static final int MAX_PROFILE_PHOTO_SIZE_KB = 1024;
 
     private static final int MAX_RECENT_WORKSPACES_LIMIT = 10;
 
     private static final int MAX_RECENT_WORKSPACE_RESOURCE_LIMIT = 20;
+
+    /**
+     * Maximum number of applications a user can favorite.
+     * This limit helps manage data size and UI performance.
+     * To change this limit, update this constant value.
+     * Default: 50
+     */
+    private static final int MAX_FAVORITE_APPLICATIONS_LIMIT = 50;
 
     @Autowired
     public UserDataServiceCEImpl(
@@ -73,7 +88,8 @@ public class UserDataServiceCEImpl extends BaseService<UserDataRepository, UserD
             ReleaseNotesService releaseNotesService,
             FeatureFlagService featureFlagService,
             ApplicationRepository applicationRepository,
-            TenantService tenantService) {
+            ApplicationPermission applicationPermission,
+            OrganizationService organizationService) {
         super(validator, repository, analyticsService);
         this.userRepository = userRepository;
         this.releaseNotesService = releaseNotesService;
@@ -81,7 +97,8 @@ public class UserDataServiceCEImpl extends BaseService<UserDataRepository, UserD
         this.sessionUserService = sessionUserService;
         this.featureFlagService = featureFlagService;
         this.applicationRepository = applicationRepository;
-        this.tenantService = tenantService;
+        this.applicationPermission = applicationPermission;
+        this.organizationService = organizationService;
     }
 
     @Override
@@ -105,9 +122,9 @@ public class UserDataServiceCEImpl extends BaseService<UserDataRepository, UserD
 
     @Override
     public Mono<UserData> getForUserEmail(String email) {
-        return tenantService
-                .getDefaultTenantId()
-                .flatMap(tenantId -> userRepository.findByEmailAndTenantId(email, tenantId))
+        return organizationService
+                .getCurrentUserOrganizationId()
+                .flatMap(organizationId -> userRepository.findByEmailAndOrganizationId(email, organizationId))
                 .flatMap(this::getForUser);
     }
 
@@ -124,9 +141,10 @@ public class UserDataServiceCEImpl extends BaseService<UserDataRepository, UserD
     public Mono<UserData> updateForCurrentUser(UserData updates) {
         return sessionUserService
                 .getCurrentUser()
-                .flatMap(user -> tenantService
-                        .getDefaultTenantId()
-                        .flatMap(tenantId -> userRepository.findByEmailAndTenantId(user.getEmail(), tenantId)))
+                .flatMap(user -> organizationService
+                        .getCurrentUserOrganizationId()
+                        .flatMap(organizationId ->
+                                userRepository.findByEmailAndOrganizationId(user.getEmail(), organizationId)))
                 .flatMap(user -> updateForUser(user, updates));
     }
 
@@ -170,9 +188,10 @@ public class UserDataServiceCEImpl extends BaseService<UserDataRepository, UserD
         }
 
         return Mono.justOrEmpty(user.getId())
-                .switchIfEmpty(tenantService
-                        .getDefaultTenantId()
-                        .flatMap(tenantId -> userRepository.findByEmailAndTenantId(user.getEmail(), tenantId))
+                .switchIfEmpty(organizationService
+                        .getCurrentUserOrganizationId()
+                        .flatMap(organizationId ->
+                                userRepository.findByEmailAndOrganizationId(user.getEmail(), organizationId))
                         .flatMap(user1 -> Mono.justOrEmpty(user1.getId())))
                 .flatMap(userId -> repository
                         .saveReleaseNotesViewedVersion(userId, version)
@@ -248,32 +267,42 @@ public class UserDataServiceCEImpl extends BaseService<UserDataRepository, UserD
     @Override
     public Mono<UserData> updateLastUsedResourceAndWorkspaceList(
             String resourceId, String workspaceId, WorkspaceResourceContext context) {
-        return sessionUserService
-                .getCurrentUser()
-                .zipWhen(this::getForUser)
-                .flatMap(tuple -> {
-                    final User user = tuple.getT1();
-                    final UserData userData = tuple.getT2();
-                    // Update recently used workspace and corresponding application ids
-                    List<RecentlyUsedEntityDTO> recentlyUsedEntities = reorderWorkspacesInRecentlyUsedOrderForUser(
-                            userData.getRecentlyUsedEntityIds(), workspaceId, MAX_RECENT_WORKSPACES_LIMIT);
+        return sessionUserService.getCurrentUser().zipWhen(this::getForUser).flatMap(tuple -> {
+            final User user = tuple.getT1();
+            final UserData userData = tuple.getT2();
+            // Captured before the reorder below mutates the list in place.
+            final String previousWorkspaceId = getMostRecentlyUsedWorkspaceId(userData.getRecentlyUsedEntityIds());
+            // Update recently used workspace and corresponding application ids
+            List<RecentlyUsedEntityDTO> recentlyUsedEntities = reorderWorkspacesInRecentlyUsedOrderForUser(
+                    userData.getRecentlyUsedEntityIds(), workspaceId, MAX_RECENT_WORKSPACES_LIMIT);
 
-                    if (!CollectionUtils.isNullOrEmpty(recentlyUsedEntities)) {
-                        RecentlyUsedEntityDTO latest = recentlyUsedEntities.get(0);
-                        // Get the correct resource id based on the context
-                        List<String> existingResourceIds = getResourceIds(latest, context);
-                        // Add the current applicationId to the list
-                        setResourceIds(
-                                latest,
-                                context,
-                                addIdToRecentList(
-                                        existingResourceIds, resourceId, MAX_RECENT_WORKSPACE_RESOURCE_LIMIT));
-                    }
-                    userData.setRecentlyUsedEntityIds(recentlyUsedEntities);
-                    return Mono.zip(
-                            analyticsService.identifyUser(user, userData, workspaceId), repository.save(userData));
-                })
-                .map(Tuple2::getT2);
+            if (!CollectionUtils.isNullOrEmpty(recentlyUsedEntities)) {
+                RecentlyUsedEntityDTO latest = recentlyUsedEntities.get(0);
+                // Get the correct resource id based on the context
+                List<String> existingResourceIds = getResourceIds(latest, context);
+                // Add the current applicationId to the list
+                setResourceIds(
+                        latest,
+                        context,
+                        addIdToRecentList(existingResourceIds, resourceId, MAX_RECENT_WORKSPACE_RESOURCE_LIMIT));
+            }
+            userData.setRecentlyUsedEntityIds(recentlyUsedEntities);
+            final Mono<UserData> savedUserDataMono = repository.save(userData);
+            // `mostRecentlyUsedWorkspaceId` is the only identify trait this path can change. Repeating the
+            // identify while it is unchanged only re-sends the previous one on every page load.
+            if (workspaceId.equals(previousWorkspaceId)) {
+                return savedUserDataMono;
+            }
+            return Mono.zip(analyticsService.identifyUser(user, userData, workspaceId), savedUserDataMono)
+                    .map(Tuple2::getT2);
+        });
+    }
+
+    private static String getMostRecentlyUsedWorkspaceId(List<RecentlyUsedEntityDTO> recentlyUsedEntities) {
+        if (CollectionUtils.isNullOrEmpty(recentlyUsedEntities)) {
+            return null;
+        }
+        return recentlyUsedEntities.get(0).getWorkspaceId();
     }
 
     protected void setResourceIds(
@@ -407,5 +436,137 @@ public class UserDataServiceCEImpl extends BaseService<UserDataRepository, UserD
                     }
                     return authorProfile;
                 });
+    }
+
+    /**
+     * Toggle favorite status for an application
+     * @param applicationId Application ID to toggle
+     * @return Updated UserData with modified favorites list
+     * @throws AppsmithException if the maximum favorite limit is reached when trying to add a favorite
+     */
+    @Override
+    public Mono<UserData> toggleFavoriteApplication(String applicationId) {
+        return sessionUserService.getCurrentUser().zipWhen(this::getForUser).flatMap(tuple -> {
+            User user = tuple.getT1();
+            UserData userData = tuple.getT2();
+
+            // For new users without a persisted UserData document the atomic
+            // repo operations will not match anything, so fall back to save.
+            // If a concurrent request creates the document first (DuplicateKeyException),
+            // retry through the atomic existing-user path.
+            if (userData.getId() == null) {
+                List<String> favorites = userData.getFavoriteApplicationIds();
+                if (favorites == null) {
+                    favorites = new ArrayList<>();
+                }
+
+                if (favorites.remove(applicationId)) {
+                    userData.setFavoriteApplicationIds(favorites);
+                    return repository.save(userData).onErrorResume(DuplicateKeyException.class, ex -> repository
+                            .removeFavoriteApplicationForUser(user.getId(), applicationId)
+                            .flatMap(count -> getForUser(user.getId())));
+                }
+
+                // Adding — verify access first
+                AclPermission readPermission = applicationPermission.getReadPermission();
+                List<String> finalFavorites = favorites;
+                return applicationRepository
+                        .queryBuilder()
+                        .criteria(Bridge.equal(Application.Fields.id, applicationId))
+                        .permission(readPermission)
+                        .first()
+                        .switchIfEmpty(Mono.error(new AppsmithException(
+                                AppsmithError.NO_RESOURCE_FOUND, FieldName.APPLICATION, applicationId)))
+                        .flatMap(application -> {
+                            if (finalFavorites.size() >= MAX_FAVORITE_APPLICATIONS_LIMIT) {
+                                return Mono.error(new AppsmithException(
+                                        AppsmithError.INVALID_PARAMETER,
+                                        String.format(
+                                                "Maximum favorite applications limit (%d) reached. Please remove some favorites before adding new ones.",
+                                                MAX_FAVORITE_APPLICATIONS_LIMIT)));
+                            }
+                            finalFavorites.add(applicationId);
+                            userData.setFavoriteApplicationIds(finalFavorites);
+                            return repository.save(userData).onErrorResume(DuplicateKeyException.class, ex -> repository
+                                    .addFavoriteApplicationForUserIfUnderLimit(
+                                            user.getId(), applicationId, MAX_FAVORITE_APPLICATIONS_LIMIT)
+                                    .flatMap(matchedCount -> {
+                                        if (matchedCount == 0) {
+                                            return Mono.error(new AppsmithException(
+                                                    AppsmithError.INVALID_PARAMETER,
+                                                    String.format(
+                                                            "Maximum favorite applications limit (%d) reached. Please remove some favorites before adding new ones.",
+                                                            MAX_FAVORITE_APPLICATIONS_LIMIT)));
+                                        }
+                                        return getForUser(user.getId());
+                                    }));
+                        });
+            }
+
+            // For existing users, let the DB decide: try an atomic remove first.
+            return repository
+                    .removeFavoriteApplicationForUser(user.getId(), applicationId)
+                    .flatMap(removedCount -> {
+                        if (removedCount > 0) {
+                            // Was in favorites and has been removed.
+                            return getForUser(user.getId());
+                        }
+
+                        // Not in favorites — add it after verifying access.
+                        AclPermission readPermission = applicationPermission.getReadPermission();
+                        return applicationRepository
+                                .queryBuilder()
+                                .criteria(Bridge.equal(Application.Fields.id, applicationId))
+                                .permission(readPermission)
+                                .first()
+                                .switchIfEmpty(Mono.error(new AppsmithException(
+                                        AppsmithError.NO_RESOURCE_FOUND, FieldName.APPLICATION, applicationId)))
+                                .flatMap(application -> repository
+                                        .addFavoriteApplicationForUserIfUnderLimit(
+                                                user.getId(), applicationId, MAX_FAVORITE_APPLICATIONS_LIMIT)
+                                        .flatMap(matchedCount -> {
+                                            if (matchedCount == 0) {
+                                                return Mono.error(new AppsmithException(
+                                                        AppsmithError.INVALID_PARAMETER,
+                                                        String.format(
+                                                                "Maximum favorite applications limit (%d) reached. Please remove some favorites before adding new ones.",
+                                                                MAX_FAVORITE_APPLICATIONS_LIMIT)));
+                                            }
+                                            return getForUser(user.getId());
+                                        }));
+                    });
+        });
+    }
+
+    /**
+     * Get all favorite applications for current user
+     * Filters out deleted applications and applications user no longer has access to
+     * @return List of favorite applications
+     */
+    @Override
+    public Mono<List<Application>> getFavoriteApplications() {
+        return getForCurrentUser().flatMap(userData -> {
+            List<String> favoriteIds = userData.getFavoriteApplicationIds();
+            if (CollectionUtils.isNullOrEmpty(favoriteIds)) {
+                return Mono.just(Collections.emptyList());
+            }
+
+            AclPermission readPermission = applicationPermission.getReadPermission();
+            return applicationRepository
+                    .queryBuilder()
+                    .criteria(Bridge.in(Application.Fields.id, favoriteIds))
+                    .permission(readPermission)
+                    .all()
+                    .collectList();
+        });
+    }
+
+    /**
+     * Remove application from all users' favorites when app is deleted
+     * @param applicationId ID of deleted application
+     */
+    @Override
+    public Mono<Void> removeApplicationFromAllFavorites(String applicationId) {
+        return repository.removeApplicationFromFavorites(applicationId);
     }
 }

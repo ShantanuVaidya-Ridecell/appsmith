@@ -3,13 +3,13 @@ import {
   GridDefaults,
   MAIN_CONTAINER_WIDGET_ID,
 } from "constants/WidgetConstants";
-import type { CanvasWidgetsReduxState } from "reducers/entityReducers/canvasWidgetsReducer";
+import type { CanvasWidgetsReduxState } from "ee/reducers/entityReducers/canvasWidgetsReducer";
 import { call, select } from "redux-saga/effects";
 import { getContainerWidgetSpacesSelector } from "selectors/editorSelectors";
 import type { WidgetProps } from "widgets/BaseWidget";
 import { getWidget, getWidgets } from "../selectors";
 
-import type { FlattenedWidgetProps } from "WidgetProvider/constants";
+import type { FlattenedWidgetProps } from "WidgetProvider/types";
 import type { WidgetSpace } from "constants/CanvasEditorConstants";
 import { getSlidingArenaName } from "constants/componentClassNameConstants";
 import { reflow } from "reflow";

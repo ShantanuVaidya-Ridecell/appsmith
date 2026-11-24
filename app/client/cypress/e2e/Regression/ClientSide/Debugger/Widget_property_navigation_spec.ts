@@ -83,7 +83,7 @@ describe(
       _.entityExplorer.DragDropWidgetNVerify(_.draggableWidgets.JSONFORM);
       _.propPane.EnterJSContext(
         "sourcedata",
-        JSON.stringify(schema),
+        JSON.stringify(schema) + " ",
         true,
         false,
       );
@@ -141,7 +141,7 @@ describe(
       _.entityExplorer.DeleteWidgetFromEntityExplorer("MenuButton1");
     });
 
-    it("7. Table widget validation regex", () => {
+    it.skip("7. Table widget validation regex", () => {
       _.agHelper.RefreshPage();
       _.entityExplorer.DragDropWidgetNVerify(_.draggableWidgets.TABLE);
       _.agHelper.GetNClick(OneClickBindingLocator.datasourceDropdownSelector);

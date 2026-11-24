@@ -1,12 +1,12 @@
-import type { CanvasWidgetsReduxState } from "reducers/entityReducers/canvasWidgetsReducer";
+import type { CanvasWidgetsReduxState } from "ee/reducers/entityReducers/canvasWidgetsReducer";
 import type {
   CopiedWidgetData,
   PasteDestinationInfo,
   PastePayload,
 } from "./types";
 import { getDestinedParent } from "./destinationUtils";
-import type { FlattenedWidgetProps } from "WidgetProvider/constants";
-import { anvilWidgets } from "modules/ui-builder/ui/wds/constants";
+import type { FlattenedWidgetProps } from "WidgetProvider/types";
+import { anvilWidgets } from "widgets/wds/constants";
 import type { LayoutProps } from "../anvilTypes";
 import { all, call } from "redux-saga/effects";
 import { addPastedWidgets } from "./utils";

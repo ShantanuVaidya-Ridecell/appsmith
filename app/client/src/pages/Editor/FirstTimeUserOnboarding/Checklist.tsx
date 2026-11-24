@@ -46,17 +46,15 @@ import {
 } from "ee/constants/messages";
 import type { Datasource } from "entities/Datasource";
 import type { ActionDataState } from "ee/reducers/entityReducers/actionsReducer";
-import type { CanvasWidgetsReduxState } from "reducers/entityReducers/canvasWidgetsReducer";
+import type { CanvasWidgetsReduxState } from "ee/reducers/entityReducers/canvasWidgetsReducer";
 import { SIGNPOSTING_STEP } from "./Utils";
 import { builderURL, integrationEditorURL } from "ee/RouteBuilder";
 import { DatasourceCreateEntryPoints } from "constants/Datasource";
 import classNames from "classnames";
 import lazyLottie from "utils/lazyLottie";
 import tickMarkAnimationURL from "assets/lottie/guided-tour-tick-mark.json.txt";
-import { getAppsmithConfigs } from "ee/configs";
+import { isPylonChatAvailable } from "utils/bootPylon";
 import { DOCS_BASE_URL } from "constants/ThirdPartyConstants";
-const { intercomAppID } = getAppsmithConfigs();
-
 const StyledDivider = styled(Divider)`
   display: block;
 `;
@@ -393,14 +391,18 @@ export default function OnboardingChecklist() {
   };
 
   useEffect(() => {
-    if (intercomAppID && window.Intercom) {
-      // Close signposting modal when intercom modal is open
-      window.Intercom("onShow", () => {
+    if (isPylonChatAvailable()) {
+      // Close signposting modal when support chat opens
+      window.Pylon("onShow", () => {
         dispatch(showSignpostingModal(false));
       });
     }
 
     return () => {
+      if (typeof window.Pylon === "function") {
+        window.Pylon("onShow", null);
+      }
+
       dispatch(signpostingMarkAllRead());
       dispatch(setSignpostingOverlay(false));
       dispatch(showSignpostingTooltip(false));

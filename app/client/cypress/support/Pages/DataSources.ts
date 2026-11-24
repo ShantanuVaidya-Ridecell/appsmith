@@ -14,6 +14,7 @@ import { anvilLocators } from "./Anvil/Locators";
 import { PluginActionForm } from "./PluginActionForm";
 import ApiEditor from "../../locators/ApiEditor";
 import BottomTabs from "./IDE/BottomTabs";
+import commonlocators from "../../locators/commonlocators.json";
 
 export const DataSourceKVP = {
   Postgres: "PostgreSQL",
@@ -85,8 +86,8 @@ export class DataSources {
     "//div[text()='" + name + "']/parent::div";
   public _password =
     "input[name $= '.datasourceConfiguration.authentication.password']";
-  private _testDs = ".t--test-datasource";
-  _saveDs = ".t--save-datasource";
+  public _testDs = ".t--test-datasource";
+  public _saveDs = ".t--save-datasource";
   _datasourceCard = ".t--datasource";
   _dsMenuoptions = "div.t--datasource-menu-option";
   _editButton = ".t--edit-datasource";
@@ -316,6 +317,11 @@ export class DataSources {
   private _dsSchemaEntityItem = ".t--entity-item";
   private _entityTriggerElement = ".t--template-menu-trigger";
   _dsSchemaTableResponse = ".t--table-response";
+  _imgSnowflakeLogo = "//img[contains(@src, 'snowflake.svg')]";
+  _imgHubspotLogo = "//img[contains(@src, 'hubspot.png')]";
+  _dsConfigProperties = (index: number) =>
+    "input[name*='datasourceConfiguration.properties[" + index + "]']";
+  _dsConfigAuthType = `[data-testid*='datasourceConfiguration.authentication.authenticationType']`;
 
   public AssertDSEditViewMode(mode: AppModes) {
     if (mode == "Edit") this.agHelper.AssertElementAbsence(this._editButton);
@@ -568,6 +574,61 @@ export class DataSources {
     );
   }
 
+  public FillSnowflakeDSForm(
+    environment = this.dataManager.defaultEnviorment,
+    username = "",
+    password = "",
+  ) {
+    const accountName =
+      this.dataManager.dsValues[environment].Snowflake_accountName;
+    const warehouseName =
+      this.dataManager.dsValues[environment].Snowflake_warehouseName;
+    const databaseName =
+      this.dataManager.dsValues[environment].Snowflake_databaseName;
+    const schemaName =
+      this.dataManager.dsValues[environment].Snowflake_defaultSchema;
+    const role = this.dataManager.dsValues[environment].Snowflake_role;
+    this.agHelper.ClearNType(datasource.datasourceConfigUrl, accountName);
+    this.agHelper.ClearNType(this._dsConfigProperties(0), warehouseName);
+    this.agHelper.ClearNType(this._dsConfigProperties(1), databaseName);
+    this.agHelper.ClearNType(this._dsConfigProperties(2), schemaName);
+    this.agHelper.ClearNType(this._dsConfigProperties(3), role);
+    this.agHelper.AssertContains("Basic", "exist", this._dsConfigAuthType)
+      ? null
+      : this.agHelper.GetNClick(this._dsConfigAuthType) &&
+        this.agHelper.ContainsNClick("Basic");
+    this.agHelper.ClearNType(
+      this._username,
+      username == ""
+        ? this.dataManager.dsValues[environment].Snowflake_username
+        : username,
+    );
+    this.agHelper.ClearNType(
+      this._password,
+      password == ""
+        ? this.dataManager.dsValues[environment].Snowflake_password
+        : password,
+    );
+  }
+  public FillHubspotDSForm(
+    environment = this.dataManager.defaultEnviorment,
+    password = "",
+  ) {
+    this.ValidateNSelectDropdown(
+      "Authentication type",
+      "Please select an option",
+      "Bearer token",
+    );
+    this.agHelper.TypeText(
+      this.locator._inputFieldByName("Bearer token") +
+        "//" +
+        this.locator._inputField,
+      !password
+        ? this.dataManager.dsValues[environment].hubspotBearerToken
+        : password,
+    );
+    this.agHelper.Sleep();
+  }
   public FillMongoDSForm(
     environment = this.dataManager.defaultEnviorment,
     shouldAddTrailingSpaces = false,
@@ -852,7 +913,7 @@ export class DataSources {
 
   public DeleteDatasourceFromWithinDS(
     datasourceName: string,
-    expectedRes: number | number[] = 200 || 409 || [200, 409],
+    expectedRes: number | number[] = [200, 409],
   ) {
     EditorNavigation.SelectEntityByName(datasourceName, EntityType.Datasource);
     this.agHelper.Sleep(); //for the Datasource page to open
@@ -875,7 +936,7 @@ export class DataSources {
   }
 
   public DeleteDSDirectly(
-    expectedRes: number | number[] = 200 || 409 || [200, 409],
+    expectedRes: number | number[] = [200, 409],
     toNavigateToDSInfoPage = true,
   ) {
     toNavigateToDSInfoPage &&
@@ -1127,8 +1188,32 @@ export class DataSources {
 
   ToggleUsePreparedStatement(enable = true || false) {
     this.pluginActionForm.toolbar.toggleSettings();
-    if (enable) this.agHelper.CheckUncheck(this._usePreparedStatement, true);
-    else this.agHelper.CheckUncheck(this._usePreparedStatement, false);
+    if (enable) {
+      this.agHelper.CheckUncheck(this._usePreparedStatement, true);
+    } else {
+      // When disabling, click the switch which will trigger the modal
+      this.agHelper
+        .GetElement(this._usePreparedStatement)
+        .click({ force: true });
+
+      // Wait for and handle the confirmation modal
+      this.agHelper.AssertElementVisibility(
+        commonlocators.confirmationModal,
+        true,
+        0,
+        5000,
+      );
+      this.agHelper.GetNClick(commonlocators.confirmationModalConfirm);
+      this.agHelper.AssertElementAbsence(
+        commonlocators.confirmationModal,
+        5000,
+      );
+
+      // Now verify the switch is actually unchecked
+      this.agHelper
+        .GetElement(this._usePreparedStatement)
+        .should("not.be.checked");
+    }
   }
 
   public EnterQuery(query: string, sleep = 500, toVerifySave = true) {

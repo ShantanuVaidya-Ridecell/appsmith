@@ -2307,7 +2307,7 @@ export const defaultAppState = {
               },
             ],
           },
-          executeOnLoad: true,
+          runBehaviour: "ON_PAGE_LOAD",
           dynamicBindingPathList: [],
           isValid: true,
           invalids: [],
@@ -2391,7 +2391,7 @@ export const defaultAppState = {
               },
             },
           },
-          executeOnLoad: false,
+          runBehaviour: "MANUAL",
           isValid: true,
           invalids: [],
           messages: [],
@@ -10038,9 +10038,30 @@ export const defaultAppState = {
             id: 1,
             children: [
               {
-                label: "Run the query on page load",
-                configProperty: "executeOnLoad",
-                controlType: "SWITCH",
+                label: "Run behavior",
+                configProperty: "runBehaviour",
+                controlType: "DROP_DOWN",
+                initialValue: "MANUAL",
+                options: [
+                  {
+                    label: "Automatic",
+                    subText:
+                      "Query runs on page load or when a variable it depends on changes",
+                    value: "AUTOMATIC",
+                  },
+                  {
+                    label: "On page load",
+                    subText:
+                      "Query runs when the page loads or when manually triggered",
+                    value: "ON_PAGE_LOAD",
+                  },
+                  {
+                    label: "Manual",
+                    subText:
+                      "Query only runs when called in an event or JS with .run()",
+                    value: "MANUAL",
+                  },
+                ],
               },
               {
                 label: "Request confirmation before running this query",
@@ -10074,9 +10095,30 @@ export const defaultAppState = {
             id: 1,
             children: [
               {
-                label: "Run the query on page load",
-                configProperty: "executeOnLoad",
-                controlType: "SWITCH",
+                label: "Run behavior",
+                configProperty: "runBehaviour",
+                controlType: "DROP_DOWN",
+                initialValue: "MANUAL",
+                options: [
+                  {
+                    label: "Automatic",
+                    subText:
+                      "Query runs on page load or when a variable it depends on changes",
+                    value: "AUTOMATIC",
+                  },
+                  {
+                    label: "On page load",
+                    subText:
+                      "Query runs when the page loads or when manually triggered",
+                    value: "ON_PAGE_LOAD",
+                  },
+                  {
+                    label: "Manual",
+                    subText:
+                      "Query only runs when called in an event or JS with .run()",
+                    value: "MANUAL",
+                  },
+                ],
               },
               {
                 label: "Request confirmation before running this query",
@@ -10110,9 +10152,30 @@ export const defaultAppState = {
             id: 1,
             children: [
               {
-                label: "Run the API on page load",
-                configProperty: "executeOnLoad",
-                controlType: "SWITCH",
+                label: "Run behavior",
+                configProperty: "runBehaviour",
+                controlType: "DROP_DOWN",
+                initialValue: "MANUAL",
+                options: [
+                  {
+                    label: "Automatic",
+                    subText:
+                      "Query runs on page load or when a variable it depends on changes",
+                    value: "AUTOMATIC",
+                  },
+                  {
+                    label: "On page load",
+                    subText:
+                      "Query runs when the page loads or when manually triggered",
+                    value: "ON_PAGE_LOAD",
+                  },
+                  {
+                    label: "Manual",
+                    subText:
+                      "Query only runs when called in an event or JS with .run()",
+                    value: "MANUAL",
+                  },
+                ],
               },
               {
                 label: "Request confirmation before running this API",
@@ -10175,9 +10238,30 @@ export const defaultAppState = {
             id: 1,
             children: [
               {
-                label: "Run the API on page load",
-                configProperty: "executeOnLoad",
-                controlType: "SWITCH",
+                label: "Run behavior",
+                configProperty: "runBehaviour",
+                controlType: "DROP_DOWN",
+                initialValue: "MANUAL",
+                options: [
+                  {
+                    label: "Automatic",
+                    subText:
+                      "Query runs on page load or when a variable it depends on changes",
+                    value: "AUTOMATIC",
+                  },
+                  {
+                    label: "On page load",
+                    subText:
+                      "Query runs when the page loads or when manually triggered",
+                    value: "ON_PAGE_LOAD",
+                  },
+                  {
+                    label: "Manual",
+                    subText:
+                      "Query only runs when called in an event or JS with .run()",
+                    value: "MANUAL",
+                  },
+                ],
               },
               {
                 label: "Request confirmation before running this API",
@@ -10281,7 +10365,7 @@ export const defaultAppState = {
         groups: [
           "Upgrade to business plan to access roles and groups for conditional business logic",
         ],
-        emptyInstance: false,
+        isEmptyInstance: false,
         accountNonExpired: true,
         accountNonLocked: true,
         credentialsNonExpired: true,
@@ -10352,7 +10436,7 @@ export const defaultAppState = {
                 selfReferencingDataPaths: [],
                 jsArguments: [],
               },
-              executeOnLoad: false,
+              runBehaviour: "MANUAL",
               clientSideExecution: true,
               dynamicBindingPathList: [
                 {
@@ -10402,7 +10486,7 @@ export const defaultAppState = {
                 selfReferencingDataPaths: [],
                 jsArguments: [],
               },
-              executeOnLoad: false,
+              runBehaviour: "MANUAL",
               clientSideExecution: true,
               dynamicBindingPathList: [
                 {
@@ -10486,7 +10570,7 @@ export const defaultAppState = {
                 selfReferencingDataPaths: [],
                 jsArguments: [],
               },
-              executeOnLoad: false,
+              runBehaviour: "MANUAL",
               clientSideExecution: true,
               dynamicBindingPathList: [
                 {
@@ -10536,7 +10620,7 @@ export const defaultAppState = {
                 selfReferencingDataPaths: [],
                 jsArguments: [],
               },
-              executeOnLoad: false,
+              runBehaviour: "MANUAL",
               clientSideExecution: true,
               dynamicBindingPathList: [
                 {
@@ -11131,6 +11215,8 @@ export const defaultAppState = {
           navigationSetting: {
             showNavbar: true,
             showSignIn: true,
+            showShareApp: true,
+            showAllApps: true,
             orientation: "top",
             navStyle: "stacked",
             position: "static",
@@ -12684,7 +12770,7 @@ export const defaultAppState = {
         ],
         slug: "jacques-s-apps",
         isAutoGeneratedWorkspace: true,
-        tenantId: "653236225e9a6424e4c04b65",
+        organizationId: "653236225e9a6424e4c04b65",
         logoUrl: "/api/v1/assets/null",
         new: false,
       },
@@ -12707,7 +12793,7 @@ export const defaultAppState = {
           groups: [
             "Upgrade to business plan to access roles and groups for conditional business logic",
           ],
-          emptyInstance: false,
+          isEmptyInstance: false,
           accountNonExpired: true,
           accountNonLocked: true,
           credentialsNonExpired: true,
@@ -12731,7 +12817,7 @@ export const defaultAppState = {
         groups: [
           "Upgrade to business plan to access roles and groups for conditional business logic",
         ],
-        emptyInstance: false,
+        isEmptyInstance: false,
         accountNonExpired: true,
         accountNonLocked: true,
         credentialsNonExpired: true,
@@ -20591,6 +20677,12 @@ export const defaultAppState = {
           id: "655317be44e16d2e57f05dce",
         },
         {
+          name: "dayjs",
+          accessor: ["dayjs"],
+          version: "1.11.10",
+          url: "https://cdn.jsdelivr.net/npm/dayjs@1.11.10/dayjs.min.js",
+        },
+        {
           name: "lodash",
           docsURL: "https://lodash.com/docs/4.17.21",
           version: "4.17.21",
@@ -20651,9 +20743,9 @@ export const defaultAppState = {
       emailVerificationEnabled: false,
     },
   },
-  tenant: {
+  organization: {
     userPermissions: [],
-    tenantConfiguration: {
+    organizationConfiguration: {
       brandFaviconUrl:
         "https://assets.appsmith.com/appsmith-favicon-orange.ico",
       brandColors: {

@@ -1,13 +1,14 @@
 import { createSelector } from "reselect";
-import type { AppState } from "ee/reducers";
+import type { DefaultRootState } from "react-redux";
 import type {
   CanvasWidgetsReduxState,
   FlattenedWidgetProps,
-} from "reducers/entityReducers/canvasWidgetsReducer";
+} from "ee/reducers/entityReducers/canvasWidgetsReducer";
 import { getExistingWidgetNames } from "sagas/selectors";
 import { getNextEntityName } from "utils/AppsmithUtils";
 
 import WidgetFactory from "WidgetProvider/factory";
+import { getWidgetConfigsVersion } from "WidgetProvider/factory/widgetConfigVersion";
 import {
   getAltBlockWidgetSelection,
   getFocusedWidget,
@@ -24,13 +25,14 @@ import { getIsPropertyPaneVisible } from "./propertyPaneSelectors";
 import { getIsAnvilLayout } from "layoutSystems/anvil/integrations/selectors";
 import { selectCombinedPreviewMode } from "./gitModSelectors";
 
-export const getIsDraggingOrResizing = (state: AppState) =>
+export const getIsDraggingOrResizing = (state: DefaultRootState) =>
   state.ui.widgetDragResize.isResizing || state.ui.widgetDragResize.isDragging;
 
-export const getIsResizing = (state: AppState) =>
+export const getIsResizing = (state: DefaultRootState) =>
   state.ui.widgetDragResize.isResizing;
 
-const getCanvasWidgets = (state: AppState) => state.entities.canvasWidgets;
+const getCanvasWidgets = (state: DefaultRootState) =>
+  state.entities.canvasWidgets;
 
 // A selector that gets the modal widget type based on the feature flag
 // This will need to be updated once Anvil and WDS are generally available
@@ -77,6 +79,7 @@ export const getModalDropdownList = createSelector(
 export const getNextModalName = createSelector(
   getExistingWidgetNames,
   getModalWidgetType,
+  getWidgetConfigsVersion, // Add dependency on widget configs version
   (names, modalWidgetType) => {
     const prefix =
       WidgetFactory.widgetConfigMap.get(modalWidgetType)?.widgetName || "";
@@ -90,7 +93,7 @@ export const getNextModalName = createSelector(
  */
 export const getParentWidget = createSelector(
   getCanvasWidgets,
-  (state: AppState, widgetId: string) => widgetId,
+  (state: DefaultRootState, widgetId: string) => widgetId,
   (canvasWidgets, widgetId: string): FlattenedWidgetProps | undefined => {
     if (canvasWidgets.hasOwnProperty(widgetId)) {
       const widget = canvasWidgets[widgetId];
@@ -108,7 +111,7 @@ export const getParentWidget = createSelector(
 
 export const getFocusedParentToOpen = createSelector(
   getCanvasWidgets,
-  (state: AppState) => state.ui.widgetDragResize.focusedWidget,
+  (state: DefaultRootState) => state.ui.widgetDragResize.focusedWidget,
   (canvasWidgets, focusedWidgetId) => {
     return getParentToOpenIfAny(focusedWidgetId, canvasWidgets);
   },
@@ -182,9 +185,10 @@ export const shouldWidgetIgnoreClicksSelector = (widgetId: string) => {
   return createSelector(
     getFocusedWidget,
     getIsTableFilterPaneVisible,
-    (state: AppState) => state.ui.widgetDragResize.isResizing,
-    (state: AppState) => state.ui.widgetDragResize.isDragging,
-    (state: AppState) => state.ui.canvasSelection.isDraggingForSelection,
+    (state: DefaultRootState) => state.ui.widgetDragResize.isResizing,
+    (state: DefaultRootState) => state.ui.widgetDragResize.isDragging,
+    (state: DefaultRootState) =>
+      state.ui.canvasSelection.isDraggingForSelection,
     getAppMode,
     selectCombinedPreviewMode,
     getIsAutoHeightWithLimitsChanging,
@@ -217,10 +221,10 @@ export const shouldWidgetIgnoreClicksSelector = (widgetId: string) => {
   );
 };
 
-export const getSelectedWidgetAncestry = (state: AppState) =>
+export const getSelectedWidgetAncestry = (state: DefaultRootState) =>
   state.ui.widgetDragResize.selectedWidgetAncestry;
 
-export const getEntityExplorerWidgetAncestry = (state: AppState) =>
+export const getEntityExplorerWidgetAncestry = (state: DefaultRootState) =>
   state.ui.widgetDragResize.entityExplorerAncestry;
 
 export const getEntityExplorerWidgetsToExpand = createSelector(
@@ -261,7 +265,23 @@ export const isCurrentWidgetActiveInPropertyPane = (widgetId: string) => {
 };
 
 export const isResizingOrDragging = createSelector(
-  (state: AppState) => state.ui.widgetDragResize.isResizing,
-  (state: AppState) => state.ui.widgetDragResize.isDragging,
+  (state: DefaultRootState) => state.ui.widgetDragResize.isResizing,
+  (state: DefaultRootState) => state.ui.widgetDragResize.isDragging,
   (isResizing, isDragging) => !!isResizing || !!isDragging,
+);
+// get widgets types associated to a tab
+export const getUsedWidgetTypes = createSelector(
+  getCanvasWidgets,
+  (canvasWidgets) => {
+    const widgetTypes = new Set<string>();
+
+    // Iterate through all widgets in the state
+    Object.values(canvasWidgets).forEach((widget) => {
+      if (widget.type && !widget.type.startsWith("MODULE_WIDGET_")) {
+        widgetTypes.add(widget.type);
+      }
+    });
+
+    return Array.from(widgetTypes);
+  },
 );

@@ -4,7 +4,7 @@ import { getPluginImages } from "ee/selectors/entitiesSelector";
 import { getisOneClickBindingConnectingForWidget } from "selectors/oneClickBindingSelectors";
 import AnalyticsUtil from "ee/utils/AnalyticsUtil";
 import { getWidget } from "sagas/selectors";
-import type { AppState } from "ee/reducers";
+import type { DefaultRootState } from "react-redux";
 import {
   createMessage,
   DATASOURCE_DROPDOWN_OPTIONS,
@@ -74,7 +74,9 @@ export function useSource(searchText: string) {
 
   const pluginImages = useSelector(getPluginImages);
 
-  const widget = useSelector((state: AppState) => getWidget(state, widgetId));
+  const widget = useSelector((state: DefaultRootState) =>
+    getWidget(state, widgetId),
+  );
 
   const constants = getDropdownConstants(datasourceDropdownVariant);
 
@@ -83,10 +85,11 @@ export function useSource(searchText: string) {
     widget,
   });
 
-  const { queryOptions, widgetOptions } = useConnectToOptions({
-    pluginImages,
-    widget,
-  });
+  const { queryOptions, visibleQueryOptions, widgetOptions } =
+    useConnectToOptions({
+      pluginImages,
+      widget,
+    });
 
   const otherOptions = useOtherOptions({
     widget,
@@ -108,9 +111,9 @@ export function useSource(searchText: string) {
   const [filteredDatasourceOptions, filteredQueryOptions] = useMemo(() => {
     return [
       datasourceOptions.filter((d) => filterOption(d, searchText)),
-      queryOptions.filter((d) => filterOption(d, searchText)),
+      visibleQueryOptions.filter((d) => filterOption(d, searchText)),
     ];
-  }, [searchText, datasourceOptions, otherOptions, queryOptions]);
+  }, [searchText, datasourceOptions, otherOptions, visibleQueryOptions]);
 
   const selected = useMemo(() => {
     let source;
@@ -155,6 +158,30 @@ export function useSource(searchText: string) {
     return [...widgetOptions, ...filteredQueryOptions];
   }, [filteredQueryOptions, widgetOptions]);
 
+  const error = useMemo(() => {
+    if (config.datasource) {
+      return "";
+    }
+
+    // DROPDOWN_VARIANT.CONNECT_TO_QUERY acts like query selector for us (we use it in AI widget)
+    // so we need to check if the selected query exists in the queryOptions
+    // if it does not exist, we need to show error that the query is not found
+    if (
+      datasourceDropdownVariant === DROPDOWN_VARIANT.CONNECT_TO_QUERY &&
+      propertyValue
+    ) {
+      const selectedQuery = queryOptions.find(
+        (option) => option.value === propertyValue,
+      );
+
+      if (!selectedQuery) {
+        return `Chat query is required`;
+      }
+    }
+
+    return errorMsg;
+  }, [config.datasource, errorMsg, queryOptions, propertyValue]);
+
   return {
     constants,
     datasourceOptions: filteredDatasourceOptions,
@@ -165,7 +192,7 @@ export function useSource(searchText: string) {
     connectToOptions,
     isSourceOpen,
     onSourceClose,
-    error: config.datasource ? "" : errorMsg,
+    error: error,
     disabled: isConnecting,
   };
 }

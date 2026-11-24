@@ -1,13 +1,17 @@
 ARG BASE
 FROM ${BASE}
 
-ENV IN_DOCKER=1
-
 ARG APPSMITH_CLOUD_SERVICES_BASE_URL
 ENV APPSMITH_CLOUD_SERVICES_BASE_URL=${APPSMITH_CLOUD_SERVICES_BASE_URL}
 
 ARG APPSMITH_SEGMENT_CE_KEY
 ENV APPSMITH_SEGMENT_CE_KEY=${APPSMITH_SEGMENT_CE_KEY}
+
+ARG APPSMITH_BETTERBUGS_API_KEY
+ENV APPSMITH_BETTERBUGS_API_KEY=${APPSMITH_BETTERBUGS_API_KEY}
+
+ARG APPSMITH_PYLON_APP_ID
+ENV APPSMITH_PYLON_APP_ID=${APPSMITH_PYLON_APP_ID}
 
 COPY deploy/docker/fs /
 
@@ -17,8 +21,8 @@ RUN <<END
     exit 1
   fi
 
-  if ! [ -f server/mongo/server.jar -a -f server/pg/server.jar ]; then
-    echo "Missing one or both server.jar files in the right place. Are you using the build script?" >&2
+  if ! [ -f server/mongo/server.jar ]; then
+    echo "Missing MongoDB server.jar file. Are you using the build script?" >&2
     exit 1
   fi
 END
@@ -28,6 +32,12 @@ COPY ./app/client/build editor/
 
 # Add RTS - Application Layer
 COPY ./app/client/packages/rts/dist rts/
+
+# Add MCP - Application Layer
+COPY ./app/client/packages/mcp/dist mcp/
+
+# Create the git-storage directory with group writeable permissions so non-root users can write to it.
+RUN mkdir --mode 775 "/dev/shm/git-storage"
 
 ENV PATH /opt/bin:/opt/java/bin:/opt/node/bin:$PATH
 

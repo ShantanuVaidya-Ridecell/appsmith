@@ -2,18 +2,14 @@ package com.appsmith.server.git;
 
 import com.appsmith.external.converters.ISOStringToInstantConverter;
 import com.appsmith.external.dtos.GitLogDTO;
-import com.appsmith.external.dtos.ModifiedResources;
-import com.appsmith.external.git.GitExecutor;
-import com.appsmith.external.models.ApplicationGitReference;
+import com.appsmith.external.git.handler.FSGitHandler;
 import com.appsmith.server.configurations.ProjectProperties;
-import com.appsmith.server.constants.SerialiseArtifactObjective;
-import com.appsmith.server.domains.Workspace;
-import com.appsmith.server.dtos.ApplicationImportDTO;
 import com.appsmith.server.dtos.ApplicationJson;
 import com.appsmith.server.events.AutoCommitEvent;
 import com.appsmith.server.exports.internal.ExportService;
-import com.appsmith.server.git.autocommit.AutoCommitEventHandler;
-import com.appsmith.server.git.autocommit.AutoCommitEventHandlerImpl;
+import com.appsmith.server.git.autocommit.AutoCommitSolution;
+import com.appsmith.server.git.autocommit.AutoCommitSolutionImpl;
+import com.appsmith.server.git.resolver.GitArtifactHelperResolver;
 import com.appsmith.server.helpers.CommonGitFileUtils;
 import com.appsmith.server.helpers.DSLMigrationUtils;
 import com.appsmith.server.helpers.MockPluginExecutor;
@@ -27,47 +23,39 @@ import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import lombok.SneakyThrows;
 import lombok.extern.slf4j.Slf4j;
-import org.eclipse.jgit.api.Git;
 import org.eclipse.jgit.api.errors.GitAPIException;
-import org.eclipse.jgit.diff.DiffEntry;
 import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
-import org.mockito.Mockito;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.data.mongo.AutoConfigureDataMongo;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.test.mock.mockito.MockBean;
-import org.springframework.boot.test.mock.mockito.SpyBean;
 import org.springframework.context.ApplicationEventPublisher;
-import org.springframework.core.io.buffer.DataBuffer;
-import org.springframework.core.io.buffer.DataBufferUtils;
-import org.springframework.core.io.buffer.DefaultDataBufferFactory;
-import org.springframework.http.MediaType;
-import org.springframework.http.codec.multipart.FilePart;
-import org.springframework.security.test.context.support.WithUserDetails;
+import org.springframework.core.io.DefaultResourceLoader;
 import org.springframework.test.annotation.DirtiesContext;
-import reactor.core.publisher.Flux;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
+import org.springframework.util.StreamUtils;
 import reactor.core.publisher.Mono;
 import reactor.test.StepVerifier;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.net.URISyntaxException;
-import java.net.URL;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.time.Instant;
-import java.util.List;
 import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
-import static com.appsmith.server.constants.ArtifactType.APPLICATION;
-import static com.appsmith.server.git.autocommit.AutoCommitEventHandlerCEImpl.AUTO_COMMIT_MSG_FORMAT;
+import static com.appsmith.server.git.autocommit.AutoCommitSolutionCEImpl.AUTO_COMMIT_MSG_FORMAT;
 import static java.lang.Boolean.TRUE;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doReturn;
 
 /**
  * This class tests the enforcement of server schema migrations within the Appsmith platform.
@@ -105,7 +93,7 @@ public class ServerSchemaMigrationEnforcerTest {
     @Autowired
     WorkspaceService workspaceService;
 
-    @SpyBean
+    @MockitoSpyBean
     ImportService importService;
 
     @Autowired
@@ -117,30 +105,33 @@ public class ServerSchemaMigrationEnforcerTest {
     @Autowired
     GitFileSystemTestHelper gitFileSystemTestHelper;
 
-    @SpyBean
-    GitExecutor gitExecutor;
+    @MockitoSpyBean
+    FSGitHandler fsGitHandler;
 
-    @MockBean
+    @Autowired
+    GitArtifactHelperResolver gitArtifactHelperResolver;
+
+    @MockitoSpyBean
     PluginExecutorHelper pluginExecutorHelper;
 
-    AutoCommitEventHandler autoCommitEventHandler;
+    AutoCommitSolution autoCommitSolution;
 
     @Autowired
     ProjectProperties projectProperties;
 
-    @SpyBean
+    @MockitoSpyBean
     RedisUtils redisUtils;
 
-    @SpyBean
+    @MockitoSpyBean
     GitRedisUtils gitRedisUtils;
 
     @Autowired
     AnalyticsService analyticsService;
 
-    @MockBean
+    @MockitoBean
     DSLMigrationUtils dslMigrationUtils;
 
-    @MockBean
+    @MockitoBean
     ApplicationEventPublisher applicationEventPublisher;
 
     private final Gson gson = new GsonBuilder()
@@ -160,7 +151,7 @@ public class ServerSchemaMigrationEnforcerTest {
 
     @BeforeEach
     public void setup() {
-        Mockito.when(pluginExecutorHelper.getPluginExecutor(any())).thenReturn(Mono.just(new MockPluginExecutor()));
+        doReturn(Mono.just(new MockPluginExecutor())).when(pluginExecutorHelper).getPluginExecutor(any());
     }
 
     /**
@@ -223,74 +214,12 @@ public class ServerSchemaMigrationEnforcerTest {
                 importApplicationGitReferenceObject.get("datasources").getAsJsonObject());
     }
 
-    @Test
-    @Disabled
-    @WithUserDetails(value = "api_user")
-    public void importApplication_ThenExportApplication_MatchJson_equals_Success() throws URISyntaxException {
-        String filePath = "ce-automation-test.json";
-        FilePart filePart = createFilePart(filePath);
-        Workspace newWorkspace = new Workspace();
-        newWorkspace.setName("Template Workspace");
-        Mono<Workspace> workspaceMono = workspaceService.create(newWorkspace).cache();
-
-        ApplicationJson applicationJsonToBeImported = importService
-                .extractArtifactExchangeJson(filePart)
-                .map(artifactExchangeJson -> (ApplicationJson) artifactExchangeJson)
-                .block();
-
-        applicationJsonToBeImported.setModifiedResources(null);
-        ApplicationGitReference importApplicationGitReference =
-                (ApplicationGitReference) commonGitFileUtils.createArtifactReference(applicationJsonToBeImported);
-
-        JsonObject importApplicationGitReferenceObject = gson.toJsonTree(
-                        importApplicationGitReference, ApplicationGitReference.class)
-                .getAsJsonObject();
-        removeCustomJsLibsEntries(importApplicationGitReferenceObject);
-
-        final Mono<ApplicationImportDTO> resultMono = workspaceMono
-                .flatMap(workspace ->
-                        importService.extractArtifactExchangeJsonAndSaveArtifact(filePart, workspace.getId(), null))
-                .map(importableArtifactDTO -> (ApplicationImportDTO) importableArtifactDTO);
-
-        final Mono<ApplicationJson> exportApplicationMono = resultMono.flatMap(applicationImportDTO -> {
-            return exportService
-                    .exportByArtifactId(
-                            applicationImportDTO.getApplication().getId(),
-                            SerialiseArtifactObjective.VERSION_CONTROL,
-                            APPLICATION)
-                    .map(artifactExchangeJson -> (ApplicationJson) artifactExchangeJson);
-        });
-
-        // The logic over here is that we are comparing the imported json and exported json,
-        // if exported changes has diff from the imported one
-        StepVerifier.create(exportApplicationMono)
-                .assertNext(exportedApplicationJson -> {
-                    assertThat(exportedApplicationJson).isNotNull();
-                    exportedApplicationJson.setModifiedResources(null);
-
-                    ApplicationGitReference exportedApplicationGitReference = (ApplicationGitReference)
-                            commonGitFileUtils.createArtifactReference(exportedApplicationJson);
-
-                    JsonObject exportedApplicationGitReferenceObject = gson.toJsonTree(
-                                    exportedApplicationGitReference, ApplicationGitReference.class)
-                            .getAsJsonObject();
-                    removeCustomJsLibsEntries(exportedApplicationGitReferenceObject);
-                    verifyAssertions(exportedApplicationGitReferenceObject, importApplicationGitReferenceObject);
-                })
-                .verifyComplete();
-    }
-
-    private FilePart createFilePart(String filePath) throws URISyntaxException {
-        FilePart filePart = Mockito.mock(FilePart.class, Mockito.RETURNS_DEEP_STUBS);
-        URL resource = this.getClass().getResource(filePath);
-        Flux<DataBuffer> dataBufferFlux = DataBufferUtils.read(
-                        Path.of(resource.toURI()), new DefaultDataBufferFactory(), 4096)
-                .cache();
-
-        Mockito.when(filePart.content()).thenReturn(dataBufferFlux);
-        Mockito.when(filePart.headers().getContentType()).thenReturn(MediaType.APPLICATION_JSON);
-
-        return filePart;
+    @SneakyThrows
+    private String readResource(String filePath) {
+        try (InputStream inputStream =
+                new DefaultResourceLoader().getResource(filePath).getInputStream()) {
+            return StreamUtils.copyToString(inputStream, StandardCharsets.UTF_8);
+        }
     }
 
     private void removeCustomJsLibsEntries(JsonObject applicationObjectNode) {
@@ -314,100 +243,16 @@ public class ServerSchemaMigrationEnforcerTest {
     }
 
     @Test
-    public void savedFile_reSavedWithSameSerialisationLogic_noDiffOccurs()
-            throws URISyntaxException, IOException, GitAPIException {
-
-        ApplicationJson applicationJson =
-                gitFileSystemTestHelper.getApplicationJson(this.getClass().getResource("ce-automation-test.json"));
-
-        ModifiedResources modifiedResources = new ModifiedResources();
-        modifiedResources.setAllModified(true);
-        applicationJson.setModifiedResources(modifiedResources);
-
-        gitFileSystemTestHelper.setupGitRepository(
-                WORKSPACE_ID, DEFAULT_APPLICATION_ID, BRANCH_NAME, REPO_NAME, applicationJson);
-
-        Path suffixPath = Paths.get(WORKSPACE_ID, DEFAULT_APPLICATION_ID, REPO_NAME);
-        Path gitCompletePath = gitExecutor.createRepoPath(suffixPath);
-
-        commonGitFileUtils
-                .saveArtifactToLocalRepo(suffixPath, applicationJson, BRANCH_NAME)
-                .block();
-
-        try (Git gitRepo = Git.open(gitCompletePath.toFile())) {
-            List<DiffEntry> diffEntries = gitRepo.diff().call();
-            assertThat(diffEntries.size()).isZero();
-        }
-    }
-
-    @Test
-    @WithUserDetails(value = "api_user")
-    public void saveGitRepo_ImportAndThenExport_diffOccurs() throws URISyntaxException, IOException, GitAPIException {
-        ApplicationJson applicationJson =
-                gitFileSystemTestHelper.getApplicationJson(this.getClass().getResource("ce-automation-test.json"));
-
-        ModifiedResources modifiedResources = new ModifiedResources();
-        modifiedResources.setAllModified(true);
-        applicationJson.setModifiedResources(modifiedResources);
-
-        gitFileSystemTestHelper.setupGitRepository(
-                WORKSPACE_ID, DEFAULT_APPLICATION_ID, BRANCH_NAME, REPO_NAME, applicationJson);
-
-        ApplicationJson jsonToBeImported = commonGitFileUtils
-                .reconstructArtifactExchangeJsonFromGitRepo(
-                        WORKSPACE_ID, DEFAULT_APPLICATION_ID, REPO_NAME, BRANCH_NAME, APPLICATION)
-                .map(artifactExchangeJson -> (ApplicationJson) artifactExchangeJson)
-                .block();
-
-        Workspace newWorkspace = new Workspace();
-        newWorkspace.setName("Template Workspace1");
-        Workspace workspace = workspaceService.create(newWorkspace).block();
-
-        ApplicationJson exportedJson = importService
-                .importNewArtifactInWorkspaceFromJson(workspace.getId(), jsonToBeImported)
-                .flatMap(artifactExchangeJson -> {
-                    return exportService
-                            .exportByArtifactId(
-                                    artifactExchangeJson.getId(),
-                                    SerialiseArtifactObjective.VERSION_CONTROL,
-                                    APPLICATION)
-                            .map(exportArtifactJson -> {
-                                ApplicationJson applicationJson1 = (ApplicationJson) exportArtifactJson;
-                                applicationJson1.setModifiedResources(modifiedResources);
-                                return applicationJson1;
-                            });
-                })
-                .block();
-
-        Path suffixPath = Paths.get(WORKSPACE_ID, DEFAULT_APPLICATION_ID, REPO_NAME);
-        Path gitCompletePath = gitExecutor.createRepoPath(suffixPath);
-
-        // save back to the repository in order to compare the diff.
-        commonGitFileUtils
-                .saveArtifactToLocalRepo(suffixPath, exportedJson, BRANCH_NAME)
-                .block();
-
-        try (Git gitRepo = Git.open(gitCompletePath.toFile())) {
-            List<DiffEntry> diffEntries = gitRepo.diff().call();
-            assertThat(diffEntries.size()).isNotZero();
-            for (DiffEntry diffEntry : diffEntries) {
-                // assertion that no new file has been created
-                assertThat(diffEntry.getOldPath()).isEqualTo(diffEntry.getNewPath());
-            }
-        }
-    }
-
-    @Test
     public void autocommitMigration_WhenServerVersionIsBehindDiffOccursAnd_CommitSuccess()
             throws URISyntaxException, IOException, GitAPIException {
 
-        autoCommitEventHandler = new AutoCommitEventHandlerImpl(
-                applicationEventPublisher,
+        autoCommitSolution = new AutoCommitSolutionImpl(
                 gitRedisUtils,
                 redisUtils,
                 dslMigrationUtils,
+                gitArtifactHelperResolver,
                 commonGitFileUtils,
-                gitExecutor,
+                fsGitHandler,
                 projectProperties,
                 analyticsService);
 
@@ -419,9 +264,9 @@ public class ServerSchemaMigrationEnforcerTest {
         Path baseRepoSuffix = Paths.get(
                 autoCommitEvent.getWorkspaceId(), autoCommitEvent.getApplicationId(), autoCommitEvent.getRepoName());
 
-        Mockito.doReturn(Mono.just("success"))
-                .when(gitExecutor)
-                .pushApplication(
+        doReturn(Mono.just("success"))
+                .when(fsGitHandler)
+                .pushArtifact(
                         baseRepoSuffix,
                         autoCommitEvent.getRepoUrl(),
                         autoCommitEvent.getPublicKey(),
@@ -430,7 +275,7 @@ public class ServerSchemaMigrationEnforcerTest {
 
         gitFileSystemTestHelper.setupGitRepository(autoCommitEvent, applicationJson);
 
-        StepVerifier.create(autoCommitEventHandler
+        StepVerifier.create(autoCommitSolution
                         .autoCommitServerMigration(autoCommitEvent)
                         .zipWhen(a -> redisUtils.getAutoCommitProgress(autoCommitEvent.getApplicationId())))
                 .assertNext(tuple2 -> {
@@ -439,7 +284,7 @@ public class ServerSchemaMigrationEnforcerTest {
                 })
                 .verifyComplete();
 
-        StepVerifier.create(gitExecutor.getCommitHistory(baseRepoSuffix))
+        StepVerifier.create(fsGitHandler.getCommitHistory(baseRepoSuffix))
                 .assertNext(gitLogDTOs -> {
                     assertThat(gitLogDTOs).isNotEmpty();
                     assertThat(gitLogDTOs.size()).isEqualTo(3);

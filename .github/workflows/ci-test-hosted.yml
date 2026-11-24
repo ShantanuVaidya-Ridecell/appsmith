@@ -123,11 +123,40 @@ jobs:
           restore-keys: |
             v1-yarn3-
 
-      # Install all the dependencies
+      # yarn install downloads the Cypress binary (about 200 MB) into ~/.cache/Cypress.
+      # A cached binary skips that download. The cache key includes the patches because
+      # the postinstall script applies them to the binary.
+      - name: Get the Cypress version
+        if: steps.run_result.outputs.run_result != 'success'
+        id: cypress-version
+        working-directory: app/client
+        run: |
+          echo "version=$(node -p 'require("./package.json").devDependencies.cypress')" >> "$GITHUB_OUTPUT"
+
+      - name: Restore Cypress binary cache
+        if: steps.run_result.outputs.run_result != 'success'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/Cypress
+          key: v1-cypress-${{ runner.os }}-${{ steps.cypress-version.outputs.version }}-${{ hashFiles('app/client/cypress/patches/**') }}
+
+      # A broken download (an npm package or the Cypress binary) fails the install.
+      # Retry here, because GitHub re-runs a failed shard only after the whole run ends.
       - name: Install dependencies
         if: steps.run_result.outputs.run_result != 'success'
         working-directory: app/client
-        run: yarn install --immutable
+        run: |
+          for attempt in 1 2 3; do
+            if timeout 600 yarn install --immutable; then
+              exit 0
+            fi
+            echo "::warning::yarn install failed on attempt $attempt of 3."
+            if [[ "$attempt" -lt 3 ]]; then
+              sleep $((attempt * 20))
+            fi
+          done
+          echo "::error::yarn install failed 3 times."
+          exit 1
 
       - name: Setting up the cypress tests
         if: steps.run_result.outputs.run_result != 'success'
@@ -137,13 +166,16 @@ jobs:
           chmod a+x ./cypress/setup-test-ci.sh
           ./cypress/setup-test-ci.sh
 
-      - name: Install Google Chrome 129.0.6668.100
+      - name: Install Google Chrome 156.0.8078.47
+        env:
+          CHROME_DEB_URL: https://appsmith-github-chrome-129-debian.s3.us-east-2.amazonaws.com/google-chrome-stable_156.0.8078.47-1_amd64.deb
+          CHROME_DEB_SHA256: 6c92cd22e90c6e3e255d782991543fa2091db8614e8536a971a7433a5c4d7ac8
         run: |
-          sudo apt-get remove google-chrome-stable
-          wget -q https://dl.google.com/linux/chrome/deb/pool/main/g/google-chrome-stable/google-chrome-stable_129.0.6668.100-1_amd64.deb
-          sudo apt-get update
-          sudo apt-get install -y ./google-chrome-stable_129.0.6668.100-1_amd64.deb
-          echo "BROWSER_PATH=$(which google-chrome)" >> $GITHUB_ENV
+          sudo apt-get remove -y google-chrome-stable || true
+          curl --fail --silent --show-error --location --max-time 300 --retry 3 --output google-chrome-stable.deb "$CHROME_DEB_URL"
+          echo "$CHROME_DEB_SHA256  google-chrome-stable.deb" | sha256sum --check
+          sudo apt-get install -y ./google-chrome-stable.deb
+          echo "BROWSER_PATH=$(which google-chrome)" >> "$GITHUB_ENV"
           google-chrome --version
 
       - name: Save Git values
@@ -159,7 +191,7 @@ jobs:
           echo COMMIT_INFO_SHA=$(git show -s --pretty=%H) >> $GITHUB_ENV
           echo COMMIT_INFO_TIMESTAMP=$(git show -s --pretty=%ct) >> $GITHUB_ENV
           echo COMMIT_INFO_REMOTE=$(git config --get remote.origin.url) >> $GITHUB_ENV
-          # delete the .git folder afterwords to use the environment values
+          # delete the .git folder afterwords to use the environment values 
           rm -rf .git
 
       - name: Show Git values
@@ -183,7 +215,6 @@ jobs:
           fi
 
       - name: Run the cypress test
-        uses: cypress-io/github-action@v6
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CYPRESS_USERNAME: ${{ secrets.CYPRESS_USERNAME }}
@@ -245,12 +276,26 @@ jobs:
           CYPRESS_S3_ACCESS: ${{ secrets.CYPRESS_S3_ACCESS }}
           CYPRESS_S3_SECRET: ${{ secrets.CYPRESS_S3_SECRET }}
           CYPRESS_STATIC_ALLOCATION: true
-        with:
-          browser: ${{ env.BROWSER_PATH }}
-          install: false
-          config-file: cypress_ci_hosted.config.ts
-          working-directory: app/client
-          env: "NODE_ENV=development"
+          CYPRESS_SNOWFLAKE_ACCOUNT_NAME: ${{ secrets.SNOWFLAKE_ACCOUNT_NAME }}
+          CYPRESS_SNOWFLAKE_USERNAME: ${{ secrets.SNOWFLAKE_USERNAME }}
+          CYPRESS_SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
+          CYPRESS_HUBSPOT_TOKEN: ${{ secrets.HUBSPOT_TOKEN }}
+          NODE_ENV: development
+          GITHUB_WORKFLOW : ${{ github.workflow }}
+        run: |
+            cd app/client
+            npx cypress-repeat-pro run -n 3 --rerun-failed-only \
+                --config-file "cypress_ci_hosted.config.ts" \
+                --browser "$BROWSER_PATH" | tee cy-repeat-output.txt
+            cat cy-repeat-summary.txt
+
+            # cypress-repeat-pro exits 0 when a repeat aborts before it collects
+            # results, which turns a shard with failing specs green. It prints
+            # this marker only after a repeat in which every spec passed.
+            if ! grep -q "All specs passed on run" cy-repeat-output.txt; then
+              echo "::error::Cypress produced no passing run for this shard."
+              exit 1
+            fi
 
       - name: Rename reports
         if: failure()

@@ -1,6 +1,5 @@
-import React from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import ReactDOM from "react-dom";
-import { useEffect, useMemo, useState } from "react";
 import { useLocation } from "react-router";
 import { debounce, random, sortBy } from "lodash";
 import type {
@@ -23,22 +22,14 @@ import type { ActionResponse } from "api/ActionAPI";
 import type { Module } from "ee/constants/ModuleConstants";
 import { MODULE_TYPE } from "ee/constants/ModuleConstants";
 import {
+  dbQueryIcon,
   ENTITY_ICON_SIZE,
   EntityIcon,
   JsFileIconV2,
-  dbQueryIcon,
 } from "pages/Editor/Explorer/ExplorerIcons";
 import { getAssetUrl } from "ee/utils/airgapHelpers";
-import { type Plugin, PluginType } from "entities/Plugin";
-import ImageAlt from "assets/images/placeholder-image.svg";
+import { PluginType } from "entities/Plugin";
 import { Icon } from "@appsmith/ads";
-import {
-  EditorEntityTab,
-  EditorEntityTabState,
-  EditorState,
-  EditorViewMode,
-} from "ee/entities/IDE/constants";
-import { FocusEntity } from "navigation/FocusEntity";
 import { objectKeys } from "@appsmith/utils";
 
 export const draggableElement = (
@@ -58,16 +49,19 @@ export const draggableElement = (
     top?: string;
     zIndex?: string;
     position?: string;
+    pointerEvents?: string;
   },
   dragHandle?: () => JSX.Element,
   cypressSelectorDragHandle?: string,
-) => {
+  onDragStateChange?: (dragging: boolean) => void,
+): (() => void) => {
   let newXPos = 0,
     newYPos = 0,
     oldXPos = 0,
     oldYPos = 0;
   let dragHandler = element;
   let isDragged = !!initPostion;
+  let isDragInFlight = false;
 
   const setElementPosition = () => {
     element.style.top = initPostion.top + "px";
@@ -76,8 +70,14 @@ export const draggableElement = (
 
   const dragMouseDown = (e: MouseEvent) => {
     e = e || window.event;
+    // The default mousedown action moves focus off the anchored editor; for a
+    // popup that only stays open while its editor is focused, that closes the
+    // popup and tears the drag down before it starts.
+    e.preventDefault();
     oldXPos = e.clientX;
     oldYPos = e.clientY;
+    isDragInFlight = true;
+    onDragStateChange?.(true);
     document.onmouseup = closeDragElement;
     document.onmousemove = elementDrag;
   };
@@ -132,10 +132,11 @@ export const draggableElement = (
 
     element.style.top = calculatedTop + "px";
     element.style.left = calculatedLeft + "px";
-    const validFirstDrag = !isDragged && newXPos !== 0 && newYPos !== 0;
 
-    if (validFirstDrag) {
-      resizeObserver.observe(element);
+    // A straight-up or straight-across drag has a zero delta on one axis;
+    // requiring both to be non-zero meant such a drag never registered, so
+    // the position was never persisted on mouseup and the popper snapped back.
+    if (!isDragged && (newXPos !== 0 || newYPos !== 0)) {
       isDragged = true;
     }
   };
@@ -168,10 +169,27 @@ export const draggableElement = (
     }
   };
 
+  const releaseDocumentHandlers = () => {
+    // Only release handlers this instance installed: a later draggableElement
+    // may already own them.
+    if (document.onmouseup === closeDragElement) document.onmouseup = null;
+
+    if (document.onmousemove === elementDrag) document.onmousemove = null;
+  };
+
   const closeDragElement = () => {
     updateElementPosition();
-    document.onmouseup = null;
-    document.onmousemove = null;
+    releaseDocumentHandlers();
+
+    // Start watching for size changes only once the drag has settled:
+    // observing during the drag persists a position mid-gesture, which
+    // re-renders the owning popper and tears the live drag down.
+    if (isDragged) {
+      resizeObserver.observe(element);
+    }
+
+    isDragInFlight = false;
+    onDragStateChange?.(false);
   };
   const debouncedUpdatePosition = debounce(updateElementPosition, 50);
 
@@ -200,12 +218,39 @@ export const draggableElement = (
 
     dragHandler.addEventListener("mousedown", dragMouseDown);
     // stop clicks from propogating to widget editor.
-    // TODO: Fix this the next time the file is edited
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    dragHandler.addEventListener("click", (e: any) => e.stopPropagation());
+    dragHandler.addEventListener("click", stopPropagation);
+  };
+
+  // TODO: Fix this the next time the file is edited
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const stopPropagation = (e: any) => e.stopPropagation();
+
+  // Without this, every call leaks a ResizeObserver holding a stale
+  // onPositionChange closure: they all keep writing the element's top/left
+  // long after their popper instance is gone, which stomps on live drags.
+  const teardown = () => {
+    debouncedUpdatePosition.cancel();
+    resizeObserver.disconnect();
+    dragHandler.removeEventListener("mousedown", dragMouseDown);
+    dragHandler.removeEventListener("click", stopPropagation);
+    releaseDocumentHandlers();
+
+    // If this instance dies while a drag is in flight, make sure the owner
+    // does not keep treating the popup as being dragged.
+    if (isDragInFlight) {
+      isDragInFlight = false;
+      onDragStateChange?.(false);
+    }
+
+    if (dragHandle && dragHandler !== element) {
+      ReactDOM.unmountComponentAtNode(dragHandler);
+      dragHandler.parentElement?.removeChild(dragHandler);
+    }
   };
 
   OnInit();
+
+  return teardown;
 };
 
 const createDragHandler = (
@@ -219,6 +264,7 @@ const createDragHandler = (
     top?: string;
     zIndex?: string;
     position?: string;
+    pointerEvents?: string;
   },
   cypressSelectorDragHandle?: string,
 ) => {
@@ -230,6 +276,11 @@ const createDragHandler = (
   dragElement.style.left = renderDragBlockPositions?.left ?? "135px";
   dragElement.style.top = renderDragBlockPositions?.top ?? "0px";
   dragElement.style.zIndex = renderDragBlockPositions?.zIndex ?? "3";
+  // "none" lets clicks pass through the handler box to the content beneath
+  // while a child handle that re-enables pointer events stays draggable —
+  // its events still bubble to this element's mousedown listener.
+  dragElement.style.pointerEvents =
+    renderDragBlockPositions?.pointerEvents ?? "";
 
   if (cypressSelectorDragHandle) {
     dragElement.setAttribute("data-testid", cypressSelectorDragHandle);
@@ -309,7 +360,15 @@ export function useHref<T extends URLBuilderParams>(
   const pageId = useSelector(getCurrentPageId);
 
   useEffect(() => {
-    if (pageId) setHref(urlBuilderFn(params));
+    if (pageId) {
+      try {
+        setHref(urlBuilderFn(params));
+      } catch (error) {
+        // If basePageId is not available yet, keep href as empty string
+        // This can happen during initial page load or navigation
+        setHref("");
+      }
+    }
   }, [params, urlBuilderFn, pageId]);
 
   return href;
@@ -337,6 +396,8 @@ export const groupWidgetCardsByTags = (widgetCards: WidgetCardProps[]) => {
       item.tags.forEach((tag) => {
         if (groupedCards[tag]) {
           groupedCards[tag].push(item);
+        } else {
+          groupedCards[tag] = [item];
         }
       });
     }
@@ -444,95 +505,5 @@ export function getModuleIcon(
     >
       <Icon name="module" />
     </EntityIcon>
-  );
-}
-
-export function getPluginImagesFromPlugins(plugins: Plugin[]) {
-  const pluginImages: Record<string, string> = {};
-
-  plugins.forEach((plugin) => {
-    pluginImages[plugin.id] = plugin?.iconLocation ?? ImageAlt;
-  });
-
-  return pluginImages;
-}
-
-/**
- * Resolve segment and segmentMode based on entity type.
- */
-export function getCurrentEntityInfo(entity: FocusEntity) {
-  switch (entity) {
-    case FocusEntity.QUERY:
-    case FocusEntity.API:
-    case FocusEntity.QUERY_MODULE_INSTANCE:
-      return {
-        segment: EditorEntityTab.QUERIES,
-        segmentMode: EditorEntityTabState.Edit,
-      };
-    case FocusEntity.QUERY_LIST:
-      return {
-        segment: EditorEntityTab.QUERIES,
-        segmentMode: EditorEntityTabState.List,
-      };
-    case FocusEntity.QUERY_ADD:
-      return {
-        segment: EditorEntityTab.QUERIES,
-        segmentMode: EditorEntityTabState.Add,
-      };
-    case FocusEntity.JS_OBJECT:
-    case FocusEntity.JS_MODULE_INSTANCE:
-      return {
-        segment: EditorEntityTab.JS,
-        segmentMode: EditorEntityTabState.Edit,
-      };
-    case FocusEntity.JS_OBJECT_ADD:
-      return {
-        segment: EditorEntityTab.JS,
-        segmentMode: EditorEntityTabState.Add,
-      };
-    case FocusEntity.JS_OBJECT_LIST:
-      return {
-        segment: EditorEntityTab.JS,
-        segmentMode: EditorEntityTabState.List,
-      };
-    case FocusEntity.CANVAS:
-      return {
-        segment: EditorEntityTab.UI,
-        segmentMode: EditorEntityTabState.Add,
-      };
-    case FocusEntity.PROPERTY_PANE:
-      return {
-        segment: EditorEntityTab.UI,
-        segmentMode: EditorEntityTabState.Edit,
-      };
-    case FocusEntity.WIDGET_LIST:
-      return {
-        segment: EditorEntityTab.UI,
-        segmentMode: EditorEntityTabState.List,
-      };
-    default:
-      return {
-        segment: EditorEntityTab.UI,
-        segmentMode: EditorEntityTabState.Add,
-      };
-  }
-}
-
-/**
- * Check if use is currently working is side-by-side editor mode.
- */
-export function isInSideBySideEditor({
-  appState,
-  segment,
-  viewMode,
-}: {
-  viewMode: EditorViewMode;
-  appState: EditorState;
-  segment: EditorEntityTab;
-}) {
-  return (
-    viewMode === EditorViewMode.SplitScreen &&
-    appState === EditorState.EDITOR &&
-    segment !== EditorEntityTab.UI
   );
 }

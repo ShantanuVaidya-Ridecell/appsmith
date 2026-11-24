@@ -5,13 +5,13 @@ import type {
   PropertyUpdates,
   SnipingModeProperty,
   WidgetCallout,
-} from "WidgetProvider/constants";
-import type { DerivedPropertiesMap } from "WidgetProvider/factory";
+} from "WidgetProvider/types";
+import type { DerivedPropertiesMap } from "WidgetProvider/factory/types";
 import { EventType } from "constants/AppsmithActionConstants/ActionConstants";
 import { WIDGET_TAGS } from "constants/WidgetConstants";
 import { ValidationTypes } from "constants/WidgetValidation";
 import type { SetterConfig } from "entities/AppTheming";
-import { EvaluationSubstitutionType } from "entities/DataTree/dataTreeFactory";
+import { EvaluationSubstitutionType } from "constants/EvaluationConstants";
 import _ from "lodash";
 import log from "loglevel";
 import { buildDeprecationWidgetMessage } from "pages/Editor/utils";
@@ -298,9 +298,11 @@ class FilePickerWidget extends BaseWidget<
       },
     ];
   }
+
   static getDefaultPropertiesMap(): Record<string, string> {
     return {};
   }
+
   static getDerivedPropertiesMap(): DerivedPropertiesMap {
     return {
       isValid: `{{ this.isRequired ? this.files.length > 0 : true }}`,

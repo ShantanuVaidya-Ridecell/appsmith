@@ -1,8 +1,8 @@
-import React from "react";
+import React, { useEffect } from "react";
 import { Redirect, useLocation } from "react-router-dom";
-import { connect, useSelector } from "react-redux";
+import { connect, useDispatch, useSelector } from "react-redux";
 import type { InjectedFormProps, DecoratedFormProps } from "redux-form";
-import { reduxForm, formValueSelector, isDirty } from "redux-form";
+import { reduxForm, formValueSelector, initialize, isDirty } from "redux-form";
 import {
   LOGIN_FORM_NAME,
   LOGIN_FORM_EMAIL_FIELD_NAME,
@@ -19,10 +19,18 @@ import {
   FORM_VALIDATION_INVALID_EMAIL,
   LOGIN_PAGE_LOGIN_BUTTON_TEXT,
   LOGIN_PAGE_FORGOT_PASSWORD_TEXT,
+  LOGIN_PAGE_ACCOUNT_ACTIVATION_NOTE,
+  LOGIN_PAGE_ACCOUNT_ACTIVATION_SSO_NOTE,
   LOGIN_PAGE_SIGN_UP_LINK_TEXT,
   LOGIN_PAGE_INVALID_CREDS_ERROR,
   LOGIN_PAGE_INVALID_CREDS_FORGOT_PASSWORD_LINK,
   NEW_TO_APPSMITH,
+  MULTI_ORG_FOOTER_NOT_RIGHT_ORG_LEFT_TEXT,
+  MULTI_ORG_FOOTER_NOT_RIGHT_ORG_RIGHT_TEXT,
+  MULTI_ORG_FOOTER_NOT_PART_OF_ORG_LEFT_TEXT,
+  MULTI_ORG_FOOTER_NOT_PART_OF_ORG_RIGHT_TEXT,
+  MULTI_ORG_FOOTER_CREATE_ORG_LEFT_TEXT,
+  MULTI_ORG_FOOTER_CREATE_ORG_RIGHT_TEXT,
   createMessage,
 } from "ee/constants/messages";
 import { FormGroup } from "@appsmith/ads-old";
@@ -45,14 +53,17 @@ import Container from "pages/UserAuth/Container";
 import {
   getThirdPartyAuths,
   getIsFormLoginEnabled,
-  getTenantConfig,
-} from "ee/selectors/tenantSelectors";
+  getOrganizationConfig,
+  isWithinAnOrganization,
+} from "ee/selectors/organizationSelectors";
 import Helmet from "react-helmet";
 import { useFeatureFlag } from "utils/hooks/useFeatureFlag";
 import { FEATURE_FLAG } from "ee/entities/FeatureFlag";
 import { getHTMLPageTitle } from "ee/utils/BusinessFeatures/brandingPageHelpers";
-import * as Sentry from "@sentry/react";
-import { Severity } from "@sentry/react";
+import CsrfTokenInput from "pages/UserAuth/CsrfTokenInput";
+import { appsmithTelemetry } from "instrumentation";
+import { getSafeErrorMessage } from "ee/constants/approvedErrorMessages";
+
 const validate = (values: LoginFormValues, props: ValidateProps) => {
   const errors: LoginFormValues = {};
   const email = values[LOGIN_FORM_EMAIL_FIELD_NAME] || "";
@@ -87,8 +98,11 @@ type ValidateProps = {
   { emailValue: string; isPasswordFieldDirty?: boolean }
 >;
 
+export const ACCOUNT_ACTIVATION_QUERY_PARAM = "activation";
+
 export function Login(props: LoginFormProps) {
   const { emailValue: email, error, valid } = props;
+  const dispatch = useDispatch();
   const isFormValid = valid && email && !isEmptyString(email);
   const location = useLocation();
   const isFormLoginEnabled = useSelector(getIsFormLoginEnabled);
@@ -97,28 +111,61 @@ export function Login(props: LoginFormProps) {
   const isBrandingEnabled = useFeatureFlag(
     FEATURE_FLAG.license_branding_enabled,
   );
-  const tentantConfig = useSelector(getTenantConfig);
-  const { instanceName } = tentantConfig;
+  const isMultiOrgEnabled = useFeatureFlag(
+    FEATURE_FLAG.license_multi_org_enabled,
+  );
+  const organizationConfig = useSelector(getOrganizationConfig);
+  const withinOrg = useSelector(isWithinAnOrganization);
+  const { displayName, instanceName, slug } = organizationConfig;
   const htmlPageTitle = getHTMLPageTitle(isBrandingEnabled, instanceName);
   const invalidCredsForgotPasswordLinkText = createMessage(
     LOGIN_PAGE_INVALID_CREDS_FORGOT_PASSWORD_LINK,
   );
   let showError = false;
   let errorMessage = "";
+  const isAccountActivation =
+    queryParams.get(ACCOUNT_ACTIVATION_QUERY_PARAM) === "true";
+  const activationEmail = isAccountActivation ? queryParams.get("email") : null;
   const currentUser = useSelector(getCurrentUser);
 
-  if (currentUser?.emptyInstance) {
+  // An invitation link opens this page with the invited email. The form starts with that email, and starts
+  // again with the new email when the page moves to another invitation link.
+  useEffect(
+    function startFormWithInvitedEmail() {
+      if (activationEmail) {
+        dispatch(
+          initialize(LOGIN_FORM_NAME, {
+            [LOGIN_FORM_EMAIL_FIELD_NAME]: activationEmail,
+          }),
+        );
+      }
+    },
+    [activationEmail, dispatch],
+  );
+
+  // This is mainly used to send an message to the agents extension to
+  //  show the screen when the user is not logged in
+  useEffect(function sendLoginToExtension() {
+    const loginURL = new URL(window.location.href);
+
+    window.parent.postMessage(
+      {
+        type: "APPSMITH_AUTH_REQUIRED",
+        loginURL: `${loginURL.origin}${loginURL.pathname}`,
+      },
+      "*",
+    );
+  }, []);
+
+  if (currentUser?.isEmptyInstance) {
     return <Redirect to={SETUP} />;
   }
 
   if (queryParams.get("error")) {
     errorMessage = queryParams.get("message") || queryParams.get("error") || "";
     showError = true;
-    Sentry.captureException("Login failed", {
-      level: Severity.Error,
-      extra: {
-        error: new Error(errorMessage),
-      },
+    appsmithTelemetry.captureException(new Error(errorMessage), {
+      errorName: "LoginError",
     });
   }
 
@@ -136,8 +183,35 @@ export function Login(props: LoginFormProps) {
   let forgotPasswordURL = `${FORGOT_PASSWORD_URL}`;
 
   if (props.emailValue && !isEmptyString(props.emailValue)) {
-    forgotPasswordURL += `?email=${props.emailValue}`;
+    forgotPasswordURL += `?email=${encodeURIComponent(props.emailValue)}`;
   }
+
+  const getPrimaryLoginURL = () => {
+    const hostnameParts = window.location.hostname.split(".");
+
+    hostnameParts[0] = "login";
+    const orgChangeURL = `https://${hostnameParts.join(".")}`;
+
+    return orgChangeURL;
+  };
+
+  const multiOrgFooterContent = [
+    {
+      leftText: createMessage(MULTI_ORG_FOOTER_NOT_RIGHT_ORG_LEFT_TEXT),
+      rightText: createMessage(MULTI_ORG_FOOTER_NOT_RIGHT_ORG_RIGHT_TEXT),
+      rightTextLink: getPrimaryLoginURL() + "/org",
+    },
+    {
+      leftText: createMessage(MULTI_ORG_FOOTER_NOT_PART_OF_ORG_LEFT_TEXT),
+      rightText: createMessage(MULTI_ORG_FOOTER_NOT_PART_OF_ORG_RIGHT_TEXT),
+      rightTextLink: signupURL,
+    },
+    {
+      leftText: createMessage(MULTI_ORG_FOOTER_CREATE_ORG_LEFT_TEXT),
+      rightText: createMessage(MULTI_ORG_FOOTER_CREATE_ORG_RIGHT_TEXT),
+      rightTextLink: getPrimaryLoginURL(),
+    },
+  ];
 
   const footerSection = isFormLoginEnabled && (
     <div className="px-2 flex align-center justify-center text-center text-[color:var(--ads-v2\-color-fg)] text-[14px]">
@@ -153,8 +227,57 @@ export function Login(props: LoginFormProps) {
     </div>
   );
 
+  const multiOrgFooterSection = (
+    <div className="px-2 flex flex-col gap-3 align-center justify-center text-center text-[color:var(--ads-v2\-color-fg)] text-[14px]">
+      {multiOrgFooterContent.map((item) => (
+        <div className="flex align-center justify-center" key={item.leftText}>
+          {item.leftText}&nbsp;
+          <Link
+            className="t--sign-up t--signup-link"
+            kind="primary"
+            target="_self"
+            to={item.rightTextLink}
+          >
+            {item.rightText}
+          </Link>
+        </div>
+      ))}
+    </div>
+  );
+
+  const renderTitle = () => {
+    if (isMultiOrgEnabled && withinOrg && displayName) {
+      return (
+        <>
+          Sign in to{" "}
+          <span style={{ color: "var(--ads-v2-color-fg-brand)" }}>
+            {displayName}
+          </span>
+        </>
+      );
+    }
+
+    return createMessage(LOGIN_PAGE_TITLE);
+  };
+
+  const renderSubtitle = () => {
+    if (isMultiOrgEnabled && withinOrg && slug) {
+      const lowercaseInstanceName = slug.toLowerCase();
+
+      return `${lowercaseInstanceName}.appsmith.com`;
+    }
+
+    return undefined;
+  };
+
   return (
-    <Container footer={footerSection} title={createMessage(LOGIN_PAGE_TITLE)}>
+    <Container
+      footer={
+        isMultiOrgEnabled && withinOrg ? multiOrgFooterSection : footerSection
+      }
+      subtitle={renderSubtitle()}
+      title={renderTitle()}
+    >
       <Helmet>
         <title>{htmlPageTitle}</title>
       </Helmet>
@@ -174,8 +297,30 @@ export function Login(props: LoginFormProps) {
           }
         >
           {!!errorMessage && errorMessage !== "true"
-            ? errorMessage
+            ? getSafeErrorMessage(errorMessage)
             : createMessage(LOGIN_PAGE_INVALID_CREDS_ERROR)}
+        </Callout>
+      )}
+      {isAccountActivation && !showError && (
+        <Callout
+          data-testid="t--account-activation-note"
+          kind="info"
+          links={
+            isFormLoginEnabled
+              ? [
+                  {
+                    children: createMessage(LOGIN_PAGE_FORGOT_PASSWORD_TEXT),
+                    to: forgotPasswordURL,
+                  },
+                ]
+              : undefined
+          }
+        >
+          {createMessage(
+            isFormLoginEnabled
+              ? LOGIN_PAGE_ACCOUNT_ACTIVATION_NOTE
+              : LOGIN_PAGE_ACCOUNT_ACTIVATION_SSO_NOTE,
+          )}
         </Callout>
       )}
       {socialLoginList.length > 0 && (
@@ -184,6 +329,7 @@ export function Login(props: LoginFormProps) {
       {isFormLoginEnabled && (
         <EmailFormWrapper>
           <SpacedSubmitForm action={loginURL} method="POST">
+            <CsrfTokenInput />
             <FormGroup
               intent={error ? "danger" : "none"}
               label={createMessage(LOGIN_PAGE_EMAIL_INPUT_LABEL)}

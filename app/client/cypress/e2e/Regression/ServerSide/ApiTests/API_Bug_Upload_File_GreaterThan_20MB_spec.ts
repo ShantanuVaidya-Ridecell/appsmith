@@ -13,7 +13,7 @@ const apiwidget = require("../../../../locators/apiWidgetslocator.json");
 //skipping this due to : https://github.com/appsmithorg/appsmith/issues/38156
 describe.skip(
   "To test [Bug]: A-force -> Not being able to upload file using binary format and multi part form data #34123",
-  { tags: ["@tag.Datasource", "@tag.Git", "@tag.AccessControl"] },
+  { tags: ["@tag.Datasource", "@tag.AccessControl"] },
   () => {
     // Bug: https://github.com/appsmithorg/appsmith/issues/34123
     it("1. Validate whether file >20MB can be uploaded", () => {
@@ -35,7 +35,7 @@ describe.skip(
       agHelper.UploadFile("FileGreaterThan20MB.json");
 
       // Assert that the file is selected
-      agHelper.AssertText(locators._buttonText, "text", "1 files selected");
+      agHelper.AssertText(locators._buttonText, "text", "1 file selected");
 
       // Step 3: Create and configure the API
       apiPage.CreateAndFillApi(

@@ -1,6 +1,7 @@
 package com.appsmith.server.git;
 
 import com.appsmith.external.git.constants.GitSpan;
+import com.appsmith.git.configurations.GitServiceConfig;
 import com.appsmith.server.constants.ArtifactType;
 import com.appsmith.server.exceptions.AppsmithError;
 import com.appsmith.server.exceptions.AppsmithException;
@@ -18,11 +19,13 @@ import static com.appsmith.server.helpers.GitUtils.RETRY_DELAY;
 
 @Slf4j
 @Component
+@Deprecated
 @RequiredArgsConstructor
 public class GitRedisUtils {
 
     private final RedisUtils redisUtils;
     private final ObservationRegistry observationRegistry;
+    private final GitServiceConfig gitServiceConfig;
 
     /**
      * Adds a baseArtifact id as a key in redis, the presence of this key represents a symbolic lock, essentially meaning that no new operations
@@ -33,7 +36,11 @@ public class GitRedisUtils {
      * @param isRetryAllowed : Boolean for whether retries for adding the value is allowed
      * @return a boolean publisher for the added file locks
      */
+    @Deprecated
     public Mono<Boolean> addFileLock(String key, String commandName, Boolean isRetryAllowed) {
+        if (gitServiceConfig.isGitInMemory()) {
+            return Mono.just(true);
+        }
         long numberOfRetries = Boolean.TRUE.equals(isRetryAllowed) ? MAX_RETRIES : 0L;
 
         log.info("Git command {} is trying to acquire the lock for identity {}", commandName, key);
@@ -41,6 +48,13 @@ public class GitRedisUtils {
                 .addFileLock(key, commandName)
                 .retryWhen(Retry.fixedDelay(numberOfRetries, RETRY_DELAY)
                         .onRetryExhaustedThrow((retryBackoffSpec, retrySignal) -> {
+                            log.warn(
+                                    "Git command {} could not acquire the lock for identity {} after {} retries",
+                                    commandName,
+                                    key,
+                                    retrySignal.totalRetries(),
+                                    retrySignal.failure());
+
                             if (retrySignal.failure() instanceof AppsmithException) {
                                 throw (AppsmithException) retrySignal.failure();
                             }
@@ -51,16 +65,26 @@ public class GitRedisUtils {
                 .tap(Micrometer.observation(observationRegistry));
     }
 
+    @Deprecated
     public Mono<Boolean> addFileLock(String baseArtifactId, String commandName) {
+        if (gitServiceConfig.isGitInMemory()) {
+            return Mono.just(true);
+        }
         String key = generateRedisKey(ArtifactType.APPLICATION, baseArtifactId);
         return addFileLock(key, commandName, true);
     }
 
+    @Deprecated
     public Mono<Boolean> releaseFileLock(String baseArtifactId) {
+        if (gitServiceConfig.isGitInMemory()) {
+            return Mono.just(true);
+        }
         String key = generateRedisKey(ArtifactType.APPLICATION, baseArtifactId);
 
         return redisUtils
                 .releaseFileLock(key)
+                .doOnError(error -> log.warn(
+                        "Failed to release the lock for identity {}, it stays held till it expires", key, error))
                 .name(GitSpan.RELEASE_FILE_LOCK)
                 .tap(Micrometer.observation(observationRegistry));
     }
@@ -75,8 +99,12 @@ public class GitRedisUtils {
      * @param isLockRequired : is lock really required or is it a proxy function
      * @return : Boolean for whether the lock is acquired
      */
+    @Deprecated
     public Mono<Boolean> acquireGitLock(
             ArtifactType artifactType, String baseArtifactId, String commandName, Boolean isLockRequired) {
+        if (gitServiceConfig.isGitInMemory()) {
+            return Mono.just(true);
+        }
         if (!Boolean.TRUE.equals(isLockRequired)) {
             return Mono.just(Boolean.TRUE);
         }
@@ -96,8 +124,16 @@ public class GitRedisUtils {
      * @param isLockRequired : is lock really required or is it a proxy function
      * @return : Boolean for whether the lock is released
      */
+    @Deprecated
     public Mono<Boolean> releaseFileLock(ArtifactType artifactType, String baseArtifactId, boolean isLockRequired) {
+        if (gitServiceConfig.isGitInMemory()) {
+            return Mono.just(true);
+        }
         if (!Boolean.TRUE.equals(isLockRequired)) {
+            log.debug(
+                    "Skipping the lock release for base artifact {} of type {}, the lock is not held by this operation",
+                    baseArtifactId,
+                    artifactType);
             return Mono.just(Boolean.TRUE);
         }
 
@@ -105,10 +141,13 @@ public class GitRedisUtils {
 
         return redisUtils
                 .releaseFileLock(key)
+                .doOnError(error -> log.warn(
+                        "Failed to release the lock for identity {}, it stays held till it expires", key, error))
                 .name(GitSpan.RELEASE_FILE_LOCK)
                 .tap(Micrometer.observation(observationRegistry));
     }
 
+    @Deprecated
     private String generateRedisKey(ArtifactType artifactType, String artifactId) {
         return artifactType.lowerCaseName() + "-" + artifactId;
     }

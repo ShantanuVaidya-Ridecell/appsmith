@@ -5,7 +5,6 @@ import com.appsmith.server.helpers.InstanceConfigHelper;
 import com.appsmith.server.repositories.CacheableRepositoryHelper;
 import com.appsmith.server.services.ConfigService;
 import io.micrometer.observation.annotation.Observed;
-import io.sentry.Sentry;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
@@ -47,7 +46,7 @@ public class InstanceConfig implements ApplicationListener<ApplicationReadyEvent
         Mono<Void> registrationAndRtsCheckMono = configService
                 .getByName(Appsmith.APPSMITH_REGISTERED)
                 .filter(config -> TRUE.equals(config.getConfig().get("value")))
-                .switchIfEmpty(Mono.defer(() -> instanceConfigHelper.registerInstance()))
+                .switchIfEmpty(Mono.defer(instanceConfigHelper::registerInstance))
                 .onErrorResume(errorSignal -> {
                     log.debug("Instance registration failed with error: \n{}", errorSignal.getMessage());
                     return Mono.empty();
@@ -60,25 +59,17 @@ public class InstanceConfig implements ApplicationListener<ApplicationReadyEvent
                 .flatMap(signal -> registrationAndRtsCheckMono)
                 // Prefill the server cache with anonymous user permission group ids.
                 .then(cacheableRepositoryHelper.preFillAnonymousUserPermissionGroupIdsCache())
-                // Add cold publisher as we have dependency on the instance registration
-                // TODO Update implementation to fetch license status for all the tenants once multi-tenancy is
-                //  introduced
+                // Cold publisher to wait for upstream execution to complete as we have dependency on the instance
+                // registration
                 .then(Mono.defer(instanceConfigHelper::isLicenseValid)
-                        // Ensure that the tenant feature flags are refreshed with the latest values after completing
-                        // the
+                        // Ensure that the org feature flags are refreshed with the latest values after completing the
                         // license verification process.
-                        .flatMap(isValid -> {
-                            log.debug(
-                                    "License verification completed with status: {}",
-                                    TRUE.equals(isValid) ? "valid" : "invalid");
-                            return instanceConfigHelper.updateCacheForTenantFeatureFlags();
-                        }));
+                        .flatMap(isValid -> instanceConfigHelper.updateCacheForOrganizationFeatureFlags()));
 
         try {
             startupProcess.block();
         } catch (Exception e) {
             log.debug("Application start up encountered an error: {}", e.getMessage());
-            Sentry.captureException(e);
         }
     }
 

@@ -1,9 +1,12 @@
 package com.appsmith.server.solutions;
 
 import com.appsmith.server.authentication.handlers.AuthenticationSuccessHandler;
-import com.appsmith.server.domains.Tenant;
-import com.appsmith.server.domains.TenantConfiguration;
+import com.appsmith.server.domains.LoginSource;
+import com.appsmith.server.domains.Organization;
+import com.appsmith.server.domains.OrganizationConfiguration;
 import com.appsmith.server.domains.User;
+import com.appsmith.server.domains.UserState;
+import com.appsmith.server.dtos.UserSignupRequestDTO;
 import com.appsmith.server.exceptions.AppsmithError;
 import com.appsmith.server.exceptions.AppsmithException;
 import com.appsmith.server.helpers.NetworkUtils;
@@ -12,7 +15,7 @@ import com.appsmith.server.services.AnalyticsService;
 import com.appsmith.server.services.CaptchaService;
 import com.appsmith.server.services.ConfigService;
 import com.appsmith.server.services.EmailService;
-import com.appsmith.server.services.TenantService;
+import com.appsmith.server.services.OrganizationService;
 import com.appsmith.server.services.UserDataService;
 import com.appsmith.server.services.UserService;
 import org.junit.jupiter.api.BeforeEach;
@@ -30,6 +33,8 @@ import static com.appsmith.server.helpers.ValidationUtils.LOGIN_PASSWORD_MAX_LEN
 import static com.appsmith.server.helpers.ValidationUtils.LOGIN_PASSWORD_MIN_LENGTH;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 
 @ExtendWith(SpringExtension.class)
 public class UserSignupTest {
@@ -64,11 +69,11 @@ public class UserSignupTest {
     private EmailService emailService;
 
     @MockBean
-    private TenantService tenantService;
+    private OrganizationService organizationService;
 
     private UserSignup userSignup;
 
-    private static Tenant tenant;
+    private static Organization organization;
 
     private static ServerWebExchange exchange;
 
@@ -85,15 +90,15 @@ public class UserSignupTest {
                 userUtils,
                 networkUtils,
                 emailService,
-                tenantService);
+                organizationService);
 
         exchange = Mockito.mock(ServerWebExchange.class);
         Mockito.when(exchange.getSession()).thenReturn(Mono.just(new MockWebSession()));
 
-        tenant = new Tenant();
-        TenantConfiguration configuration = new TenantConfiguration();
-        tenant.setTenantConfiguration(configuration);
-        Mockito.when(tenantService.getDefaultTenant()).thenReturn(Mono.just(tenant));
+        organization = new Organization();
+        OrganizationConfiguration configuration = new OrganizationConfiguration();
+        organization.setOrganizationConfiguration(configuration);
+        Mockito.when(organizationService.getCurrentUserOrganization()).thenReturn(Mono.just(organization));
     }
 
     private String createRandomString(int length) {
@@ -141,8 +146,8 @@ public class UserSignupTest {
         user.setEmail("testemail@test123.com");
         user.setPassword(createRandomString(LOGIN_PASSWORD_MAX_LENGTH - 1));
 
-        tenant.getTenantConfiguration().setIsStrongPasswordPolicyEnabled(true);
-        Mockito.when(tenantService.getDefaultTenant()).thenReturn(Mono.just(tenant));
+        organization.getOrganizationConfiguration().setIsStrongPasswordPolicyEnabled(true);
+        Mockito.when(organizationService.getCurrentUserOrganization()).thenReturn(Mono.just(organization));
         Mono<User> userMono = userSignup.signupAndLogin(user, exchange);
         StepVerifier.create(userMono)
                 .expectErrorSatisfies(throwable -> {
@@ -154,6 +159,59 @@ public class UserSignupTest {
                 })
                 .verify();
 
-        tenant.getTenantConfiguration().setIsStrongPasswordPolicyEnabled(false);
+        organization.getOrganizationConfiguration().setIsStrongPasswordPolicyEnabled(false);
+    }
+
+    @Test
+    public void signupAndLoginSuper_WhenSlotNotClaimed_RaisesUnauthorized() {
+        Mockito.when(userService.claimSuperUserCreationSlot()).thenReturn(Mono.just(false));
+
+        UserSignupRequestDTO request = new UserSignupRequestDTO();
+        request.setEmail("admin@test.com");
+        request.setPassword("ValidP@ssw0rd!");
+        request.setName("Admin");
+        request.setSource(LoginSource.FORM);
+        request.setState(UserState.ACTIVATED);
+        request.setIsEnabled(true);
+        request.setAllowCollectingAnonymousData(false);
+
+        Mono<User> result = userSignup.signupAndLoginSuper(request, "http://localhost", exchange);
+
+        StepVerifier.create(result)
+                .expectErrorSatisfies(error -> {
+                    assertTrue(error instanceof AppsmithException);
+                    assertEquals(AppsmithError.UNAUTHORIZED_ACCESS.getMessage(), error.getMessage());
+                })
+                .verify();
+
+        verify(userService, never()).isUsersEmpty();
+    }
+
+    @Test
+    public void signupAndLoginSuper_WhenSlotClaimedButUsersExist_RaisesUnauthorized() {
+        Mockito.when(userService.claimSuperUserCreationSlot()).thenReturn(Mono.just(true));
+        Mockito.when(userService.isUsersEmpty()).thenReturn(Mono.just(false));
+        Mockito.when(userService.releaseSuperUserCreationSlot()).thenReturn(Mono.empty());
+
+        UserSignupRequestDTO request = new UserSignupRequestDTO();
+        request.setEmail("admin@test.com");
+        request.setPassword("ValidP@ssw0rd!");
+        request.setName("Admin");
+        request.setSource(LoginSource.FORM);
+        request.setState(UserState.ACTIVATED);
+        request.setIsEnabled(true);
+        request.setAllowCollectingAnonymousData(false);
+
+        Mono<User> result = userSignup.signupAndLoginSuper(request, "http://localhost", exchange);
+
+        StepVerifier.create(result)
+                .expectErrorSatisfies(error -> {
+                    assertTrue(error instanceof AppsmithException);
+                    assertEquals(AppsmithError.UNAUTHORIZED_ACCESS.getMessage(), error.getMessage());
+                })
+                .verify();
+
+        verify(userService).isUsersEmpty();
+        verify(userService).releaseSuperUserCreationSlot();
     }
 }

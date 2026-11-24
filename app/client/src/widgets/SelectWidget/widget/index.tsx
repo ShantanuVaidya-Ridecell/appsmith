@@ -3,7 +3,7 @@ import { LabelPosition } from "components/constants";
 import { EventType } from "constants/AppsmithActionConstants/ActionConstants";
 import { ValidationTypes } from "constants/WidgetValidation";
 import type { SetterConfig, Stylesheet } from "entities/AppTheming";
-import { EvaluationSubstitutionType } from "entities/DataTree/dataTreeFactory";
+import { EvaluationSubstitutionType } from "constants/EvaluationConstants";
 import equal from "fast-deep-equal/es6";
 import { findIndex, isArray, isNil, isNumber, isString } from "lodash";
 import React from "react";
@@ -31,7 +31,7 @@ import derivedProperties from "./parseDerivedProperties";
 import type {
   AnvilConfig,
   AutocompletionDefinitions,
-} from "WidgetProvider/constants";
+} from "WidgetProvider/types";
 import {
   defaultOptionValueValidation,
   labelKeyValidation,
@@ -50,7 +50,7 @@ import { ResponsiveBehavior } from "layoutSystems/common/utils/constants";
 import type {
   SnipingModeProperty,
   PropertyUpdates,
-} from "WidgetProvider/constants";
+} from "WidgetProvider/types";
 
 import IconSVG from "../icon.svg";
 import ThumbnailSVG from "../thumbnail.svg";
@@ -61,6 +61,7 @@ class SelectWidget extends BaseWidget<SelectWidgetProps, WidgetState> {
   constructor(props: SelectWidgetProps) {
     super(props);
   }
+
   static type = "SELECT_WIDGET";
 
   static getConfig() {

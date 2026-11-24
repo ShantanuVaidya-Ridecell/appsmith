@@ -17,9 +17,10 @@ public class UserWorkspaceServiceImpl extends UserWorkspaceServiceCEImpl impleme
             UserRepository userRepository,
             UserDataService userDataService,
             PermissionGroupService permissionGroupService,
-            TenantService tenantService,
+            OrganizationService organizationService,
             WorkspacePermission workspacePermission,
-            PermissionGroupPermission permissionGroupPermission) {
+            PermissionGroupPermission permissionGroupPermission,
+            FeatureFlagService featureFlagService) {
 
         super(
                 sessionUserService,
@@ -27,8 +28,9 @@ public class UserWorkspaceServiceImpl extends UserWorkspaceServiceCEImpl impleme
                 userRepository,
                 userDataService,
                 permissionGroupService,
-                tenantService,
+                organizationService,
                 workspacePermission,
-                permissionGroupPermission);
+                permissionGroupPermission,
+                featureFlagService);
     }
 }

@@ -17,20 +17,20 @@ import { generateTypeDef } from "utils/autocomplete/defCreatorUtils";
 import type {
   AnvilConfig,
   AutocompletionDefinitions,
-} from "WidgetProvider/constants";
+} from "WidgetProvider/types";
 import type { SetterConfig } from "entities/AppTheming";
 import { ButtonVariantTypes, RecaptchaTypes } from "components/constants";
 import { Colors } from "constants/Colors";
 import { FILL_WIDGET_MIN_WIDTH } from "constants/minWidthConstants";
 import { GridDefaults, WIDGET_TAGS } from "constants/WidgetConstants";
-import type { CanvasWidgetsReduxState } from "reducers/entityReducers/canvasWidgetsReducer";
+import type { CanvasWidgetsReduxState } from "ee/reducers/entityReducers/canvasWidgetsReducer";
 import { getWidgetBluePrintUpdates } from "utils/WidgetBlueprintUtils";
 import { DynamicHeight } from "utils/WidgetFeatures";
-import { BlueprintOperationTypes } from "WidgetProvider/constants";
-import type { FlattenedWidgetProps } from "WidgetProvider/constants";
+import { BlueprintOperationTypes } from "WidgetProvider/types";
+import type { FlattenedWidgetProps } from "WidgetProvider/types";
 import IconSVG from "../icon.svg";
 import ThumbnailSVG from "../thumbnail.svg";
-import type { DerivedPropertiesMap } from "WidgetProvider/factory";
+import type { DerivedPropertiesMap } from "WidgetProvider/factory/types";
 import type { FlexLayer } from "layoutSystems/autolayout/utils/types";
 import type { LayoutProps } from "layoutSystems/anvil/utils/anvilTypes";
 import { formPreset } from "layoutSystems/anvil/layoutComponents/presets/FormPreset";
@@ -403,7 +403,14 @@ class FormWidget extends ContainerWidget {
     if (formWidget.children)
       formWidget.children.forEach((widgetData) => {
         if (!_.isNil(widgetData.value)) {
-          formData[widgetData.widgetName] = widgetData.value;
+          // In case of meta widget the widgetName may not be the original widgetName but something
+          // like _moduleInstanceName$_widgetName to maintain uniqueness in the page's context for eval.
+          // In this case we use the originalWidgetName may be present in the widgetData (if added by the creator of meta widget)
+          // to get the correct widgetName
+          const widgetName =
+            widgetData.originalWidgetName || widgetData.widgetName;
+
+          formData[widgetName] = widgetData.value;
         }
       });
 

@@ -1,5 +1,4 @@
-import React, { forwardRef } from "react";
-import { useFocusRing } from "@react-aria/focus";
+import React, { forwardRef, useCallback } from "react";
 import { useTextField } from "@react-aria/textfield";
 import clsx from "classnames";
 
@@ -23,6 +22,7 @@ import {
   InputEndIconClassName,
   InputIconClassName,
   InputStartIconClassName,
+  InputPostfixClassName,
 } from "./Input.constants";
 
 const Input = forwardRef<HTMLInputElement, InputProps>(
@@ -41,6 +41,7 @@ const Input = forwardRef<HTMLInputElement, InputProps>(
       label,
       labelPosition = "top",
       onChange,
+      postfix,
       renderAs = "input",
       size = "sm",
       startIcon,
@@ -55,7 +56,7 @@ const Input = forwardRef<HTMLInputElement, InputProps>(
     const { descriptionProps, errorMessageProps, inputProps, labelProps } =
       // @ts-expect-error fix this the next time the file is edited
       useTextField(props, inputRef);
-    const { focusProps, isFocusVisible } = useFocusRing();
+
     const {
       className: startIconClassName,
       onClick: startIconOnClick,
@@ -67,9 +68,12 @@ const Input = forwardRef<HTMLInputElement, InputProps>(
       ...restOfEndIconProps
     } = endIconProps || {};
 
-    const handleOnChange = (event: React.ChangeEvent<HTMLInputElement>) => {
-      onChange?.(event.target.value);
-    };
+    const handleOnChange = useCallback(
+      (event: React.ChangeEvent<HTMLInputElement>) => {
+        onChange?.(event.target.value);
+      },
+      [onChange],
+    );
 
     isValid = isValid === undefined ? !errorMessage : isValid;
 
@@ -116,7 +120,6 @@ const Input = forwardRef<HTMLInputElement, InputProps>(
             <StyledInput
               as={renderAs}
               type={type}
-              {...focusProps}
               {...inputProps}
               UNSAFE_height={UNSAFE_height}
               UNSAFE_width={UNSAFE_width}
@@ -124,31 +127,48 @@ const Input = forwardRef<HTMLInputElement, InputProps>(
               data-is-valid={isValid}
               disabled={disableTextInput || isDisabled}
               hasEndIcon={!!endIcon}
+              hasPostfix={!!postfix}
               hasStartIcon={!!startIcon}
               inputSize={size}
-              isFocusVisible={isFocusVisible}
               onChange={handleOnChange}
+              postfixSize={postfix?.length}
               readOnly={isReadOnly}
               ref={inputRef}
               renderer={renderAs}
+              size="1"
               value={value}
               {...rest}
             />
-            {/* End Icon Section */}
-            {endIcon && renderAs === "input" ? (
-              <Icon
-                className={clsx(
-                  InputIconClassName,
-                  InputEndIconClassName,
-                  endIconClassName,
+            {/* End Icon/Postfix Section */}
+            {renderAs === "input" && (
+              <>
+                {postfix && (
+                  <span
+                    className={clsx(InputPostfixClassName)}
+                    style={{
+                      color: "var(--ads-v2-colors-content-label-default)",
+                      userSelect: "none",
+                    }}
+                  >
+                    {postfix}
+                  </span>
                 )}
-                data-has-onclick={!!endIconOnClick}
-                name={endIcon}
-                onClick={endIconOnClick}
-                size={size}
-                {...restOfEndIconProps}
-              />
-            ) : null}
+                {endIcon && (
+                  <Icon
+                    className={clsx(
+                      InputIconClassName,
+                      InputEndIconClassName,
+                      endIconClassName,
+                    )}
+                    data-has-onclick={!!endIconOnClick}
+                    name={endIcon}
+                    onClick={endIconOnClick}
+                    size={size}
+                    {...restOfEndIconProps}
+                  />
+                )}
+              </>
+            )}
           </InputContainer>
           {description && (
             <Description

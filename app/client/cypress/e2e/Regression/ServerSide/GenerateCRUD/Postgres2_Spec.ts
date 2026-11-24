@@ -18,7 +18,7 @@ let dsName: any, newCallsign: any;
 
 describe(
   "Validate Postgres Generate CRUD with JSON Form",
-  { tags: ["@tag.Datasource", "@tag.Git", "@tag.AccessControl"] },
+  { tags: ["@tag.Datasource", "@tag.AccessControl"] },
   () => {
     before("Create DS for generate CRUD template test", () => {
       dataSources.CreateDataSource("Postgres");
@@ -28,7 +28,9 @@ describe(
     });
 
     it("1. Create new CRUD Table 'Vessels' and populate & refresh Entity Explorer to find the new table", () => {
-      const tableCreateQuery = `CREATE TABLE Vessels(
+      const tableCreateQuery = `DROP TABLE IF EXISTS Vessels;
+      
+      CREATE TABLE Vessels(
         SHIP_ID                  INTEGER  NOT NULL PRIMARY KEY
        ,CALLSIGN                 VARCHAR(7)
        ,SHIPNAME                 VARCHAR(30) NOT NULL
@@ -294,6 +296,7 @@ describe(
 
       agHelper.GetNClick(deployMode._clearDropdown);
       agHelper.GetNClick(deployMode._jsonSelectDropdown);
+      agHelper.ClickOutside();
 
       deployMode.ClearJSONFieldValue("Timezone");
       deployMode.ClearJSONFieldValue("Status Name");
@@ -637,7 +640,9 @@ describe(
     });
 
     it("17. Verify Deletion of the datasource when Pages/Actions associated are not removed yet", () => {
-      deployMode.DeployApp();
+      // Test 15 dropped the Vessels table, so the page's SelectQuery fails on
+      // load and its failure toast is expected here.
+      deployMode.DeployApp(undefined, false);
       deployMode.NavigateBacktoEditor();
       dataSources.DeleteDatasourceFromWithinDS(dsName, 409);
     });

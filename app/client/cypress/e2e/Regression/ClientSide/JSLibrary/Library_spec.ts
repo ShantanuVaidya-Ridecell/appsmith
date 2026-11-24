@@ -9,9 +9,10 @@ import {
   installer,
   draggableWidgets,
 } from "../../../../support/Objects/ObjectsCore";
-import {
+import EditorNavigation, {
   AppSidebar,
   AppSidebarButton,
+  EntityType,
   PageLeftPane,
   PagePaneSegment,
 } from "../../../../support/Pages/EditorNavigation";
@@ -32,6 +33,7 @@ describe(
       AppSidebar.navigate(AppSidebarButton.Editor);
       entityExplorer.DragDropWidgetNVerify(draggableWidgets.TABLE, 200, 200);
       PageLeftPane.switchSegment(PagePaneSegment.UI);
+      EditorNavigation.SelectEntityByName("Table1", EntityType.Widget);
       entityExplorer.RenameEntityFromExplorer("Table1", "jsonwebtoken");
       AppSidebar.navigate(AppSidebarButton.Libraries);
       installer.OpenInstaller();
@@ -68,7 +70,7 @@ describe(
       AppSidebar.navigate(AppSidebarButton.Libraries);
       installer.OpenInstaller();
       installer.InstallLibraryViaURL(
-        "https://cdn.jsdelivr.net/npm/fast-xml-parser@4.2.7/+esm",
+        "https://cdn.jsdelivr.net/npm/fast-xml-parser@4.5.4/+esm",
         "fast_xml_parser",
       );
       agHelper.Sleep(2000);
@@ -79,7 +81,7 @@ describe(
       // Reinstallation should succeed with the same accessor
       installer.OpenInstaller();
       installer.InstallLibraryViaURL(
-        "https://cdn.jsdelivr.net/npm/fast-xml-parser@4.2.7/+esm",
+        "https://cdn.jsdelivr.net/npm/fast-xml-parser@4.5.4/+esm",
         "fast_xml_parser",
       );
     });

@@ -6,24 +6,29 @@ import * as export_db from "./export_db";
 import * as import_db from "./import_db";
 import * as backup from "./backup";
 import * as restore from "./restore";
+import * as enable_form_login from "./enable_form_login";
 import * as check_replica_set from "./check_replica_set";
 import * as version from "./version";
 import * as mongo_shell_utils from "./mongo_shell_utils";
-import { config } from "dotenv";
+import { readEnvFile } from "./env-file";
 
 const APPLICATION_CONFIG_PATH = "/appsmith-stacks/configuration/docker.env";
 
 // Check if APPSMITH_DB_URL is set, if not set, fall back to APPSMITH_MONGODB_URI
-if (!process.env.APPSMITH_DB_URL) {
+if (!process.env.APPSMITH_DB_URL && process.env.APPSMITH_MONGODB_URI) {
   process.env.APPSMITH_DB_URL = process.env.APPSMITH_MONGODB_URI;
   delete process.env.APPSMITH_MONGODB_URI;
 }
 
-// Loading latest application configuration
-config({ path: APPLICATION_CONFIG_PATH });
+// Match the startup parser's literal/quoting rules while preserving external values.
+const configuration = readEnvFile(APPLICATION_CONFIG_PATH);
+
+for (const [name, value] of Object.entries(configuration)) {
+  if (process.env[name] === undefined) process.env[name] = value;
+}
 
 // AGAIN: Check if APPSMITH_DB_URL is set, if not set, fall back to APPSMITH_MONGODB_URI
-if (!process.env.APPSMITH_DB_URL) {
+if (!process.env.APPSMITH_DB_URL && process.env.APPSMITH_MONGODB_URI) {
   process.env.APPSMITH_DB_URL = process.env.APPSMITH_MONGODB_URI;
   delete process.env.APPSMITH_MONGODB_URI;
 }
@@ -60,6 +65,13 @@ if (["export-db", "export_db", "ex"].includes(command)) {
   version.exec();
 } else if (["mongo-eval", "mongo_eval", "mongoEval"].includes(command)) {
   mongo_shell_utils.exec();
+} else if (["efl", "enable-form-login"].includes(command)) {
+  console.log("Enabling form login");
+  try {
+    enable_form_login.run();
+  } catch (error) {
+    console.error("Failed to enable form login:", error.message);
+  }
 } else {
   showHelp();
 }

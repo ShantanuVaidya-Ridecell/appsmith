@@ -1,34 +1,23 @@
 import React, { useCallback, useEffect, useState } from "react";
 import styled from "styled-components";
 
-import AddDeployKey from "./AddDeployKey";
+import AddDeployKey from "git/components/common/AddDeployKey";
 import AnalyticsUtil from "ee/utils/AnalyticsUtil";
 import ChooseGitProvider from "./ChooseGitProvider";
 import GenerateSSH from "./GenerateSSH";
 import Steps from "./Steps";
 import Statusbar from "../../Statusbar";
 import { Button, ModalBody, ModalFooter, ModalHeader } from "@appsmith/ads";
-import { GIT_CONNECT_STEPS } from "./constants";
-import {
-  ADD_DEPLOY_KEY_STEP,
-  CHOOSE_A_GIT_PROVIDER_STEP,
-  CONFIGURE_GIT,
-  CONNECT_GIT_TEXT,
-  GENERATE_SSH_KEY_STEP,
-  GIT_CONNECT_WAITING,
-  GIT_IMPORT_WAITING,
-  IMPORT_APP,
-  IMPORT_APP_CTA,
-  PREVIOUS_STEP,
-  createMessage,
-} from "ee/constants/messages";
+import { GIT_CONNECT_STEPS } from "../../common/constants";
 import { isValidGitRemoteUrl } from "../../utils";
 import type { ConnectRequestParams } from "git/requests/connectRequest.types";
 import noop from "lodash/noop";
 import type { GitApiError } from "git/store/types";
-import type { ConnectFormDataState } from "./types";
+import type { ConnectFormDataState } from "../../common/types";
 import type { GitImportRequestParams } from "git/requests/gitImportRequest.types";
 import { GitErrorCodes } from "git/constants/enums";
+import { CONNECT_GIT, IMPORT_GIT } from "git/ee/constants/messages";
+import type { SSHKeyOption } from "../../common/types";
 
 const OFFSET = 200;
 const OUTER_PADDING = 32;
@@ -53,15 +42,15 @@ const StyledModalFooter = styled(ModalFooter)<StyledModalFooterProps>`
 const steps = [
   {
     key: GIT_CONNECT_STEPS.CHOOSE_PROVIDER,
-    text: createMessage(CHOOSE_A_GIT_PROVIDER_STEP),
+    text: CONNECT_GIT.CHOOSE_PROVIDER_STEP_TITLE,
   },
   {
     key: GIT_CONNECT_STEPS.GENERATE_SSH_KEY,
-    text: createMessage(GENERATE_SSH_KEY_STEP),
+    text: CONNECT_GIT.GENERATE_SSH_KEY_STEP_TITLE,
   },
   {
     key: GIT_CONNECT_STEPS.ADD_DEPLOY_KEY,
-    text: createMessage(ADD_DEPLOY_KEY_STEP),
+    text: CONNECT_GIT.ADD_DEPLOY_KEY_STEP_TITLE,
   },
 ];
 
@@ -82,26 +71,56 @@ export interface ConnectInitializeProps {
   onOpenImport: (() => void) | null;
   onSubmit: (params: ConnectRequestParams | GitImportRequestParams) => void;
   sshPublicKey: string | null;
+  /**
+   * Whether the SSH key manager feature is enabled
+   */
+  isSSHKeyManagerEnabled?: boolean;
+  /**
+   * List of available SSH keys from the SSH key manager
+   */
+  availableSSHKeys?: SSHKeyOption[];
+  /**
+   * Whether the SSH keys list is loading
+   */
+  isSSHKeysLoading?: boolean;
+  /**
+   * Current user's email (to determine key ownership)
+   */
+  currentUserEmail?: string;
+  /**
+   * Callback to fetch SSH keys (called only when user chooses "Use existing key")
+   */
+  onFetchSSHKeys?: () => void;
+  /**
+   * Callback to navigate to SSH key creation (shown when no keys exist)
+   */
+  onCreateSSHKey?: () => void;
 }
 
 function ConnectInitialize({
   artifactType,
+  availableSSHKeys = [],
+  currentUserEmail,
   error = null,
   isImport = false,
   isSSHKeyLoading = false,
+  isSSHKeyManagerEnabled = false,
+  isSSHKeysLoading = false,
   isSubmitLoading = false,
+  onCreateSSHKey = noop,
   onFetchSSHKey = noop,
+  onFetchSSHKeys = noop,
   onGenerateSSHKey = noop,
   onOpenImport = null,
   onSubmit = noop,
   sshPublicKey = null,
 }: ConnectInitializeProps) {
   const nextStepText = {
-    [GIT_CONNECT_STEPS.CHOOSE_PROVIDER]: createMessage(CONFIGURE_GIT),
-    [GIT_CONNECT_STEPS.GENERATE_SSH_KEY]: createMessage(GENERATE_SSH_KEY_STEP),
-    [GIT_CONNECT_STEPS.ADD_DEPLOY_KEY]: createMessage(
-      isImport ? IMPORT_APP_CTA : CONNECT_GIT_TEXT,
-    ),
+    [GIT_CONNECT_STEPS.CHOOSE_PROVIDER]: CONNECT_GIT.CHOOSE_PROVIDER_CTA,
+    [GIT_CONNECT_STEPS.GENERATE_SSH_KEY]: CONNECT_GIT.GENERATE_SSH_KEY_CTA,
+    [GIT_CONNECT_STEPS.ADD_DEPLOY_KEY]: isImport
+      ? IMPORT_GIT.IMPORT_CTA
+      : CONNECT_GIT.CONNECT_CTA,
   };
 
   const [formData, setFormData] = useState<ConnectFormDataState>({
@@ -111,6 +130,8 @@ function ConnectInitialize({
     remoteUrl: undefined,
     isAddedDeployKey: false,
     sshKeyType: "ECDSA",
+    sshKeySource: "generate",
+    sshKeyId: undefined,
   });
 
   const [activeStep, setActiveStep] = useState<string>(
@@ -171,32 +192,31 @@ function ConnectInitialize({
           };
 
           if (formData.remoteUrl) {
-            onSubmit({
+            const params: ConnectRequestParams | GitImportRequestParams = {
               remoteUrl: formData.remoteUrl,
               gitProfile,
-            });
-            // if (!isImport) {
-            //   AnalyticsUtil.logEvent(
-            //     "GS_CONNECT_BUTTON_ON_GIT_SYNC_MODAL_CLICK",
-            //     { repoUrl: formData?.remoteUrl, connectFlow: "v2" },
-            //   );
-            //   connect({
-            //     remoteUrl: formData.remoteUrl,
-            //     gitProfile,
-            //   });
-            // } else {
-            //   gitImport({
-            //     remoteUrl: formData.remoteUrl,
-            //     gitProfile,
-            //   });
-            // }
+            };
+
+            // Include sshKeyId if using an existing key
+            if (formData.sshKeySource === "existing" && formData.sshKeyId) {
+              params.sshKeyId = formData.sshKeyId;
+            }
+
+            onSubmit(params);
           }
 
           break;
         }
       }
     }
-  }, [activeStep, currentIndex, formData.remoteUrl, onSubmit]);
+  }, [
+    activeStep,
+    currentIndex,
+    formData.remoteUrl,
+    formData.sshKeySource,
+    formData.sshKeyId,
+    onSubmit,
+  ]);
 
   useEffect(
     function changeStepOnErrorEffect() {
@@ -210,7 +230,7 @@ function ConnectInitialize({
   return (
     <>
       <ModalHeader>
-        {isImport ? createMessage(IMPORT_APP) : createMessage(CONFIGURE_GIT)}
+        {isImport ? IMPORT_GIT.MODAL_TITLE : CONNECT_GIT.MODAL_TITLE}
       </ModalHeader>
       <StyledModalBody>
         {possibleSteps.includes(activeStep) && (
@@ -234,11 +254,17 @@ function ConnectInitialize({
         )}
         {activeStep === GIT_CONNECT_STEPS.ADD_DEPLOY_KEY && (
           <AddDeployKey
+            availableSSHKeys={availableSSHKeys}
+            currentUserEmail={currentUserEmail}
             error={error}
             isSSHKeyLoading={isSSHKeyLoading}
+            isSSHKeyManagerEnabled={isSSHKeyManagerEnabled}
+            isSSHKeysLoading={isSSHKeysLoading}
             isSubmitLoading={isSubmitLoading}
             onChange={handleChange}
+            onCreateSSHKey={onCreateSSHKey}
             onFetchSSHKey={onFetchSSHKey}
+            onFetchSSHKeys={onFetchSSHKeys}
             onGenerateSSHKey={onGenerateSSHKey}
             sshPublicKey={sshPublicKey}
             value={formData}
@@ -249,9 +275,7 @@ function ConnectInitialize({
         {isSubmitLoading && (
           <Statusbar
             completed={!isSubmitLoading}
-            message={createMessage(
-              isImport ? GIT_IMPORT_WAITING : GIT_CONNECT_WAITING,
-            )}
+            message={isImport ? IMPORT_GIT.WAIT_TEXT : CONNECT_GIT.WAIT_TEXT}
           />
         )}
         {!isSubmitLoading && (
@@ -278,7 +302,7 @@ function ConnectInitialize({
               size="md"
               startIcon="arrow-left-s-line"
             >
-              {createMessage(PREVIOUS_STEP)}
+              {CONNECT_GIT.PREV_STEP}
             </Button>
           )}
       </StyledModalFooter>

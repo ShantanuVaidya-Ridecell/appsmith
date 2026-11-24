@@ -13,13 +13,7 @@ import EditorNavigation, {
 describe(
   "JSObjects OnLoad Actions tests",
   {
-    tags: [
-      "@tag.PropertyPane",
-      "@tag.JS",
-      "@tag.ImportExport",
-      "@tag.Binding",
-      "@tag.Git",
-    ],
+    tags: ["@tag.PropertyPane", "@tag.JS", "@tag.ImportExport", "@tag.Binding"],
   },
   function () {
     before(() => {
@@ -94,7 +88,7 @@ describe(
         },
       );
 
-      jsEditor.EnableDisableAsyncFuncSettings("astros", true);
+      jsEditor.EnableDisableAsyncFuncSettings("astros", "On page load");
 
       EditorNavigation.SelectEntityByName("Page1", EntityType.Page);
       agHelper.RefreshPage();

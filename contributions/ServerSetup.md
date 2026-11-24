@@ -17,17 +17,20 @@ There are two ways to run Appsmith server.
 Running the Appsmith Docker image as a container will grant you a running Appsmith server, along with its dependencies, like MongoDB and Redis. This is the easiest way to get started with Appsmith server.
 
 1. Clone the Appsmith repository and change into it
-    ```
+
+    ```console
     git clone https://github.com/appsmithorg/appsmith.git
     cd appsmith
     ```
 
 2. Change your directory to `deploy/docker`
+
     ```console
     cd deploy/docker
     ```
 
 3. Start
+
     ```console
     docker-compose up -d
     ```
@@ -41,14 +44,29 @@ As the server codebase is written in Java and is powered by Spring + WebFlux we 
 ### Pre-requisites
 Before you can start to hack on the Appsmith server, your machine should have the following installed:
 
-- Java - OpenJDK 17.
-- Maven - Version 3+ (preferably 3.6).
+- Java - OpenJDK 25 (Eclipse Temurin recommended).
+- Maven - Version 3.9+ (preferably 3.9.12).
+- Node.js - Version 24.14.1 (required for RTS server). You can use a node version manager like [nvm](https://github.com/nvm-sh/nvm) or [fnm](https://github.com/Schniz/fnm) to manage Node versions.
 - A MongoDB database - Refer to the [Setting up a local MongoDB instance](#setting-up-a-local-mongodb-instance) section to setup a MongoDB instance using `Docker`.
 - A Redis instance - Refer to the [Setting up a local Redis instance](#setting-up-a-local-redis-instance) section to setup a Redis instance using `Docker`.
 - An IDE - We use IntelliJ IDEA as our primary IDE for backend development. To set it up, refer to the [Setting up IntelliJ IDEA](#setting-up-intellij-idea) section.
 
 This document doesn't provide instructions to install Java and Maven because these vary between different operating systems and distributions. Please refer to the documentation of your operating system or package manager to install these. Next we will setup MongoDB and Redis using `Docker`.
 
+#### Verify your Java and Maven versions
+Before continuing, make sure the binaries on your `PATH` point to Java 25:
+
+```bash
+java -version
+mvn -v
+echo $JAVA_HOME
+```
+
+You should see `25` in the `java -version` output, and `mvn -v` should report `Java version: 25`. If another major version appears, Maven will fail to build the server because Appsmith targets Java 25.
+
+> If `java -version` or `mvn -v` show a different JDK, switch your environment to 25 before proceeding. On macOS you can run `export JAVA_HOME=$(/usr/libexec/java_home -v 25)` and restart the terminal; on Linux/Windows use your JDK manager (e.g. `sdkman`, `jenv`, OS package manager) to activate a Java 25 installation and update `JAVA_HOME`.
+
+After updating `JAVA_HOME`, confirm `echo $JAVA_HOME` points to the Java 25 directory and re-run the commands above until the outputs reference version 25.
 
 ### Setting up a local MongoDB instance
 * The following command will start a MongoDB docker instance locally:
@@ -68,10 +86,12 @@ This document doesn't provide instructions to install Java and Maven because the
 
         Please follow the below steps for enabling the replica set with mongo running inside the docker
         1. Connect to the mongo db running with a mongo shell. Use the below command
-            ```
+
+            ```console
             mongosh
             ```
         2. Once you are inside the mongo shell run the below command.
+
             ```
             rs.initiate({"_id": "rs0", "members" : [{"_id":0 , "host": "localhost:27017" }]})
             ```
@@ -84,6 +104,7 @@ This document doesn't provide instructions to install Java and Maven because the
             mongod --port 27017 --dbpath <path/to/db> --replSet <replica-set-name> && mongo --eval “rs.initiate()”
             ```
         - One can use following commands to check replica set status:
+
             ```
             mongo appsmith
             rs.status()
@@ -116,7 +137,7 @@ With the prerequisites met, let's build the code.
     This generates a bunch of classes required by IntelliJ for compiling the rest of the source code. Without this step, your IDE may complain about missing classes and will be unable to compile the code.
 
 4. Setup Environment file
-    - Create a copy of the `envs/dev.env.example`
+    - Create a copy of the `envs/dev.env.example` (run from `app/server`):
 
         ```console
         cp envs/dev.env.example .env
@@ -127,11 +148,12 @@ With the prerequisites met, let's build the code.
 5. Ensure that the environment variables `APPSMITH_DB_URL` and `APPSMITH_REDIS_URI` in the file `.env` point to your local running instances of MongoDB and Redis.
 
 6.  **Update the replica set name with correct value in the mongo connection string in the [.env](#setup-environment-file) file.** The replica name is the same as passed [here](#setting-up-a-local-mongodb-instance)
+
     ```bash
     APPSMITH_DB_URL="mongodb://localhost:27017/appsmith?replicaSet=<replica-set-name>"
     ```
 
-7. Run the following command to create the final JAR for the Appsmith server:
+7. Run the following command from `app/server` to create the final JAR for the Appsmith server:
 
     ```console
     ./build.sh -Dmaven.test.skip
@@ -151,15 +173,57 @@ With the prerequisites met, let's build the code.
     - #### Linux/Ubuntu Environments
         - On Ubuntu Linux environment docker needs root privilege, hence `./build.sh` script needs to be run with root privilege as well.
         - On Ubuntu Linux environment, the script may not be able to read `.env` file, so it is advised that you run the cmd like:
+
             ```console
             sudo APPSMITH_DB_URL="mongodb://localhost:27017/appsmith" APPSMITH_REDIS_URL="redis://127.0.0.1:6379" APPSMITH_MAIL_ENABLED=false APPSMITH_ENCRYPTION_PASSWORD=abcd APPSMITH_ENCRYPTION_SALT=abcd ./build.sh
             ```
 
+8. Create a folder named `git-storage` (or another name you prefer) anywhere on your machine. Then set `APPSMITH_GIT_ROOT` to the absolute path of that folder so Git data persists outside the repo and works from any working directory.
 
+```console
+APPSMITH_GIT_ROOT=/absolute/path/to/git-storage
+```
 
-8. Start the Java server by running
+9. Start the RTS (Real-Time Server) **before** the Java server (required).
+
+    The backend server expects RTS to be running; without it, backend startup and collaborative/WebSocket flows will fail.
+
+    **Steps to run RTS:**
+
+    1. Ensure you have Node.js 24.14.1 installed. If you have a different version, use a node version manager:
+
+        ```console
+        nvm use 24.14.1
+        ```
+        or
+        ```console
+        fnm use 24.14.1
+        ```
+
+    2. Navigate to the RTS directory (from repo root):
+
+        ```console
+        cd app/client/packages/rts
+        ```
+
+    3. Create the environment file:
+    
+        ```console
+        cp .env.example .env
+        ```
+
+    4. Start the RTS server:
+
+        ```console
+        ./start-server.sh
+        ```
+
+        Keep this terminal running; RTS must stay up while the Java server is running.
+
+10. Start the Java server by running from repo root:
+
     ```console
-    ./scripts/start-dev-server.sh
+    ./app/server/scripts/start-dev-server.sh
     ```
 
     - By default, the server will start on port 8080.
@@ -177,8 +241,9 @@ Before you can start to hack on the Appsmith server, your machine should have th
 - WSL2 with Linux distro (preferably Ubuntu LTS). Refer to [WSL2 installation on Windows](https://docs.microsoft.com/en-us/windows/wsl/install).
 - Docker Desktop for Windows (must be with WSL backed/based engine). Refer to [Install Docker Desktop on Windows](https://docs.docker.com/desktop/windows/install/).
 - An IDE - We use IntelliJ IDEA as our primary IDE for backend development.
-- Java - OpenJDK 17 in WSL.
-- Maven - Version 3+ (preferably 3.6) in WSL.
+- Java - OpenJDK 25 (Eclipse Temurin recommended) in WSL.
+- Maven - Version 3.9+ (preferably 3.9.12) in WSL.
+- Node.js - Version 24.14.1 in WSL (required for RTS server). You can use a node version manager like [nvm](https://github.com/nvm-sh/nvm) or [fnm](https://github.com/Schniz/fnm) to manage Node versions.
 
 This document doesn't provide instructions to install Java and Maven because these vary between different operating systems and distributions. Please refer to the documentation of your operating system or package manager to install these.
 
@@ -234,10 +299,10 @@ Note that you have to execute further steps into WSL terminal not in CMD.
 
 ### Setting up local file path for the git
 
-To point to a custom Git Root where the git repositories will be persisted, update the env variable called APPSMITH_GIT_ROOT to point to your custom file path.
+Create a folder named `git-storage` (or another name you prefer) on your system drive, then set `APPSMITH_GIT_ROOT` to that folder’s absolute path so Git data persists outside the repo and resolves correctly across shells (WSL vs Windows CMD).
 
 ```console
-APPSMITH_GIT_ROOT=./path/to/repo/directory
+APPSMITH_GIT_ROOT=/absolute/path/to/git-storage
 ```
 
 ## Building and running the code
@@ -252,7 +317,7 @@ mvn clean compile
 
 This generates a bunch of classes required by IntelliJ for compiling the rest of the source code. Without this step, your IDE may complain about missing classes and will be unable to compile the code.
 
-4. Create a copy of the `envs/dev.env.example`
+4. Create a copy of the `envs/dev.env.example` (run from `app/server`):
 
 ```console
 cp envs/dev.env.example .env
@@ -262,7 +327,7 @@ This command creates a `.env` file in the `app/server` folder. All run scripts p
 
 5. Ensure that the environment variables `APPSMITH_DB_URL` and `APPSMITH_REDIS_URI` in the file `.env` point to your local running instances of MongoDB and Redis.
 
-6. Run the following command to create the final JAR for the Appsmith server:
+6. Run the following command from `app/server` to create the final JAR for the Appsmith server:
 
 ```console
 ./build.sh -DskipTests
@@ -272,7 +337,8 @@ This command will create a `dist` folder which contains the final packaged jar a
 Note:
 - If you want to run the tests, you can remove `-DskipTests` flag from the build cmd.
 - On Ubuntu Linux environment docker needs root privilege, hence ./build.sh script needs to be run with root privilege as well.
-- On Ubuntu Linux environment, the script may not be able to read .env file, so it is advised that you run the cmd like:
+- On Ubuntu Linux environment, the script may not be able to read .env file, so it is advised that you run the cmd from `app/server` like:
+
 ```console
 sudo APPSMITH_DB_URL="mongodb://localhost:27017/appsmith" APPSMITH_REDIS_URL="redis://127.0.0.1:6379" APPSMITH_MAIL_ENABLED=false APPSMITH_ENCRYPTION_PASSWORD=abcd APPSMITH_ENCRYPTION_SALT=abcd ./build.sh
 ```
@@ -283,17 +349,53 @@ Check failed: Docker environment should have more than 2GB free disk space.
 There are two ways to resolve this issue: (1) free up more space (2) change docker's data root path.
 
 
-7. Start the Java server by running
+7. Start the RTS (Real-Time Server) **before** the Java server (required).
+
+    The backend server expects RTS to be running; without it, backend startup and collaborative/WebSocket flows will fail.
+
+    **Steps to run RTS:**
+
+    1. Ensure you have Node.js 24.14.1 installed. If you have a different version, use a node version manager:
+
+        ```console
+        nvm use 24.14.1
+        ```
+        or
+        ```console
+        fnm use 24.14.1
+        ```
+
+    2. Navigate to the RTS directory (from repo root):
+
+        ```console
+        cd app/client/packages/rts
+        ```
+
+    3. Create the environment file:
+
+        ```console
+        cp .env.example .env
+        ```
+
+    4. Start the RTS server:
+
+        ```console
+        ./start-server.sh
+        ```
+
+        Keep this terminal running; RTS must stay up while the Java server is running.
+
+8. Start the Java server by running from repo root:
 
 ```console
-./scripts/start-dev-server.sh
+./app/server/scripts/start-dev-server.sh
 ```
 
 By default, the server will start on port 8080.
 
-8. When the server starts, it automatically runs migrations on MongoDB and will populate it with some initial required data.
+9. When the server starts, it automatically runs migrations on MongoDB and will populate it with some initial required data.
 
-9. You can check the status of the server by hitting the endpoint: [http://localhost:8080](http://localhost:8080) on your browser. By default you should see an HTTP 401 error.
+10. You can check the status of the server by hitting the endpoint: [http://localhost:8080](http://localhost:8080) on your browser. By default you should see an HTTP 401 error.
 
 Now the last bit, let's get your Intellij IDEA up and running.
 
@@ -328,16 +430,34 @@ After configuring settings as mentioned above, please also add the following to 
 Happy hacking ✌️
 
 #### Note:
-In case the server doesn't work with the above config, please try re-compiling the code using the steps
+In case the server doesn't work with the above config, please try re-compiling the code from `app/server` using the steps:
 
 ```console
 mvn -B clean compile && ./build.sh -DskipTests
 ```
 ## Running Tests on Server
 
+MongoDB-backed JUnit tests use an isolated replica set started by Flapdoodle. The
+MongoDB version is pinned in
+`app/server/appsmith-server/src/test/resources/application-test.properties`.
+Flapdoodle downloads the build for the operating system and CPU architecture and
+caches it under `~/.embedmongo`. A separately installed MongoDB is not required for
+these tests. On Apple Silicon, use an ARM64 JDK; `mvn -v` should report `aarch64` or
+`arm64` as the architecture.
+
+To check native MongoDB startup, platform package selection, and transaction
+commit/rollback without starting Redis, run from `app/server`:
+
+```bash
+mvn -pl appsmith-server -am test \
+  -Dtest=EmbeddedMongoPackageTest,EmbeddedMongoTest \
+  -Dsurefire.failIfNoSpecifiedTests=false
+```
+
 1. Ensure that you have Redis running on your local system.
 
-2. Run the command to execute tests
+2. Run the command to execute tests from repo root:
+
 ```console
   cd app/server
   mvn clean package

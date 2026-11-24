@@ -31,7 +31,7 @@ import type {
   DataTreeEvaluationProps,
   WidgetDynamicPathListProps,
 } from "utils/DynamicBindingUtils";
-import type { DerivedPropertiesMap } from "WidgetProvider/factory";
+import type { DerivedPropertiesMap } from "WidgetProvider/factory/types";
 import type {
   AnvilConfig,
   AutoLayoutConfig,
@@ -40,9 +40,9 @@ import type {
   WidgetBaseConfiguration,
   WidgetDefaultProps,
   WidgetMethods,
-} from "../WidgetProvider/constants";
+} from "WidgetProvider/types";
 import type { WidgetEntity } from "ee/entities/DataTree/types";
-import type { AutocompletionDefinitions } from "../WidgetProvider/constants";
+import type { AutocompletionDefinitions } from "WidgetProvider/types";
 import type {
   FlexVerticalAlignment,
   LayoutDirection,
@@ -53,7 +53,7 @@ import store from "store";
 import { selectFeatureFlags } from "ee/selectors/featureFlagsSelectors";
 import type { WidgetFeatures } from "utils/WidgetFeatures";
 import { LayoutSystemTypes } from "layoutSystems/types";
-import type { CanvasWidgetsReduxState } from "reducers/entityReducers/canvasWidgetsReducer";
+import type { CanvasWidgetsReduxState } from "ee/reducers/entityReducers/canvasWidgetsReducer";
 import type {
   CopiedWidgetData,
   PasteDestinationInfo,
@@ -488,6 +488,7 @@ export interface WidgetBaseProps {
   hasAutoHeight?: boolean;
   hasAutoWidth?: boolean;
   widgetSize?: { [key: string]: Record<string, string> };
+  originalWidgetName?: string; // When a widget is a meta widget, this prop stores the original widget name
 }
 
 export interface WidgetRowCols {
@@ -527,6 +528,7 @@ export interface WidgetPositionProps extends WidgetRowCols {
 
 export interface WidgetCanvasProps {
   isWidgetSelected?: boolean;
+  isDeletable?: boolean;
 }
 
 export const WIDGET_DISPLAY_PROPS = {

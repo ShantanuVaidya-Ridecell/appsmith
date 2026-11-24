@@ -11,7 +11,7 @@ import log from "loglevel";
 import type {
   CanvasWidgetsReduxState,
   FlattenedWidgetProps,
-} from "reducers/entityReducers/canvasWidgetsReducer";
+} from "ee/reducers/entityReducers/canvasWidgetsReducer";
 import { all, call, put, select, take } from "redux-saga/effects";
 import {
   getCanvasWidth,
@@ -24,7 +24,7 @@ import { getCopiedWidgets, saveCopiedWidgets } from "utils/storage";
 import { getWidgets, getWidgetsMeta } from "../selectors";
 
 import { builderURL } from "ee/RouteBuilder";
-import { BlueprintOperationTypes } from "WidgetProvider/constants";
+import { BlueprintOperationTypes } from "WidgetProvider/types";
 import { generateAutoHeightLayoutTreeAction } from "actions/autoHeightActions";
 import type { DataTree } from "entities/DataTree/dataTreeTypes";
 import { nextAvailableRowInContainer } from "entities/Widget/utils";
@@ -183,7 +183,7 @@ export function* loadBuildingBlocksIntoApplication(
   try {
     const dragDetails: DragDetails = yield select(getDragDetails);
     const applicationId: string = yield select(getCurrentApplicationId);
-    const workspaceId: string = yield select(getCurrentWorkspaceId);
+    const loadWorkspaceId: string = yield select(getCurrentWorkspaceId);
     const existingCopiedWidgets: unknown = yield call(getCopiedWidgets);
     const buildingBlockDragStartTimestamp: number = yield select(
       getBuildingBlockDragStartTimestamp,
@@ -272,7 +272,7 @@ export function* loadBuildingBlocksIntoApplication(
 
       AnalyticsUtil.logEvent("DROP_BUILDING_BLOCK_COMPLETED", {
         applicationId,
-        workspaceId,
+        workspaceId: loadWorkspaceId,
         source: "explorer",
         eventData: {
           buildingBlockName: dragDetails.newWidget.displayName,

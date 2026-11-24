@@ -8,6 +8,7 @@ import com.appsmith.external.exceptions.pluginExceptions.StaleConnectionExceptio
 import com.appsmith.external.models.ActionConfiguration;
 import com.appsmith.external.models.ActionExecutionRequest;
 import com.appsmith.external.models.ActionExecutionResult;
+import com.appsmith.external.models.ConnectionContext;
 import com.appsmith.external.models.DBAuth;
 import com.appsmith.external.models.DatasourceConfiguration;
 import com.appsmith.external.models.DatasourceStructure;
@@ -29,6 +30,7 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.JsonNodeType;
 import com.fasterxml.jackson.databind.node.NullNode;
 import com.zaxxer.hikari.HikariDataSource;
+import io.micrometer.observation.ObservationRegistry;
 import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -86,10 +88,15 @@ public class PostgresPluginTest {
         public Mono<Integer> getMaxConnectionPoolSize() {
             return Mono.just(5);
         }
+
+        @Override
+        public Mono<Integer> getSocketTimeoutSeconds() {
+            return Mono.just(600);
+        }
     }
 
-    PostgresPlugin.PostgresPluginExecutor pluginExecutor =
-            new PostgresPlugin.PostgresPluginExecutor(new MockSharedConfig(), new MockConnectionPoolConfig());
+    PostgresPlugin.PostgresPluginExecutor pluginExecutor = new PostgresPlugin.PostgresPluginExecutor(
+            new MockSharedConfig(), new MockConnectionPoolConfig(), ObservationRegistry.NOOP);
 
     @SuppressWarnings("rawtypes") // The type parameter for the container type is just itself and is pseudo-optional.
     @Container
@@ -547,7 +554,7 @@ public class PostgresPluginTest {
 
         DatasourceConfiguration dsConfig = createDatasourceConfiguration();
 
-        Mono<HikariDataSource> dsConnectionMono = pluginExecutor.datasourceCreate(dsConfig);
+        Mono<ConnectionContext<HikariDataSource>> dsConnectionMono = pluginExecutor.datasourceCreate(dsConfig);
 
         StepVerifier.create(dsConnectionMono)
                 .assertNext(value -> {
@@ -613,7 +620,7 @@ public class PostgresPluginTest {
     @Test
     public void testAliasColumnNames() {
         DatasourceConfiguration dsConfig = createDatasourceConfiguration();
-        Mono<HikariDataSource> dsConnectionMono = pluginExecutor.datasourceCreate(dsConfig);
+        Mono<ConnectionContext<HikariDataSource>> dsConnectionMono = pluginExecutor.datasourceCreate(dsConfig);
 
         ActionConfiguration actionConfiguration = new ActionConfiguration();
         actionConfiguration.setBody("SELECT id as user_id FROM users WHERE id = 1");
@@ -641,7 +648,7 @@ public class PostgresPluginTest {
     @Test
     public void testApplicationName() {
         DatasourceConfiguration dsConfig = createDatasourceConfiguration();
-        Mono<HikariDataSource> dsConnectionMono = pluginExecutor.datasourceCreate(dsConfig);
+        Mono<ConnectionContext<HikariDataSource>> dsConnectionMono = pluginExecutor.datasourceCreate(dsConfig);
 
         ActionConfiguration actionConfiguration = new ActionConfiguration();
         actionConfiguration.setBody(
@@ -668,7 +675,7 @@ public class PostgresPluginTest {
     @Test
     public void testExecute() {
         DatasourceConfiguration dsConfig = createDatasourceConfiguration();
-        Mono<HikariDataSource> dsConnectionMono = pluginExecutor.datasourceCreate(dsConfig);
+        Mono<ConnectionContext<HikariDataSource>> dsConnectionMono = pluginExecutor.datasourceCreate(dsConfig);
 
         ActionConfiguration actionConfiguration = new ActionConfiguration();
         actionConfiguration.setBody("SELECT * FROM users WHERE id = 1");
@@ -693,9 +700,7 @@ public class PostgresPluginTest {
                     assertEquals("2018-11-30T20:45:15Z", node.get("created_on").asText());
                     assertEquals(
                             "2018-11-30T19:45:15Z", node.get("created_on_tz").asText());
-                    assertEquals(
-                            "1 years 5 mons 0 days 2 hours 0 mins 0.0 secs",
-                            node.get("interval1").asText());
+                    assertEquals("1 years 5 mons 2 hours", node.get("interval1").asText());
                     Assertions.assertThat(node.get("spouse_dob")).isEqualTo(NullNode.getInstance());
 
                     // Check the order of the columns.
@@ -1017,10 +1022,10 @@ public class PostgresPluginTest {
         pluginSpecifiedTemplates.add(new Property("preparedStatement", "false"));
         actionConfiguration.setPluginSpecifiedTemplates(pluginSpecifiedTemplates);
 
-        Mono<HikariDataSource> connectionCreateMono = pluginExecutor.datasourceCreate(dsConfig);
+        Mono<ConnectionContext<HikariDataSource>> connectionCreateMono = pluginExecutor.datasourceCreate(dsConfig);
 
         Mono<ActionExecutionResult> resultMono = connectionCreateMono.flatMap(pool -> {
-            pool.close();
+            pool.getConnection().close();
             return pluginExecutor.executeParameterized(pool, new ExecuteActionDTO(), dsConfig, actionConfiguration);
         });
 
@@ -1051,7 +1056,7 @@ public class PostgresPluginTest {
         params.add(param);
         executeActionDTO.setParams(params);
 
-        Mono<HikariDataSource> connectionCreateMono =
+        Mono<ConnectionContext<HikariDataSource>> connectionCreateMono =
                 pluginExecutor.datasourceCreate(dsConfig).cache();
 
         Mono<ActionExecutionResult> resultMono = connectionCreateMono.flatMap(
@@ -1068,9 +1073,7 @@ public class PostgresPluginTest {
                     assertEquals("2018-11-30T20:45:15Z", node.get("created_on").asText());
                     assertEquals(
                             "2018-11-30T19:45:15Z", node.get("created_on_tz").asText());
-                    assertEquals(
-                            "1 years 5 mons 0 days 2 hours 0 mins 0.0 secs",
-                            node.get("interval1").asText());
+                    assertEquals("1 years 5 mons 2 hours", node.get("interval1").asText());
                     assertTrue(node.get("spouse_dob").isNull());
                     assertEquals(1.0, node.get("rating").asDouble(), 0.0);
 
@@ -1130,7 +1133,7 @@ public class PostgresPluginTest {
         params.add(param);
         executeActionDTO.setParams(params);
 
-        Mono<HikariDataSource> connectionCreateMono =
+        Mono<ConnectionContext<HikariDataSource>> connectionCreateMono =
                 pluginExecutor.datasourceCreate(dsConfig).cache();
 
         Mono<ActionExecutionResult> resultMono = connectionCreateMono.flatMap(
@@ -1147,9 +1150,7 @@ public class PostgresPluginTest {
                     assertEquals("2018-11-30T20:45:15Z", node.get("created_on").asText());
                     assertEquals(
                             "2018-11-30T19:45:15Z", node.get("created_on_tz").asText());
-                    assertEquals(
-                            "1 years 5 mons 0 days 2 hours 0 mins 0.0 secs",
-                            node.get("interval1").asText());
+                    assertEquals("1 years 5 mons 2 hours", node.get("interval1").asText());
                     assertTrue(node.get("spouse_dob").isNull());
 
                     // Check the order of the columns.
@@ -1220,7 +1221,7 @@ public class PostgresPluginTest {
         params.add(param);
         executeActionDTO.setParams(params);
 
-        Mono<HikariDataSource> connectionCreateMono =
+        Mono<ConnectionContext<HikariDataSource>> connectionCreateMono =
                 pluginExecutor.datasourceCreate(dsConfig).cache();
 
         Mono<ActionExecutionResult> resultMono = connectionCreateMono.flatMap(
@@ -1237,9 +1238,7 @@ public class PostgresPluginTest {
                     assertEquals("2018-11-30T20:45:15Z", node.get("created_on").asText());
                     assertEquals(
                             "2018-11-30T19:45:15Z", node.get("created_on_tz").asText());
-                    assertEquals(
-                            "1 years 5 mons 0 days 2 hours 0 mins 0.0 secs",
-                            node.get("interval1").asText());
+                    assertEquals("1 years 5 mons 2 hours", node.get("interval1").asText());
                     assertTrue(node.get("spouse_dob").isNull());
 
                     // Check the order of the columns.
@@ -1301,7 +1300,7 @@ public class PostgresPluginTest {
         params.add(param);
         executeActionDTO.setParams(params);
 
-        Mono<HikariDataSource> connectionCreateMono =
+        Mono<ConnectionContext<HikariDataSource>> connectionCreateMono =
                 pluginExecutor.datasourceCreate(dsConfig).cache();
 
         Mono<ActionExecutionResult> resultMono = connectionCreateMono.flatMap(
@@ -1366,7 +1365,7 @@ public class PostgresPluginTest {
         params.add(param);
         executeActionDTO.setParams(params);
 
-        Mono<HikariDataSource> connectionCreateMono =
+        Mono<ConnectionContext<HikariDataSource>> connectionCreateMono =
                 pluginExecutor.datasourceCreate(dsConfig).cache();
 
         Mono<ActionExecutionResult> resultMono = connectionCreateMono.flatMap(
@@ -1422,7 +1421,7 @@ public class PostgresPluginTest {
 
         DatasourceConfiguration dsConfig = createDatasourceConfiguration();
         dsConfig.getConnection().getSsl().setAuthType(SSLDetails.AuthType.DEFAULT);
-        Mono<HikariDataSource> dsConnectionMono = pluginExecutor.datasourceCreate(dsConfig);
+        Mono<ConnectionContext<HikariDataSource>> dsConnectionMono = pluginExecutor.datasourceCreate(dsConfig);
         Mono<ActionExecutionResult> executeMono = dsConnectionMono.flatMap(conn ->
                 pluginExecutor.executeParameterized(conn, new ExecuteActionDTO(), dsConfig, actionConfiguration));
         StepVerifier.create(executeMono)
@@ -1440,7 +1439,7 @@ public class PostgresPluginTest {
 
         DatasourceConfiguration dsConfig = createDatasourceConfiguration();
         dsConfig.getConnection().getSsl().setAuthType(SSLDetails.AuthType.DISABLE);
-        Mono<HikariDataSource> dsConnectionMono = pluginExecutor.datasourceCreate(dsConfig);
+        Mono<ConnectionContext<HikariDataSource>> dsConnectionMono = pluginExecutor.datasourceCreate(dsConfig);
         Mono<ActionExecutionResult> executeMono = dsConnectionMono.flatMap(conn ->
                 pluginExecutor.executeParameterized(conn, new ExecuteActionDTO(), dsConfig, actionConfiguration));
         StepVerifier.create(executeMono)
@@ -1458,7 +1457,7 @@ public class PostgresPluginTest {
 
         DatasourceConfiguration dsConfig = createDatasourceConfiguration();
         dsConfig.getConnection().getSsl().setAuthType(SSLDetails.AuthType.REQUIRE);
-        Mono<HikariDataSource> dsConnectionMono = pluginExecutor.datasourceCreate(dsConfig);
+        Mono<ConnectionContext<HikariDataSource>> dsConnectionMono = pluginExecutor.datasourceCreate(dsConfig);
         Mono<ActionExecutionResult> executeMono = dsConnectionMono.flatMap(conn ->
                 pluginExecutor.executeParameterized(conn, new ExecuteActionDTO(), dsConfig, actionConfiguration));
         StepVerifier.create(executeMono).verifyErrorSatisfies(error -> {
@@ -1479,7 +1478,7 @@ public class PostgresPluginTest {
 
         DatasourceConfiguration dsConfig = createDatasourceConfiguration();
         dsConfig.getConnection().getSsl().setAuthType(SSLDetails.AuthType.PREFER);
-        Mono<HikariDataSource> dsConnectionMono = pluginExecutor.datasourceCreate(dsConfig);
+        Mono<ConnectionContext<HikariDataSource>> dsConnectionMono = pluginExecutor.datasourceCreate(dsConfig);
         Mono<ActionExecutionResult> executeMono = dsConnectionMono.flatMap(conn ->
                 pluginExecutor.executeParameterized(conn, new ExecuteActionDTO(), dsConfig, actionConfiguration));
         StepVerifier.create(executeMono)
@@ -1501,7 +1500,7 @@ public class PostgresPluginTest {
 
         DatasourceConfiguration dsConfig = createDatasourceConfiguration();
         dsConfig.getConnection().getSsl().setAuthType(SSLDetails.AuthType.ALLOW);
-        Mono<HikariDataSource> dsConnectionMono = pluginExecutor.datasourceCreate(dsConfig);
+        Mono<ConnectionContext<HikariDataSource>> dsConnectionMono = pluginExecutor.datasourceCreate(dsConfig);
         Mono<ActionExecutionResult> executeMono = dsConnectionMono.flatMap(conn ->
                 pluginExecutor.executeParameterized(conn, new ExecuteActionDTO(), dsConfig, actionConfiguration));
         StepVerifier.create(executeMono)
@@ -1519,7 +1518,7 @@ public class PostgresPluginTest {
     @Test
     public void testDuplicateColumnNames() {
         DatasourceConfiguration dsConfig = createDatasourceConfiguration();
-        Mono<HikariDataSource> dsConnectionMono = pluginExecutor.datasourceCreate(dsConfig);
+        Mono<ConnectionContext<HikariDataSource>> dsConnectionMono = pluginExecutor.datasourceCreate(dsConfig);
 
         ActionConfiguration actionConfiguration = new ActionConfiguration();
         actionConfiguration.setBody("SELECT id, username as id, password, email as password FROM users WHERE id = 1");
@@ -1556,6 +1555,251 @@ public class PostgresPluginTest {
                 .verifyComplete();
     }
 
+    /*
+     * The filter-bar shapes the MCP structured-query compiler emits (APP-16164): a list filter
+     * `CAST(col AS TEXT) = ANY(CAST(? AS TEXT[]))` bound to a multi-select's values, and an optional filter
+     * `(? = 1 OR col = ?)` whose integer guard is 1 while the control is empty. Rows 1-3 of `users` are the stable
+     * fixture (other tests add and remove higher ids), so each query is bounded to them.
+     */
+    private List<Integer> selectUserIds(String body, List<Param> params) {
+        return rowIds(runStatement(body, true, params));
+    }
+
+    private Param param(String key, String value, ClientDataType type) {
+        Param param = new Param(key, value);
+        param.setClientDataType(type);
+        return param;
+    }
+
+    @Test
+    public void testFilterBarListParameterMatchesIntegerColumnAsText() {
+        // A multi-select holds string option values; they must match an integer column through the text cast.
+        Param list = param("binding1", "[\"1\",\"2\"]", ClientDataType.ARRAY);
+        list.setDataTypesOfArrayElements(List.of(ClientDataType.STRING, ClientDataType.STRING));
+
+        List<Integer> ids = selectUserIds(
+                "SELECT id FROM public.\"users\" WHERE id <= 3 AND CAST(id AS TEXT) = ANY(CAST({{binding1}} AS TEXT[]))"
+                        + " ORDER BY id;",
+                List.of(list));
+
+        assertEquals(List.of(1, 2), ids);
+    }
+
+    @Test
+    public void testFilterBarNullListParameterMatchesNothing() {
+        // An empty selection is bound as null (an empty array would leave the parameter unset): no rows, no error.
+        List<Integer> ids = selectUserIds(
+                "SELECT id FROM public.\"users\" WHERE id <= 3 AND CAST(id AS TEXT) = ANY(CAST({{binding1}} AS TEXT[]))"
+                        + " ORDER BY id;",
+                List.of(param("binding1", null, ClientDataType.NULL)));
+
+        assertEquals(List.of(), ids);
+    }
+
+    @Test
+    public void testFilterBarEmptyGuardSkipsTheFilter() {
+        // Guard 1 (the control is empty) with the value bound as null: the filter is skipped and every row matches.
+        List<Integer> ids = selectUserIds(
+                "SELECT id FROM public.\"users\" WHERE id <= 3 AND ({{binding1}} = 1 OR id = {{binding2}}) ORDER BY id;",
+                List.of(param("binding1", "1", ClientDataType.NUMBER), param("binding2", null, ClientDataType.NULL)));
+
+        assertEquals(List.of(1, 2, 3), ids);
+    }
+
+    @Test
+    public void testFilterBarEmptyGuardOffAppliesTheFilter() {
+        // Guard 0 (the control has a value): the comparison applies.
+        List<Integer> ids = selectUserIds(
+                "SELECT id FROM public.\"users\" WHERE id <= 3 AND ({{binding1}} = 1 OR id = {{binding2}}) ORDER BY id;",
+                List.of(param("binding1", "0", ClientDataType.NUMBER), param("binding2", "2", ClientDataType.NUMBER)));
+
+        assertEquals(List.of(2), ids);
+    }
+
+    private ActionExecutionResult runStatement(String body, boolean prepared, List<Param> params) {
+        DatasourceConfiguration dsConfig = createDatasourceConfiguration();
+        ActionConfiguration actionConfiguration = new ActionConfiguration();
+        actionConfiguration.setBody(body);
+        actionConfiguration.setPluginSpecifiedTemplates(
+                List.of(new Property("preparedStatement", String.valueOf(prepared))));
+
+        ExecuteActionDTO executeActionDTO = new ExecuteActionDTO();
+        executeActionDTO.setParams(params);
+
+        // Close the pool on every path, so its idle connections do not use up the container's connection limit.
+        ConnectionContext<HikariDataSource> pool =
+                pluginExecutor.datasourceCreate(dsConfig).block();
+        assertNotNull(pool);
+
+        ActionExecutionResult result;
+        try {
+            result = pluginExecutor
+                    .executeParameterized(pool, executeActionDTO, dsConfig, actionConfiguration)
+                    .block();
+        } finally {
+            pool.getConnection().close();
+        }
+
+        assertNotNull(result);
+        assertTrue(result.getIsExecutionSuccess(), String.valueOf(result.getBody()));
+        return result;
+    }
+
+    private List<Integer> rowIds(ActionExecutionResult result) {
+        List<Integer> ids = new ArrayList<>();
+        ((ArrayNode) result.getBody()).forEach(row -> ids.add(row.get("id").asInt()));
+        return ids;
+    }
+
+    /*
+     * The null filters the MCP structured-query compiler emits on PostgreSQL (APP-16324): the column lower-cased and
+     * quoted, as in `"owner" IS NULL`. The SQL shape matches app/client/packages/mcp/src/builder/query.test.ts. Change
+     * both together. The test uses its own table so the shared `users` fixture is not changed.
+     */
+    /*
+     * The like and ilike filters the MCP compiler emits with a `match` (APP-16324 F1.3): the % is part of the bound
+     * VALUE, as in `subject LIKE ?` with "re%". This checks that a prepared parameter carries % as a wildcard, and that
+     * ILIKE ignores case where LIKE does not. The SQL shape matches app/client/packages/mcp/src/builder/query.test.ts.
+     */
+    @Test
+    public void testLikeFilterBindsTheWildcardInTheParameter() {
+        String rows = "(VALUES (1, 'Refund request'), (2, 're: billing'), (3, 'Other')) AS t(id, subject)";
+
+        assertEquals(
+                List.of(2),
+                rowIds(runStatement(
+                        "SELECT id FROM " + rows + " WHERE subject LIKE {{binding1}} ORDER BY id;",
+                        true,
+                        List.of(param("binding1", "re%", ClientDataType.STRING)))));
+        assertEquals(
+                List.of(1, 2),
+                rowIds(runStatement(
+                        "SELECT id FROM " + rows + " WHERE subject ILIKE {{binding1}} ORDER BY id;",
+                        true,
+                        List.of(param("binding1", "re%", ClientDataType.STRING)))));
+        // A suffix match: the % leads the bound value.
+        assertEquals(
+                List.of(2),
+                rowIds(runStatement(
+                        "SELECT id FROM " + rows + " WHERE subject LIKE {{binding1}} ORDER BY id;",
+                        true,
+                        List.of(param("binding1", "%billing", ClientDataType.STRING)))));
+    }
+
+    /*
+     * The coalesced group column the MCP compiler emits (APP-16324 F1.4): the fallback is a prepared parameter inside
+     * the select list, and GROUP BY uses the stored column. NULLs form one group, shown under the fallback. The SQL
+     * shape matches app/client/packages/mcp/src/builder/query.test.ts.
+     */
+    @Test
+    public void testCoalescedGroupColumnUsesAParameterFallback() {
+        String rows = "(VALUES ('1.0'), ('1.0'), (NULL), (NULL), (NULL)) AS t(\"appsmith_version\")";
+        ActionExecutionResult result = runStatement(
+                "SELECT COALESCE(\"appsmith_version\", {{binding1}}) AS \"appsmith_version\", COUNT(*) AS count FROM "
+                        + rows + " GROUP BY \"appsmith_version\" ORDER BY \"appsmith_version\" DESC;",
+                true,
+                List.of(param("binding1", "Unknown", ClientDataType.STRING)));
+
+        ArrayNode body = (ArrayNode) result.getBody();
+        assertEquals(2, body.size());
+        assertEquals("Unknown", body.get(0).get("appsmith_version").asText());
+        assertEquals(3, body.get(0).get("count").asInt());
+        assertEquals("1.0", body.get(1).get("appsmith_version").asText());
+        assertEquals(2, body.get(1).get("count").asInt());
+    }
+
+    /*
+     * The HAVING the MCP compiler emits (APP-16324 F1.5): the aggregate expression is repeated and compared with a
+     * prepared parameter, and a group column is tested by its quoted name. The SQL shape matches
+     * app/client/packages/mcp/src/builder/query.test.ts.
+     */
+    @Test
+    public void testHavingComparesTheAggregateWithAParameter() {
+        String rows = "(VALUES ('a'), ('a'), ('a'), ('b'), ('N/A'), ('N/A')) AS t(\"tag\")";
+        ActionExecutionResult result = runStatement(
+                "SELECT \"tag\", COUNT(*) AS count FROM " + rows
+                        + " GROUP BY \"tag\" HAVING COUNT(*) >= {{binding1}} AND \"tag\" != {{binding2}}"
+                        + " ORDER BY \"count\" DESC;",
+                true,
+                List.of(
+                        param("binding1", "2", ClientDataType.NUMBER),
+                        param("binding2", "N/A", ClientDataType.STRING)));
+
+        ArrayNode body = (ArrayNode) result.getBody();
+        assertEquals(1, body.size());
+        assertEquals("a", body.get(0).get("tag").asText());
+        assertEquals(3, body.get(0).get("count").asInt());
+    }
+
+    /*
+     * The split group column the MCP compiler emits (APP-16324 F1.6), as the Oracle tag-count query uses it: a lateral
+     * unnest of the delimited column with the separator as a prepared parameter, grouped and tested by the trimmed
+     * item. The SQL shape matches app/client/packages/mcp/src/builder/query.test.ts.
+     */
+    @Test
+    public void testSplitGroupColumnCountsEachTrimmedItem() {
+        // The NULL and '' rows have no items, so the CROSS JOIN leaves them out: they add no group and no count. The
+        // empty item in 'billing,,export' is kept and forms its own '' group.
+        String rows = "(VALUES ('billing, export'), ('billing'), ('N/A'), ('export ,billing'), (NULL), (''),"
+                + " ('billing,,export')) AS tickets(\"feature_tags\")";
+        ActionExecutionResult result = runStatement(
+                "SELECT TRIM(mcp_split.mcp_split_value) AS \"feature_tags\", COUNT(*) AS count FROM " + rows
+                        + " CROSS JOIN LATERAL unnest(string_to_array(\"feature_tags\", {{binding1}}))"
+                        + " AS mcp_split(mcp_split_value) GROUP BY TRIM(mcp_split.mcp_split_value)"
+                        + " HAVING TRIM(mcp_split.mcp_split_value) != {{binding2}} ORDER BY \"count\" DESC;",
+                true,
+                List.of(
+                        param("binding1", ",", ClientDataType.STRING),
+                        param("binding2", "N/A", ClientDataType.STRING)));
+
+        ArrayNode body = (ArrayNode) result.getBody();
+        assertEquals(3, body.size());
+        assertEquals("billing", body.get(0).get("feature_tags").asText());
+        assertEquals(4, body.get(0).get("count").asInt());
+        assertEquals("export", body.get(1).get("feature_tags").asText());
+        assertEquals(3, body.get(1).get("count").asInt());
+        assertEquals("", body.get(2).get("feature_tags").asText());
+        assertEquals(1, body.get(2).get("count").asInt());
+    }
+
+    @Test
+    public void testNullFilterOnWriteDeletesOnlyNullRows() {
+        runStatement("DROP TABLE IF EXISTS public.mcp_null_filter;", false, List.of());
+        runStatement("CREATE TABLE public.mcp_null_filter (id int, owner text);", false, List.of());
+        runStatement(
+                "INSERT INTO public.mcp_null_filter VALUES (1, NULL), (2, 'ada'), (3, NULL), (4, 'bob');",
+                false,
+                List.of());
+
+        try {
+            runStatement(
+                    "DELETE FROM public.mcp_null_filter WHERE \"owner\" IS NULL AND id > {{binding1}};",
+                    true,
+                    List.of(param("binding1", "1", ClientDataType.NUMBER)));
+
+            assertEquals(
+                    List.of(1, 2, 4),
+                    rowIds(runStatement("SELECT id FROM public.mcp_null_filter ORDER BY id;", false, List.of())));
+            assertEquals(
+                    List.of(2, 4),
+                    rowIds(runStatement(
+                            "SELECT id FROM public.mcp_null_filter WHERE \"owner\" IS NOT NULL ORDER BY id;",
+                            true,
+                            List.of())));
+
+            // Why the compiler refuses a null filter on a column named like its table: with no such column,
+            // PostgreSQL reads the quoted table name as the whole row, so this matches every row with no NULL field.
+            assertEquals(
+                    List.of(2, 4),
+                    rowIds(runStatement(
+                            "SELECT id FROM public.mcp_null_filter WHERE \"mcp_null_filter\" IS NOT NULL ORDER BY id;",
+                            true,
+                            List.of())));
+        } finally {
+            runStatement("DROP TABLE IF EXISTS public.mcp_null_filter;", false, List.of());
+        }
+    }
+
     @Test
     public void testTimestampPreparedStatement() {
         DatasourceConfiguration dsConfig = createDatasourceConfiguration();
@@ -1576,7 +1820,7 @@ public class PostgresPluginTest {
         params.add(param);
         executeActionDTO.setParams(params);
 
-        Mono<HikariDataSource> connectionCreateMono =
+        Mono<ConnectionContext<HikariDataSource>> connectionCreateMono =
                 pluginExecutor.datasourceCreate(dsConfig).cache();
 
         Mono<ActionExecutionResult> resultMono = connectionCreateMono.flatMap(
@@ -1622,7 +1866,7 @@ public class PostgresPluginTest {
         params.add(param);
         executeActionDTO.setParams(params);
 
-        Mono<HikariDataSource> connectionCreateMono =
+        Mono<ConnectionContext<HikariDataSource>> connectionCreateMono =
                 pluginExecutor.datasourceCreate(dsConfig).cache();
 
         Mono<ActionExecutionResult> resultMono = connectionCreateMono.flatMap(
@@ -1640,7 +1884,7 @@ public class PostgresPluginTest {
         ActionConfiguration actionConfiguration = new ActionConfiguration();
         actionConfiguration.setBody("SELECT * FROM dataTypeTest");
         DatasourceConfiguration dsConfig = createDatasourceConfiguration();
-        Mono<HikariDataSource> connectionPoolMono = pluginExecutor.datasourceCreate(dsConfig);
+        Mono<ConnectionContext<HikariDataSource>> connectionPoolMono = pluginExecutor.datasourceCreate(dsConfig);
         Mono<ActionExecutionResult> resultMono = connectionPoolMono.flatMap(conn ->
                 pluginExecutor.executeParameterized(conn, new ExecuteActionDTO(), dsConfig, actionConfiguration));
 
@@ -1703,7 +1947,7 @@ public class PostgresPluginTest {
 
         executeActionDTO.setParams(params);
 
-        Mono<HikariDataSource> connectionCreateMono =
+        Mono<ConnectionContext<HikariDataSource>> connectionCreateMono =
                 pluginExecutor.datasourceCreate(dsConfig).cache();
 
         Mono<ActionExecutionResult> resultMono = connectionCreateMono.flatMap(
@@ -1779,7 +2023,7 @@ public class PostgresPluginTest {
 
         executeActionDTO.setParams(params);
 
-        Mono<HikariDataSource> connectionCreateMono =
+        Mono<ConnectionContext<HikariDataSource>> connectionCreateMono =
                 pluginExecutor.datasourceCreate(dsConfig).cache();
 
         Mono<ActionExecutionResult> resultMono = connectionCreateMono.flatMap(
@@ -1812,7 +2056,7 @@ public class PostgresPluginTest {
         ActionConfiguration actionConfiguration = new ActionConfiguration();
         actionConfiguration.setBody("UPDATE public.\"users\" set created_on = '2021-03-24 14:05:34' where id = 3;");
 
-        Mono<HikariDataSource> dsConnectionMono = pluginExecutor.datasourceCreate(dsConfig);
+        Mono<ConnectionContext<HikariDataSource>> dsConnectionMono = pluginExecutor.datasourceCreate(dsConfig);
         Mono<ActionExecutionResult> executeMono = dsConnectionMono.flatMap(conn ->
                 pluginExecutor.executeParameterized(conn, new ExecuteActionDTO(), dsConfig, actionConfiguration));
 
@@ -1860,7 +2104,7 @@ public class PostgresPluginTest {
 
         executeActionDTO.setParams(params);
 
-        Mono<HikariDataSource> connectionCreateMono =
+        Mono<ConnectionContext<HikariDataSource>> connectionCreateMono =
                 pluginExecutor.datasourceCreate(dsConfig).cache();
 
         Mono<ActionExecutionResult> resultMono = connectionCreateMono.flatMap(
@@ -1923,7 +2167,7 @@ public class PostgresPluginTest {
         params.add(param1);
         executeActionDTO.setParams(params);
 
-        Mono<HikariDataSource> connectionCreateMono =
+        Mono<ConnectionContext<HikariDataSource>> connectionCreateMono =
                 pluginExecutor.datasourceCreate(dsConfig).cache();
 
         Mono<ActionExecutionResult> resultMono = connectionCreateMono.flatMap(

@@ -2,7 +2,7 @@ import type { unEvalAndConfigTree } from "entities/DataTree/dataTreeTypes";
 import type { ActionValidationConfigMap } from "constants/PropertyControlConstants";
 import type { AppTheme } from "entities/AppTheming";
 
-import type { CanvasWidgetsReduxState } from "reducers/entityReducers/canvasWidgetsReducer";
+import type { CanvasWidgetsReduxState } from "ee/reducers/entityReducers/canvasWidgetsReducer";
 import type { MetaWidgetsReduxState } from "reducers/entityReducers/metaWidgetsReducer";
 import type { DependencyMap, EvalError } from "utils/DynamicBindingUtils";
 import type {
@@ -10,7 +10,7 @@ import type {
   EVAL_WORKER_SYNC_ACTION,
 } from "ee/workers/Evaluation/evalWorkerActions";
 import type { JSUpdate } from "utils/JSPaneUtils";
-import type { WidgetTypeConfigMap } from "WidgetProvider/factory";
+import type { WidgetTypeConfigMap } from "WidgetProvider/factory/types";
 import type { EvalMetaUpdates } from "ee/workers/common/DataTreeEvaluator/types";
 import type { WorkerRequest } from "ee/workers/common/types";
 import type { DataTreeDiff } from "ee/workers/Evaluation/evaluationUtils";
@@ -71,6 +71,7 @@ export interface EvalTreeResponseData {
   jsVarsCreatedEvent?: { path: string; type: string }[];
   webworkerTelemetry?: Record<string, WebworkerSpanData | Attributes>;
   updates: string;
+  executeReactiveActions: string[];
 }
 
 export interface UpdateTreeResponse {

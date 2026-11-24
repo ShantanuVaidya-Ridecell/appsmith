@@ -28,6 +28,7 @@ import com.external.constants.FieldName;
 import com.external.plugins.exceptions.GSheetsPluginError;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
+import io.micrometer.observation.ObservationRegistry;
 import lombok.extern.slf4j.Slf4j;
 import org.pf4j.Extension;
 import org.pf4j.PluginWrapper;
@@ -36,6 +37,7 @@ import org.springframework.util.CollectionUtils;
 import org.springframework.web.reactive.function.client.ExchangeStrategies;
 import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.Exceptions;
+import reactor.core.observability.micrometer.Micrometer;
 import reactor.core.publisher.Mono;
 
 import java.io.IOException;
@@ -46,6 +48,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+import static com.appsmith.external.constants.spans.ce.ActionSpanCE.ACTUAL_API_CALL;
+import static com.appsmith.external.constants.spans.ce.ActionSpanCE.PLUGIN_EXECUTE_COMMON;
 import static com.appsmith.external.helpers.PluginUtils.OBJECT_TYPE;
 import static com.appsmith.external.helpers.PluginUtils.STRING_TYPE;
 import static com.appsmith.external.helpers.PluginUtils.getDataValueSafelyFromFormData;
@@ -75,14 +79,10 @@ public class GoogleSheetsPlugin extends BasePlugin {
         private static final Set<String> jsonFields =
                 new HashSet<>(Arrays.asList(FieldName.ROW_OBJECT, FieldName.ROW_OBJECTS));
 
-        @Override
-        public Mono<ActionExecutionResult> executeParameterized(
-                Void connection,
-                ExecuteActionDTO executeActionDTO,
-                DatasourceConfiguration datasourceConfiguration,
-                ActionConfiguration actionConfiguration) {
-            return executeParameterizedWithFlags(
-                    connection, executeActionDTO, datasourceConfiguration, actionConfiguration, null);
+        private final ObservationRegistry observationRegistry;
+
+        public GoogleSheetsPluginExecutor(ObservationRegistry observationRegistry) {
+            this.observationRegistry = observationRegistry;
         }
 
         @Override
@@ -92,12 +92,11 @@ public class GoogleSheetsPlugin extends BasePlugin {
         }
 
         @Override
-        public Mono<ActionExecutionResult> executeParameterizedWithFlags(
+        public Mono<ActionExecutionResult> executeParameterized(
                 Void connection,
                 ExecuteActionDTO executeActionDTO,
                 DatasourceConfiguration datasourceConfiguration,
-                ActionConfiguration actionConfiguration,
-                Map<String, Boolean> featureFlagMap) {
+                ActionConfiguration actionConfiguration) {
 
             log.debug(Thread.currentThread().getName() + ": executeParameterized() called for GoogleSheets plugin.");
             boolean smartJsonSubstitution;
@@ -150,14 +149,16 @@ public class GoogleSheetsPlugin extends BasePlugin {
 
             prepareConfigurationsForExecution(executeActionDTO, actionConfiguration, datasourceConfiguration);
 
-            return this.executeCommon(connection, datasourceConfiguration, actionConfiguration, featureFlagMap);
+            return this.executeCommon(connection, datasourceConfiguration, actionConfiguration)
+                    .tag("plugin", this.getClass().getName())
+                    .name(PLUGIN_EXECUTE_COMMON)
+                    .tap(Micrometer.observation(observationRegistry));
         }
 
         public Mono<ActionExecutionResult> executeCommon(
                 Void connection,
                 DatasourceConfiguration datasourceConfiguration,
-                ActionConfiguration actionConfiguration,
-                Map<String, Boolean> featureFlagMap) {
+                ActionConfiguration actionConfiguration) {
 
             log.debug(Thread.currentThread().getName() + ": executeCommon() called for GoogleSheets plugin.");
             // Initializing object for error condition
@@ -203,13 +204,16 @@ public class GoogleSheetsPlugin extends BasePlugin {
                     // method
                     .flatMap(res -> {
                         return executionMethod
-                                .getExecutionClientWithFlags(client, methodConfig, featureFlagMap)
+                                .getExecutionClient(client, methodConfig)
                                 .headers(headers -> headers.set(
                                         "Authorization",
                                         "Bearer "
                                                 + oauth2.getAuthenticationResponse()
                                                         .getToken()))
                                 .exchange()
+                                .tag("plugin", this.getClass().getName())
+                                .name(ACTUAL_API_CALL)
+                                .tap(Micrometer.observation(observationRegistry))
                                 .flatMap(clientResponse -> clientResponse.toEntity(byte[].class))
                                 .map(response -> {
                                     // Populate result object
@@ -346,13 +350,12 @@ public class GoogleSheetsPlugin extends BasePlugin {
             final TriggerMethod triggerMethod = GoogleSheetsMethodStrategy.getTriggerMethod(request, objectMapper);
             MethodConfig methodConfig = new MethodConfig(request);
 
-            // Initializing webClient to be used for http call
-            WebClient.Builder webClientBuilder = WebClient.builder();
-
             triggerMethod.validateTriggerMethodRequest(methodConfig);
 
-            WebClient client =
-                    webClientBuilder.exchangeStrategies(EXCHANGE_STRATEGIES).build();
+            // Initializing webClient to be used for http call
+            WebClient client = WebClientUtils.builder()
+                    .exchangeStrategies(EXCHANGE_STRATEGIES)
+                    .build();
 
             // Authentication will already be valid at this point
             final OAuth2 oauth2 = (OAuth2) datasourceConfiguration.getAuthentication();
@@ -364,7 +367,7 @@ public class GoogleSheetsPlugin extends BasePlugin {
                     validateAndGetUserAuthorizedSheetIds(datasourceConfiguration, methodConfig);
 
             return triggerMethod
-                    .getTriggerClientWithFlags(client, methodConfig, featureFlagMap)
+                    .getTriggerClient(client, methodConfig)
                     .headers(headers -> headers.set(
                             "Authorization",
                             "Bearer " + oauth2.getAuthenticationResponse().getToken()))

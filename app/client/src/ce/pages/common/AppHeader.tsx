@@ -12,6 +12,8 @@ import {
   ADMIN_SETTINGS_CATEGORY_PATH,
   VIEWER_CUSTOM_PATH,
   BUILDER_CUSTOM_PATH,
+  BUILDER_PATH_STATIC,
+  VIEWER_PATH_STATIC,
   BASE_URL,
   CUSTOM_WIDGETS_EDITOR_ID_PATH,
   CUSTOM_WIDGETS_EDITOR_ID_PATH_CUSTOM,
@@ -19,7 +21,7 @@ import {
 } from "constants/routes";
 import Navigation from "pages/AppViewer/Navigation";
 import type { RouteComponentProps } from "react-router";
-import { Header as AppIDEHeader } from "pages/Editor/IDE/Header";
+import { Header as AppIDEHeader } from "pages/AppIDE/layouts/components/Header";
 
 export type Props = RouteComponentProps;
 
@@ -49,6 +51,8 @@ export const Routes = () => {
       <Route component={AppIDEHeader} path={BUILDER_CUSTOM_PATH} />
       <Route component={Navigation} path={VIEWER_PATH} />
       <Route component={Navigation} path={VIEWER_CUSTOM_PATH} />
+      <Route component={AppIDEHeader} path={BUILDER_PATH_STATIC} />
+      <Route component={Navigation} path={VIEWER_PATH_STATIC} />
       <Route component={PageHeader} path={BASE_URL} />
     </Switch>
   );

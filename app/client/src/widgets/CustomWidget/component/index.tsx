@@ -18,10 +18,9 @@ import WidgetStyleContainer from "components/designSystems/appsmith/WidgetStyleC
 import type { BoxShadow } from "components/designSystems/appsmith/WidgetStyleContainer";
 import type { Color } from "constants/Colors";
 import { connect } from "react-redux";
-import type { AppState } from "ee/reducers";
+import type { DefaultRootState } from "react-redux";
 import { selectCombinedPreviewMode } from "selectors/gitModSelectors";
 import { getWidgetPropsForPropertyPane } from "selectors/propertyPaneSelectors";
-import AnalyticsUtil from "ee/utils/AnalyticsUtil";
 import { EVENTS } from "./customWidgetscript";
 import { DynamicHeight } from "utils/WidgetFeatures";
 import { getAppsmithConfigs } from "ee/configs";
@@ -107,16 +106,6 @@ function CustomComponent(props: CustomComponentProps) {
               },
               "*",
             );
-
-            if (
-              props.renderMode === "DEPLOYED" ||
-              props.renderMode === "EDITOR"
-            ) {
-              AnalyticsUtil.logEvent("CUSTOM_WIDGET_LOAD_INIT", {
-                widgetId: props.widgetId,
-                renderMode: props.renderMode,
-              });
-            }
 
             break;
           case EVENTS.CUSTOM_WIDGET_UPDATE_MODEL:
@@ -213,7 +202,7 @@ function CustomComponent(props: CustomComponentProps) {
   ]);
 
   const srcDoc = `
-    <html>
+    <html translate="no">
       <head>
         <style>${css}</style>
       </head>
@@ -309,7 +298,7 @@ export interface CustomComponentProps {
  * TODO: Balaji soundararajan - to refactor code to move out selected widget details to platform
  */
 export const mapStateToProps = (
-  state: AppState,
+  state: DefaultRootState,
   ownProps: CustomComponentProps,
 ) => {
   const isPreviewMode = selectCombinedPreviewMode(state);

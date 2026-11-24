@@ -68,9 +68,13 @@ public class ThemeServiceCEImpl extends BaseService<ThemeRepository, Theme, Stri
 
     @Override
     public Mono<Theme> getApplicationTheme(String applicationId, ApplicationMode applicationMode, String branchName) {
+        // EDIT mode returns the unpublished, in-progress theme, so it requires edit permission on the
+        // application; read permission (e.g. from a public application) is only sufficient for PUBLISHED mode.
+        AclPermission permission = applicationMode == ApplicationMode.PUBLISHED
+                ? applicationPermission.getReadPermission()
+                : applicationPermission.getEditPermission();
         return applicationService
-                .findByBranchNameAndBaseApplicationId(
-                        branchName, applicationId, applicationPermission.getReadPermission())
+                .findByBranchNameAndBaseApplicationId(branchName, applicationId, permission)
                 .switchIfEmpty(Mono.error(
                         new AppsmithException(AppsmithError.NO_RESOURCE_FOUND, FieldName.APPLICATION, applicationId)))
                 .flatMap(application -> {
@@ -90,38 +94,56 @@ public class ThemeServiceCEImpl extends BaseService<ThemeRepository, Theme, Stri
 
     @Override
     public Mono<Theme> getApplicationTheme(String branchedApplicationId, ApplicationMode applicationMode) {
+        // EDIT mode exposes the unpublished, in-progress theme, so it requires edit permission on the
+        // application — read permission (e.g. from a public app) is only sufficient for PUBLISHED mode.
+        AclPermission permission = applicationMode == ApplicationMode.PUBLISHED
+                ? applicationPermission.getReadPermission()
+                : applicationPermission.getEditPermission();
         return applicationService
-                .findById(branchedApplicationId, applicationPermission.getReadPermission())
+                .findById(branchedApplicationId, permission)
                 .switchIfEmpty(Mono.error(new AppsmithException(
                         AppsmithError.ACL_NO_RESOURCE_FOUND, FieldName.APPLICATION, branchedApplicationId)))
-                .flatMap(application -> {
-                    String themeId = application.getEditModeThemeId();
-                    if (applicationMode == ApplicationMode.PUBLISHED) {
-                        themeId = application.getPublishedModeThemeId();
-                    }
-                    if (StringUtils.hasLength(themeId)) {
-                        return repository
-                                .findById(themeId, READ_THEMES)
-                                .switchIfEmpty(repository.getSystemThemeByName(Theme.DEFAULT_THEME_NAME, READ_THEMES));
-                    } else { // theme id is not present, return default theme
-                        return repository.getSystemThemeByName(Theme.DEFAULT_THEME_NAME, READ_THEMES);
-                    }
-                });
+                .flatMap(application -> getApplicationTheme(application, applicationMode));
     }
 
+    @Override
+    public Mono<Theme> getApplicationTheme(Application application, ApplicationMode applicationMode) {
+        String themeId = application.getEditModeThemeId();
+        if (applicationMode == ApplicationMode.PUBLISHED) {
+            themeId = application.getPublishedModeThemeId();
+        }
+        if (StringUtils.hasLength(themeId)) {
+            return repository
+                    .findById(themeId, READ_THEMES)
+                    .switchIfEmpty(repository.getSystemThemeByName(Theme.DEFAULT_THEME_NAME, READ_THEMES));
+        } else { // theme id is not present, return default theme
+            return repository.getSystemThemeByName(Theme.DEFAULT_THEME_NAME, READ_THEMES);
+        }
+    }
+
+    // The application theme list is editor data: the named themes saved for an application are only used by the
+    // editor's theme picker. Listing them requires edit permission on the application; read permission (e.g. from
+    // a public application) is not sufficient. Without edit permission the branch-aware overload fails its
+    // application lookup with NO_RESOURCE_FOUND, and the single-argument overload yields an empty list, the same
+    // response as for an unknown application.
     @Override
     public Flux<Theme> getApplicationThemes(String applicationId, String branchName) {
         return applicationService
                 .findByBranchNameAndBaseApplicationId(
-                        branchName, applicationId, applicationPermission.getReadPermission())
+                        branchName, applicationId, applicationPermission.getEditPermission())
                 .flatMapMany(application -> repository.getApplicationThemes(application.getId(), READ_THEMES));
     }
 
     @Override
     public Flux<Theme> getApplicationThemes(String branchedApplicationId) {
         return applicationService
-                .findById(branchedApplicationId, applicationPermission.getReadPermission())
-                .flatMapMany(application -> repository.getApplicationThemes(application.getId(), READ_THEMES));
+                .findById(branchedApplicationId, applicationPermission.getEditPermission())
+                .flatMapMany(this::getApplicationThemes);
+    }
+
+    @Override
+    public Flux<Theme> getApplicationThemes(Application application) {
+        return repository.getApplicationThemes(application.getId(), READ_THEMES);
     }
 
     @Override

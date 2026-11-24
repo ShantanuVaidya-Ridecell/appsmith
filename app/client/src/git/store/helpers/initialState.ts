@@ -13,6 +13,7 @@ import type {
 const gitArtifactInitialUIState: GitArtifactUIReduxState = {
   initializing: false,
   initialized: false,
+  currentBranch: null,
   connectModalOpen: false,
   connectSuccessModalOpen: false,
   disconnectBaseArtifactId: null,
@@ -128,6 +129,16 @@ const gitArtifactInitialAPIResponses: GitArtifactAPIResponsesReduxState = {
     loading: false,
     error: null,
   },
+  pretag: {
+    value: null,
+    loading: false,
+    error: null,
+  },
+  createReleaseTag: {
+    loading: false,
+    error: null,
+  },
+
   // EE
   ...gitArtifactAPIResponsesInitialStateExtended,
 };
@@ -152,10 +163,16 @@ export const gitGlobalInitialState: GitGlobalReduxState = {
     loading: false,
     error: null,
   },
+  updateGeneratedSSHKey: {
+    loading: false,
+    error: null,
+  },
   gitImport: {
     loading: false,
     error: null,
   },
   isImportModalOpen: false,
+  isGenerateSSHKeyModalOpen: false,
+  importOverrideDetails: null,
   repoLimitErrorModalOpen: false,
 };

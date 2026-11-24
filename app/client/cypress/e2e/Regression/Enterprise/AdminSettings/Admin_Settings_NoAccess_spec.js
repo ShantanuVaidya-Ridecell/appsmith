@@ -39,6 +39,7 @@ describe("Admin settings page", { tags: ["@tag.Settings"] }, function () {
       });
       cy.get(adminsSettings.hideWatermarkInput).should("have.attr", "disabled");
 
+      cy.get(adminsSettings.userSettingsTab).click();
       cy.get(adminsSettings.showRolesAndGroupsWrapper).within(() => {
         cy.get(adminsSettings.businessTag)
           .should("exist")
@@ -85,24 +86,18 @@ describe("Admin settings page", { tags: ["@tag.Settings"] }, function () {
         .should("contain", "Upgrade")
         .click();
       cy.get("@pricingPage").should("be.called");
-      cy.wait(2000);
-      cy.go(-1);
       cy.stubPricingPage();
       cy.get(EnterpriseAdminSettingsLocators.upgradeSamlButton)
         .should("be.visible")
         .should("contain", "Upgrade")
         .click();
       cy.get("@pricingPage").should("be.called");
-      cy.wait(2000);
-      cy.go(-1);
       cy.stubCustomerPortalPage();
       cy.get(adminsSettings.branding).click();
       cy.url().should("contain", adminSettingsHelper.routes.BRANDING);
       cy.get(adminsSettings.brandingSubmitButton).should("be.disabled");
       agHelper.GetNClick(adminsSettings.upgrade);
       cy.get("@customerPortalPage").should("be.called");
-      cy.wait(2000);
-      cy.go(-1);
     }
   });
 
@@ -122,7 +117,6 @@ describe("Admin settings page", { tags: ["@tag.Settings"] }, function () {
       cy.stubCustomerPortalPage();
       agHelper.GetNClick(adminsSettings.upgrade);
       cy.get("@customerPortalPage").should("be.called");
-      cy.wait(2000);
       agHelper.VisitNAssert(
         adminSettingsHelper.routes.GENERAL,
         "getEnvVariables",
@@ -137,7 +131,6 @@ describe("Admin settings page", { tags: ["@tag.Settings"] }, function () {
       cy.stubCustomerPortalPage();
       agHelper.GetNClick(adminsSettings.upgrade);
       cy.get("@customerPortalPage").should("be.called");
-      cy.wait(2000);
       agHelper.VisitNAssert(
         adminSettingsHelper.routes.GENERAL,
         "getEnvVariables",
@@ -152,8 +145,6 @@ describe("Admin settings page", { tags: ["@tag.Settings"] }, function () {
       cy.stubPricingPage();
       agHelper.GetNClick(adminsSettings.upgrade);
       cy.get("@pricingPage").should("be.called");
-      cy.wait(2000);
-      cy.go(-1);
     }
   });
 });

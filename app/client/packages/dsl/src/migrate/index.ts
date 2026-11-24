@@ -91,9 +91,12 @@ import { migrateTableServerSideFiltering } from "./migrations/086-migrate-table-
 import { migrateChartwidgetCustomEchartConfig } from "./migrations/087-migrate-chart-widget-customechartdata";
 import { migrateCustomWidgetDynamicHeight } from "./migrations/088-migrate-custom-widget-dynamic-height";
 import { migrateTableWidgetV2CurrentRowInValidationsBinding } from "./migrations/089-migrage-table-widget-v2-currentRow-binding";
+import { migrateTableComputeValueBinding } from "./migrations/090-migrate-table-compute-value-binding";
+import { migrateAIChatWidget } from "./migrations/092-update-ai-chat-widget";
+import { migrateTableWidgetV2DynamicHeight } from "./migrations/094-migrate-table-widget-v2-dynamic-height";
 import type { DSLWidget } from "./types";
 
-export const LATEST_DSL_VERSION = 91;
+export const LATEST_DSL_VERSION = 95;
 
 export const calculateDynamicHeight = () => {
   const DEFAULT_GRID_ROW_HEIGHT = 10;
@@ -617,6 +620,11 @@ const migrateVersionedDSL = async (currentDSL: DSLWidget, newPage = false) => {
   }
 
   if (currentDSL.version === 90) {
+    currentDSL = migrateTableComputeValueBinding(currentDSL);
+    currentDSL.version = 91;
+  }
+
+  if (currentDSL.version === 91) {
     /**
      * This is just a version bump without any migration
      * History: With this PR: https://github.com/appsmithorg/appsmith/pull/38391
@@ -624,6 +632,28 @@ const migrateVersionedDSL = async (currentDSL: DSLWidget, newPage = false) => {
      * What we missed was that, the auto-commit does not handle clientVersion, which lead to this bug: https://github.com/appsmithorg/appsmith/issues/38511
      * We are bumping this version to make sure that the auto-commit will handle this version bump.
      */
+    currentDSL.version = 92;
+  }
+
+  if (currentDSL.version === 92) {
+    currentDSL = migrateAIChatWidget(currentDSL);
+    currentDSL.version = 93;
+  }
+
+  if (currentDSL.version === 93) {
+    /**
+     * We are repeating migration(90->91) here. Why?
+     * Although we updated the computed value logic in the property pane control files, we did not update the default values that the widget assumes upon instantiation.
+     * While this would not have caused any functional bugs, it results in the DSL saving an older version of the computed value, which the property control does not process or filter correctly for display.
+     * Consequently, anyone who dropped a table between version 90 and today will see unnecessary computations in their computed value field that should not be visible.
+     * This migration will update all those values to the latest computed value, ensuring they are displayed correctly by the control.
+     */
+    currentDSL = migrateTableComputeValueBinding(currentDSL);
+    currentDSL.version = 94;
+  }
+
+  if (currentDSL.version === 94) {
+    currentDSL = migrateTableWidgetV2DynamicHeight(currentDSL);
     currentDSL.version = LATEST_DSL_VERSION;
   }
 

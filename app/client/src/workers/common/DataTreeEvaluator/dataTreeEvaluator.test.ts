@@ -14,12 +14,9 @@ import {
 import { updateDependencyMap } from "workers/common/DependencyMap";
 import { replaceThisDotParams } from "./utils";
 import { isDataField } from "./utils";
-import widgets from "widgets";
-import type { WidgetConfiguration } from "WidgetProvider/constants";
-import {
-  EvaluationSubstitutionType,
-  type WidgetEntity,
-} from "ee/entities/DataTree/types";
+import { loadAllWidgets } from "widgets";
+import type { WidgetConfiguration } from "WidgetProvider/types";
+import { type WidgetEntity } from "ee/entities/DataTree/types";
 import {
   EXECUTION_PARAM_KEY,
   EXECUTION_PARAM_REFERENCE_REGEX,
@@ -27,6 +24,7 @@ import {
 import generateOverrideContext from "ee/workers/Evaluation/generateOverrideContext";
 import { klona } from "klona";
 import { APP_MODE } from "entities/App";
+import { EvaluationSubstitutionType } from "constants/EvaluationConstants";
 
 const widgetConfigMap: Record<
   string,
@@ -37,14 +35,18 @@ const widgetConfigMap: Record<
   }
 > = {};
 
-widgets.map((widget) => {
-  if (widget.type) {
-    widgetConfigMap[widget.type] = {
-      defaultProperties: widget.getDefaultPropertiesMap(),
-      derivedProperties: widget.getDerivedPropertiesMap(),
-      metaProperties: widget.getMetaPropertiesMap(),
-    };
-  }
+beforeAll(async () => {
+  const loadedWidgets = await loadAllWidgets();
+
+  loadedWidgets.forEach((widget) => {
+    if (widget.type) {
+      widgetConfigMap[widget.type] = {
+        defaultProperties: widget.getDefaultPropertiesMap(),
+        derivedProperties: widget.getDerivedPropertiesMap(),
+        metaProperties: widget.getMetaPropertiesMap(),
+      };
+    }
+  });
 });
 
 jest.mock("ee/workers/Evaluation/generateOverrideContext"); // mock the generateOverrideContext function
@@ -158,6 +160,41 @@ describe("DataTreeEvaluator", () => {
       ]);
     });
 
+    // Regression for #8639: Filepicker Binary data (a raw byte string containing
+    // '{'/'}' chars) in one param must not corrupt sibling params. Previously the
+    // whole params object was round-tripped through the {{ }} brace-counting parser,
+    // so unbalanced braces in the binary value nulled out every other param.
+    it("preserves sibling params when a param value contains unbalanced braces", () => {
+      // Mimics a Filepicker "Binary" readAsBinaryString payload: raw bytes incl.
+      // unbalanced braces, a null byte and a high byte (kept as \u escapes so the
+      // source file stays ASCII and is not treated as binary).
+      const binaryLike = ' {"junk": "}}{{" } \u0000\u00ff';
+      const result = dataTreeEvaluator.evaluateActionBindings(
+        ["this.params.name", "this.params.sources", "executionParams.name"],
+        {
+          name: "Test",
+          sources: binaryLike,
+        },
+      );
+
+      expect(result).toStrictEqual(["Test", binaryLike, "Test"]);
+    });
+
+    // Locks the intended behavior change from the #8639 fix: params are cloned, not
+    // re-evaluated/JSON-normalized. A value that looks like a binding is preserved
+    // verbatim, and NaN survives (the old JSON.stringify round-trip coerced it to null).
+    it("passes already-evaluated params through verbatim", () => {
+      const result = dataTreeEvaluator.evaluateActionBindings(
+        ["this.params.binding", "this.params.notANumber"],
+        {
+          binding: "{{Api1.data}}",
+          notANumber: NaN,
+        },
+      );
+
+      expect(result).toStrictEqual(["{{Api1.data}}", NaN]);
+    });
+
     // The test should verify that generateOverrideContext is called and passed as context to getDynamicValue
     it("should call generateOverrideContext and pass as context to getDynamicValue", () => {
       const overrideContextValue = { "ModuleInstance1.inputs.input1": "200" };
@@ -240,36 +277,30 @@ describe("DataTreeEvaluator", () => {
         "200",
       ]);
 
-      // Verify getDynamicValue receives the correct parameters
-      // The first call is always with executionParams
-      [`${JSON.stringify(executionParams)}`, ...bindings].forEach(
-        (binding, index) => {
-          const replacedBinding = binding.replace(
-            EXECUTION_PARAM_REFERENCE_REGEX,
-            EXECUTION_PARAM_KEY,
-          );
+      // Verify getDynamicValue receives the correct parameters.
+      // Execution params are now cloned directly (no {{ }} round-trip), so there is
+      // no leading getDynamicValue call for them — only one call per binding, each
+      // carrying the overrideContext.
+      bindings.forEach((binding, index) => {
+        const replacedBinding = binding.replace(
+          EXECUTION_PARAM_REFERENCE_REGEX,
+          EXECUTION_PARAM_KEY,
+        );
 
-          let defaultExpectedValue = [
-            `{{${replacedBinding}}}`,
-            klona(dataTree),
-            dataTreeEvaluator.oldConfigTree,
-            EvaluationSubstitutionType.TEMPLATE,
-          ];
+        const defaultExpectedValue = [
+          `{{${replacedBinding}}}`,
+          klona(dataTree),
+          dataTreeEvaluator.oldConfigTree,
+          EvaluationSubstitutionType.TEMPLATE,
+          expect.objectContaining({
+            overrideContext: overrideContextValue,
+          }),
+        ];
 
-          if (index !== 0) {
-            defaultExpectedValue = [
-              ...defaultExpectedValue,
-              expect.objectContaining({
-                overrideContext: overrideContextValue,
-              }),
-            ];
-          }
-
-          expect(getDynamicValueCapturedParams[index]).toEqual(
-            defaultExpectedValue,
-          );
-        },
-      );
+        expect(getDynamicValueCapturedParams[index]).toEqual(
+          defaultExpectedValue,
+        );
+      });
 
       // Restore the original function after the test
       (generateOverrideContext as jest.Mock).mockImplementation(
@@ -290,6 +321,7 @@ describe("DataTreeEvaluator", () => {
           timestamp: "timestamp",
           appMode: APP_MODE.PUBLISHED,
           instanceId: "instanceId",
+          dslVersion: 1,
         },
       );
       dataTreeEvaluator.evalAndValidateFirstTree();
@@ -305,6 +337,7 @@ describe("DataTreeEvaluator", () => {
         evalOrder,
         configTree as unknown as ConfigTree,
         unEvalUpdates,
+        [],
       );
 
       expect(dataTreeEvaluator.dependencies).toStrictEqual({
@@ -391,6 +424,7 @@ describe("DataTreeEvaluator", () => {
           timestamp: "timestamp",
           appMode: APP_MODE.PUBLISHED,
           instanceId: "instanceId",
+          dslVersion: 1,
         },
       );
       dataTreeEvaluator.evalAndValidateFirstTree();
@@ -454,6 +488,7 @@ describe("DataTreeEvaluator", () => {
           timestamp: new Date().toISOString(),
           appMode: APP_MODE.PUBLISHED,
           instanceId: "instanceId",
+          dslVersion: 1,
         },
       );
       dataTreeEvaluator.evalAndValidateFirstTree();
@@ -474,16 +509,15 @@ describe("DataTreeEvaluator", () => {
             evalOrder,
             arrayAccessorCyclicDependencyConfig.apiSuccessConfigTree,
             unEvalUpdates,
+            [],
           );
-          expect(dataTreeEvaluator.dependencies["Api1"]).toStrictEqual([
-            "Api1.data",
-          ]);
-          expect(dataTreeEvaluator.dependencies["Api1.data"]).toStrictEqual([
-            "Api1.data[2]",
-          ]);
-          expect(dataTreeEvaluator.dependencies["Api1.data[2]"]).toStrictEqual([
-            "Api1.data[2].id",
-          ]);
+          expect(dataTreeEvaluator.dependencies["Api1"]).toStrictEqual(
+            undefined,
+          );
+          expect(dataTreeEvaluator.dependencies["Api1.data"]).toStrictEqual([]);
+          expect(dataTreeEvaluator.dependencies["Api1.data[2]"]).toStrictEqual(
+            undefined,
+          );
           expect(dataTreeEvaluator.dependencies["Text1.text"]).toStrictEqual([
             "Api1.data[2].id",
           ]);
@@ -499,11 +533,12 @@ describe("DataTreeEvaluator", () => {
             order,
             arrayAccessorCyclicDependencyConfig.apiFailureConfigTree,
             unEvalUpdates2,
+            [],
           );
 
-          expect(dataTreeEvaluator.dependencies["Api1"]).toStrictEqual([
-            "Api1.data",
-          ]);
+          expect(dataTreeEvaluator.dependencies["Api1"]).toStrictEqual(
+            undefined,
+          );
           expect(dataTreeEvaluator.dependencies["Api1.data"]).toStrictEqual([]);
           expect(dataTreeEvaluator.dependencies["Api1.data[2]"]).toStrictEqual(
             undefined,
@@ -527,6 +562,7 @@ describe("DataTreeEvaluator", () => {
           order1,
           arrayAccessorCyclicDependencyConfig.apiSuccessConfigTree,
           unEvalUpdates,
+          [],
         );
 
         // success: response -> [{...}, {...}]
@@ -540,11 +576,10 @@ describe("DataTreeEvaluator", () => {
           order2,
           arrayAccessorCyclicDependencyConfig.apiSuccessConfigTree2,
           unEvalUpdates2,
+          [],
         );
 
-        expect(dataTreeEvaluator.dependencies["Api1"]).toStrictEqual([
-          "Api1.data",
-        ]);
+        expect(dataTreeEvaluator.dependencies["Api1"]).toStrictEqual(undefined);
         expect(dataTreeEvaluator.dependencies["Api1.data"]).toStrictEqual([]);
         expect(dataTreeEvaluator.dependencies["Api1.data[2]"]).toStrictEqual(
           undefined,
@@ -569,19 +604,18 @@ describe("DataTreeEvaluator", () => {
             order,
             nestedArrayAccessorCyclicDependencyConfig.apiSuccessConfigTree,
             unEvalUpdates,
+            [],
           );
-          expect(dataTreeEvaluator.dependencies["Api1"]).toStrictEqual([
-            "Api1.data",
-          ]);
-          expect(dataTreeEvaluator.dependencies["Api1.data"]).toStrictEqual([
-            "Api1.data[2]",
-          ]);
-          expect(dataTreeEvaluator.dependencies["Api1.data[2]"]).toStrictEqual([
-            "Api1.data[2][2]",
-          ]);
+          expect(dataTreeEvaluator.dependencies["Api1"]).toStrictEqual(
+            undefined,
+          );
+          expect(dataTreeEvaluator.dependencies["Api1.data"]).toStrictEqual([]);
+          expect(dataTreeEvaluator.dependencies["Api1.data[2]"]).toStrictEqual(
+            undefined,
+          );
           expect(
             dataTreeEvaluator.dependencies["Api1.data[2][2]"],
-          ).toStrictEqual(["Api1.data[2][2].id"]);
+          ).toStrictEqual(undefined);
           expect(dataTreeEvaluator.dependencies["Text1.text"]).toStrictEqual([
             "Api1.data[2][2].id",
           ]);
@@ -597,10 +631,11 @@ describe("DataTreeEvaluator", () => {
             order1,
             nestedArrayAccessorCyclicDependencyConfig.apiFailureConfigTree,
             unEvalUpdates2,
+            [],
           );
-          expect(dataTreeEvaluator.dependencies["Api1"]).toStrictEqual([
-            "Api1.data",
-          ]);
+          expect(dataTreeEvaluator.dependencies["Api1"]).toStrictEqual(
+            undefined,
+          );
           expect(dataTreeEvaluator.dependencies["Api1.data"]).toStrictEqual([]);
           expect(dataTreeEvaluator.dependencies["Api1.data[2]"]).toStrictEqual(
             undefined,
@@ -627,6 +662,7 @@ describe("DataTreeEvaluator", () => {
           order,
           nestedArrayAccessorCyclicDependencyConfig.apiSuccessConfigTree,
           unEvalUpdates,
+          [],
         );
 
         // success: response -> [ [{...}, {...}, {...}], [{...}, {...}, {...}] ]
@@ -640,11 +676,10 @@ describe("DataTreeEvaluator", () => {
           order1,
           nestedArrayAccessorCyclicDependencyConfig.apiSuccessConfigTree2,
           unEvalUpdates2,
+          [],
         );
 
-        expect(dataTreeEvaluator.dependencies["Api1"]).toStrictEqual([
-          "Api1.data",
-        ]);
+        expect(dataTreeEvaluator.dependencies["Api1"]).toStrictEqual(undefined);
         expect(dataTreeEvaluator.dependencies["Api1.data"]).toStrictEqual([]);
         expect(dataTreeEvaluator.dependencies["Api1.data[2]"]).toStrictEqual(
           undefined,
@@ -668,6 +703,7 @@ describe("DataTreeEvaluator", () => {
           order,
           nestedArrayAccessorCyclicDependencyConfig.apiSuccessConfigTree,
           unEvalUpdates,
+          [],
         );
 
         // success: response -> [ [{...}, {...}, {...}], [{...}, {...}, {...}], [] ]
@@ -681,15 +717,12 @@ describe("DataTreeEvaluator", () => {
           order1,
           nestedArrayAccessorCyclicDependencyConfig.apiSuccessConfigTree3,
           unEvalUpdates2,
-        );
-        expect(dataTreeEvaluator.dependencies["Api1"]).toStrictEqual([
-          "Api1.data",
-        ]);
-        expect(dataTreeEvaluator.dependencies["Api1.data"]).toStrictEqual([
-          "Api1.data[2]",
-        ]);
-        expect(dataTreeEvaluator.dependencies["Api1.data[2]"]).toStrictEqual(
           [],
+        );
+        expect(dataTreeEvaluator.dependencies["Api1"]).toStrictEqual(undefined);
+        expect(dataTreeEvaluator.dependencies["Api1.data"]).toStrictEqual([]);
+        expect(dataTreeEvaluator.dependencies["Api1.data[2]"]).toStrictEqual(
+          undefined,
         );
         expect(dataTreeEvaluator.dependencies["Api1.data[2][2]"]).toStrictEqual(
           undefined,
@@ -785,10 +818,12 @@ describe("isDataField", () => {
         myFun2: {
           arguments: [],
           confirmBeforeExecute: false,
+          runBehaviour: "MANUAL",
         },
         myFun1: {
           arguments: [],
           confirmBeforeExecute: false,
+          runBehaviour: "MANUAL",
         },
       },
       name: "JSObject1",
@@ -830,19 +865,27 @@ describe("isDataField", () => {
         body: ["myFun2", "myFun1"],
       },
       actionNames: new Set(["myFun1", "myFun2"]),
+      dynamicTriggerPathList: [
+        {
+          key: "myFun1",
+        },
+        {
+          key: "myFun2",
+        },
+      ],
     },
     JSObject2: {
       actionId: "644242aeadc0936a9b0e71cc",
       meta: {
         myFun2: {
           arguments: [],
-
           confirmBeforeExecute: false,
+          runBehaviour: "MANUAL",
         },
         myFun1: {
           arguments: [],
-
           confirmBeforeExecute: false,
+          runBehaviour: "MANUAL",
         },
       },
       name: "JSObject2",
@@ -884,6 +927,14 @@ describe("isDataField", () => {
         body: ["myFun2", "myFun1"],
       },
       actionNames: new Set(["myFun1", "myFun2"]),
+      dynamicTriggerPathList: [
+        {
+          key: "myFun1",
+        },
+        {
+          key: "myFun2",
+        },
+      ],
     },
     MainContainer: {
       defaultProps: {},

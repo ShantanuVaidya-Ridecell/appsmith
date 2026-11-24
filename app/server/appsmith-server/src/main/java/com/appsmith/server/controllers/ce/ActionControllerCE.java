@@ -2,6 +2,7 @@ package com.appsmith.server.controllers.ce;
 
 import com.appsmith.external.models.ActionDTO;
 import com.appsmith.external.models.ActionExecutionResult;
+import com.appsmith.external.models.RunBehaviourEnum;
 import com.appsmith.external.views.FromRequest;
 import com.appsmith.external.views.Views;
 import com.appsmith.server.constants.FieldName;
@@ -58,7 +59,7 @@ public class ActionControllerCE {
         log.debug("Going to create resource {}", resource.getClass().getName());
         return layoutActionService
                 .createSingleAction(resource)
-                .map(created -> new ResponseDTO<>(HttpStatus.CREATED.value(), created, null));
+                .map(created -> new ResponseDTO<>(HttpStatus.CREATED, created));
     }
 
     @JsonView(Views.Public.class)
@@ -69,7 +70,7 @@ public class ActionControllerCE {
         log.debug("Going to update resource with branchedActionId: {}", branchedActionId);
         return layoutActionService
                 .updateNewActionByBranchedId(branchedActionId, resource)
-                .map(updatedResource -> new ResponseDTO<>(HttpStatus.OK.value(), updatedResource, null));
+                .map(updatedResource -> new ResponseDTO<>(HttpStatus.OK, updatedResource));
     }
 
     @JsonView(Views.Public.class)
@@ -82,7 +83,7 @@ public class ActionControllerCE {
         return actionExecutionSolution
                 .executeAction(
                         partFlux, environmentId, serverWebExchange.getRequest().getHeaders(), Boolean.FALSE)
-                .map(updatedResource -> new ResponseDTO<>(HttpStatus.OK.value(), updatedResource, null));
+                .map(updatedResource -> new ResponseDTO<>(HttpStatus.OK, updatedResource));
     }
 
     @JsonView(Views.Public.class)
@@ -93,9 +94,7 @@ public class ActionControllerCE {
                 actionMoveDTO.getAction().getName(),
                 actionMoveDTO.getAction().getPageId(),
                 actionMoveDTO.getDestinationPageId());
-        return layoutActionService
-                .moveAction(actionMoveDTO)
-                .map(action -> new ResponseDTO<>(HttpStatus.OK.value(), action, null));
+        return layoutActionService.moveAction(actionMoveDTO).map(action -> new ResponseDTO<>(HttpStatus.OK, action));
     }
 
     @JsonView(Views.Public.class)
@@ -104,7 +103,7 @@ public class ActionControllerCE {
         refactorEntityNameDTO.setEntityType(EntityType.ACTION);
         return refactoringService
                 .refactorEntityName(refactorEntityNameDTO)
-                .map(created -> new ResponseDTO<>(HttpStatus.OK.value(), created, null));
+                .map(created -> new ResponseDTO<>(HttpStatus.OK, created));
     }
 
     @JsonView(Views.Public.class)
@@ -114,9 +113,23 @@ public class ActionControllerCE {
         return newActionService
                 .getActionsForViewMode(branchedApplicationId)
                 .collectList()
-                .map(actions -> new ResponseDTO<>(HttpStatus.OK.value(), actions, null));
+                .map(actions -> new ResponseDTO<>(HttpStatus.OK, actions));
     }
 
+    @JsonView(Views.Public.class)
+    @PutMapping("/runBehaviour/{branchedActionId}")
+    public Mono<ResponseDTO<ActionDTO>> setRunBehaviour(
+            @PathVariable String branchedActionId, @RequestParam RunBehaviourEnum behaviour) {
+        log.debug("Going to set run behaviour for action id {} to {}", branchedActionId, behaviour);
+        return layoutActionService
+                .setRunBehaviour(branchedActionId, behaviour)
+                .map(action -> new ResponseDTO<>(HttpStatus.OK, action));
+    }
+
+    /**
+     * @deprecated This endpoint is deprecated. Use /runBehaviour/{branchedActionId} instead.
+     */
+    @Deprecated
     @JsonView(Views.Public.class)
     @PutMapping("/executeOnLoad/{branchedActionId}")
     public Mono<ResponseDTO<ActionDTO>> setExecuteOnLoad(
@@ -124,7 +137,7 @@ public class ActionControllerCE {
         log.debug("Going to set execute on load for action id {} to {}", branchedActionId, flag);
         return layoutActionService
                 .setExecuteOnLoad(branchedActionId, flag)
-                .map(action -> new ResponseDTO<>(HttpStatus.OK.value(), action, null));
+                .map(action -> new ResponseDTO<>(HttpStatus.OK, action));
     }
 
     @JsonView(Views.Public.class)
@@ -134,7 +147,7 @@ public class ActionControllerCE {
         log.debug("Going to delete unpublished action with id: {}, branchName: {}", id, branchName);
         return layoutActionService
                 .deleteUnpublishedAction(id)
-                .map(deletedResource -> new ResponseDTO<>(HttpStatus.OK.value(), deletedResource, null));
+                .map(deletedResource -> new ResponseDTO<>(HttpStatus.OK, deletedResource));
     }
 
     /**
@@ -154,6 +167,6 @@ public class ActionControllerCE {
         return newActionService
                 .getUnpublishedActionsExceptJs(params)
                 .collectList()
-                .map(resources -> new ResponseDTO<>(HttpStatus.OK.value(), resources, null));
+                .map(resources -> new ResponseDTO<>(HttpStatus.OK, resources));
     }
 }

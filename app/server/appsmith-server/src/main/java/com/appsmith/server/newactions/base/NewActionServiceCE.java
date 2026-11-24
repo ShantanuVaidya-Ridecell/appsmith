@@ -36,9 +36,24 @@ public interface NewActionServiceCE extends CrudService<NewAction, String> {
 
     Mono<NewAction> validateAction(NewAction newAction, boolean isDryOps);
 
+    Mono<Tuple2<List<NewAction>, List<NewAction>>> validateActionsBeforeImport(
+            String artifactId, List<NewAction> freshActions, List<NewAction> existingActions);
+
     Mono<Void> bulkValidateAndInsertActionInRepository(List<NewAction> newActionList);
 
     Mono<Void> bulkValidateAndUpdateActionInRepository(List<NewAction> newActionList);
+
+    Mono<Void> bulkInsertActions(List<NewAction> newActionList);
+
+    /**
+     * General purpose bulk update method that directly saves actions to the database without validation.
+     * This method is optimized for scenarios where the actions are already validated or when
+     * validation is not required (e.g., refactoring operations, data migrations).
+     *
+     * @param newActionList List of NewAction objects to update
+     * @return Mono<Void> indicating completion of the bulk update operation
+     */
+    Mono<Void> bulkUpdateActions(List<NewAction> newActionList);
 
     Mono<NewAction> extractAndSetJsonPathKeys(NewAction newAction);
 
@@ -108,7 +123,7 @@ public interface NewActionServiceCE extends CrudService<NewAction, String> {
 
     Mono<NewAction> archiveById(String id);
 
-    Mono<List<NewAction>> archiveActionsByApplicationId(String applicationId, AclPermission permission);
+    Mono<Void> archiveActionsByApplicationId(String applicationId, AclPermission permission);
 
     Flux<ActionDTO> getUnpublishedActionsExceptJs(MultiValueMap<String, String> params);
 
@@ -140,4 +155,8 @@ public interface NewActionServiceCE extends CrudService<NewAction, String> {
     Mono<Void> saveLastEditInformationInParent(ActionDTO actionDTO);
 
     Flux<NewAction> findByCollectionIdAndViewMode(String collectionId, boolean viewMode, AclPermission aclPermission);
+
+    Mono<Void> postProcessNewlyAddedActions(List<ActionDTO> newlyAddedActions);
+
+    Mono<Void> postProcessDeletedActions(List<ActionDTO> actionDTOs);
 }

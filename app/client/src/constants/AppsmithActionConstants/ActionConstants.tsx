@@ -8,6 +8,7 @@ import saasActionSettingsConfig from "constants/AppsmithActionConstants/formConf
 import apiActionDependencyConfig from "constants/AppsmithActionConstants/formConfig/ApiDependencyConfigs";
 import apiActionDatasourceFormButtonConfig from "constants/AppsmithActionConstants/formConfig/ApiDatasourceFormsButtonConfig";
 import type { EntityTypeValue } from "ee/entities/DataTree/types";
+import type { ActionSettingsConfig } from "PluginActionEditor/types/PluginActionTypes";
 
 export interface ExecuteActionPayloadEvent {
   type: EventType;
@@ -26,6 +27,7 @@ export interface TriggerSource {
   isJSAction?: boolean;
   actionId?: string;
 }
+
 export enum TriggerKind {
   EVENT_EXECUTION = "EVENT_EXECUTION", // Eg. Button onClick
   JS_FUNCTION_EXECUTION = "JS_FUNCTION_EXECUTION", // Executing js function from jsObject page
@@ -34,9 +36,7 @@ export enum TriggerKind {
 export interface ExecuteTriggerPayload {
   dynamicString: string;
   event: ExecuteActionPayloadEvent;
-  // TODO: Fix this the next time the file is edited
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  callbackData?: Array<any>;
+  callbackData?: Array<unknown>;
   triggerPropertyName?: string;
   source?: TriggerSource;
   widgetId?: string;
@@ -167,18 +167,17 @@ export const POSTMAN = "POSTMAN";
 export const CURL = "CURL";
 export const Swagger = "Swagger";
 
-// TODO: Fix this the next time the file is edited
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export const defaultActionSettings: Record<PluginType, any> = {
-  [PluginType.API]: apiActionSettingsConfig,
-  [PluginType.DB]: queryActionSettingsConfig,
-  [PluginType.SAAS]: saasActionSettingsConfig,
-  [PluginType.REMOTE]: saasActionSettingsConfig,
-  [PluginType.JS]: [],
-  [PluginType.AI]: saasActionSettingsConfig,
-  [PluginType.INTERNAL]: saasActionSettingsConfig,
-  [PluginType.EXTERNAL_SAAS]: saasActionSettingsConfig,
-};
+export const defaultActionSettings: Record<PluginType, ActionSettingsConfig[]> =
+  {
+    [PluginType.API]: apiActionSettingsConfig,
+    [PluginType.DB]: queryActionSettingsConfig,
+    [PluginType.SAAS]: saasActionSettingsConfig,
+    [PluginType.REMOTE]: saasActionSettingsConfig,
+    [PluginType.JS]: [],
+    [PluginType.AI]: saasActionSettingsConfig,
+    [PluginType.INTERNAL]: saasActionSettingsConfig,
+    [PluginType.EXTERNAL_SAAS]: saasActionSettingsConfig,
+  };
 
 // TODO: Fix this the next time the file is edited
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

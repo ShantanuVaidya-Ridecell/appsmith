@@ -160,6 +160,8 @@ export enum EvalErrorTypes {
   EXTRACT_DEPENDENCY_ERROR = "EXTRACT_DEPENDENCY_ERROR",
   CLONE_ERROR = "CLONE_ERROR",
   SERIALIZATION_ERROR = "SERIALIZATION_ERROR",
+  UPDATE_DATA_TREE_ERROR = "UPDATE_DATA_TREE_ERROR",
+  CACHE_ERROR = "CACHE_ERROR",
 }
 
 export interface EvalError {
@@ -168,6 +170,7 @@ export interface EvalError {
   // TODO: Fix this the next time the file is edited
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   context?: Record<string, any>;
+  stack?: string;
 }
 
 export interface DynamicPath {
@@ -237,18 +240,40 @@ export const getWidgetDynamicTriggerPathList = (
   return [];
 };
 
-// TODO: Fix this the next time the file is edited
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export const isPathDynamicTrigger = (widget: any, path: string): boolean => {
+export const isPathDynamicTrigger = (
+  entity: DataTreeEntityConfig | WidgetProps,
+  path: string,
+): boolean => {
   if (
-    widget &&
-    widget.dynamicTriggerPathList &&
-    Array.isArray(widget.dynamicTriggerPathList)
+    entity &&
+    entity.dynamicTriggerPathList &&
+    Array.isArray(entity.dynamicTriggerPathList)
   ) {
-    return _.find(widget.dynamicTriggerPathList, { key: path }) !== undefined;
+    return _.find(entity.dynamicTriggerPathList, { key: path }) !== undefined;
   }
 
   return false;
+};
+
+/**
+ * True when a trigger property has no executable JS: empty string, empty
+ * mustache `{{}}`, a leftover semicolon, or `undefined;`.
+ * Used when dropping a path from dynamicTriggerPathList and when skipping lint.
+ */
+export const isEmptyTriggerValue = (value?: string): boolean => {
+  if (!value || !value.trim()) {
+    return true;
+  }
+
+  let code = value.trim();
+
+  // Only strip a complete {{ ... }} pair. A lone "{{" or "}}" is malformed
+  // input and must not be treated as an empty leftover event.
+  if (code.startsWith("{{") && code.endsWith("}}")) {
+    code = code.slice(2, -2).trim();
+  }
+
+  return code === "" || code === ";" || code === "undefined;";
 };
 
 export const getWidgetDynamicPropertyPathList = (
@@ -295,6 +320,46 @@ export const unsafeFunctionForEval = [
   "Navigator",
 ];
 
+/**
+ * Checks if a child property path starts with the parent property path
+ * using either dot notation (.) or bracket notation ([)
+ *
+ * @param parentPropertyPath - The parent property path
+ * @param childPropertyPath - The child property path to check
+ * @returns true if childPropertyPath is a child of parentPropertyPath
+ *
+ * @example
+ * isChildPropertyPathStartsWithParent("Table1", "Table1.data") // true
+ * isChildPropertyPathStartsWithParent("Table1", "Table1[0]") // true
+ * isChildPropertyPathStartsWithParent("Table1", "Table2.data") // false
+ */
+export const isChildPropertyPathStartsWithParent = (
+  parentPropertyPath: string,
+  childPropertyPath: string,
+): boolean => {
+  if (!parentPropertyPath || !childPropertyPath) {
+    return false;
+  }
+
+  const parentLength = parentPropertyPath.length;
+
+  if (childPropertyPath.length <= parentLength) {
+    return false;
+  }
+
+  // Most common case: dot notation
+  if (childPropertyPath[parentLength] === ".") {
+    return childPropertyPath.startsWith(parentPropertyPath);
+  }
+
+  // Less common case: bracket notation
+  if (childPropertyPath[parentLength] === "[") {
+    return childPropertyPath.startsWith(parentPropertyPath);
+  }
+
+  return false;
+};
+
 export const isChildPropertyPath = (
   parentPropertyPath: string,
   childPropertyPath: string,
@@ -304,8 +369,7 @@ export const isChildPropertyPath = (
 ): boolean => {
   return (
     (!strict && parentPropertyPath === childPropertyPath) ||
-    childPropertyPath.startsWith(`${parentPropertyPath}.`) ||
-    childPropertyPath.startsWith(`${parentPropertyPath}[`)
+    isChildPropertyPathStartsWithParent(parentPropertyPath, childPropertyPath)
   );
 };
 
@@ -425,6 +489,7 @@ export interface EvaluationError extends DataTreeError {
     | PropertyEvaluationErrorType.VALIDATION;
   originalBinding?: string;
   kind?: Partial<PropertyEvaluationErrorKind>;
+  stack?: string;
 }
 
 export interface LintError extends DataTreeError {
@@ -634,4 +699,14 @@ export function getEntityName(
   if (isWidget(entity)) return entity.widgetName;
 
   if (isJSAction(entity)) return entityConfig.name;
+}
+
+export function getDifferences<T>(a: Set<T>, b: Set<T>): T[] {
+  const diff: T[] = [];
+
+  for (const val of a) {
+    if (!b.has(val)) diff.push(val);
+  }
+
+  return diff;
 }

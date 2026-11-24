@@ -1,10 +1,13 @@
 package com.appsmith.server.services.ce;
 
+import com.appsmith.server.configurations.CloudServicesConfig;
 import com.appsmith.server.domains.Plugin;
 import com.appsmith.server.plugins.base.PluginServiceCE;
 import com.appsmith.server.plugins.base.PluginServiceCEImpl;
+import com.appsmith.server.plugins.solutions.PluginTransformationSolution;
 import com.appsmith.server.repositories.PluginRepository;
 import com.appsmith.server.services.AnalyticsService;
+import com.appsmith.server.services.ConfigService;
 import com.appsmith.server.services.WorkspaceService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.validation.Validator;
@@ -16,8 +19,6 @@ import org.pf4j.PluginManager;
 import org.pf4j.PluginWrapper;
 import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.core.io.ClassPathResource;
-import org.springframework.data.redis.core.ReactiveRedisTemplate;
-import org.springframework.data.redis.listener.ChannelTopic;
 import org.springframework.test.context.junit.jupiter.SpringExtension;
 
 import java.io.IOException;
@@ -48,14 +49,13 @@ public class PluginServiceCEImplTest {
     PluginManager pluginManager;
 
     @MockBean
-    ReactiveRedisTemplate<String, String> reactiveTemplate;
-
-    @MockBean
-    ChannelTopic topic;
+    PluginTransformationSolution pluginTransformationSolution;
 
     ObjectMapper objectMapper;
 
     PluginServiceCE pluginService;
+    CloudServicesConfig cloudServicesConfig;
+    ConfigService configService;
 
     @BeforeEach
     public void setUp() {
@@ -66,9 +66,10 @@ public class PluginServiceCEImplTest {
                 analyticsService,
                 workspaceService,
                 pluginManager,
-                reactiveTemplate,
-                topic,
-                objectMapper);
+                objectMapper,
+                cloudServicesConfig,
+                configService,
+                pluginTransformationSolution);
     }
 
     @Test

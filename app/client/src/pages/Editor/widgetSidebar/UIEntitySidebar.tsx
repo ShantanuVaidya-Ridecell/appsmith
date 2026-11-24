@@ -1,8 +1,3 @@
-import {
-  UI_ELEMENT_PANEL_SEARCH_TEXT,
-  WIDGET_PANEL_EMPTY_MESSAGE,
-  createMessage,
-} from "ee/constants/messages";
 import AnalyticsUtil from "ee/utils/AnalyticsUtil";
 import { ENTITY_EXPLORER_SEARCH_ID } from "constants/Explorer";
 import type {
@@ -16,16 +11,26 @@ import { debounce } from "lodash";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { groupWidgetCardsByTags } from "../utils";
 import UIEntityTagGroup from "./UIEntityTagGroup";
-import { useUIExplorerItems } from "./hooks";
+import type { WidgetCardProps } from "widgets/BaseWidget";
+interface UIEntitySidebarProps {
+  focusSearchInput?: boolean;
+  isActive: boolean;
+  cards: WidgetCardProps[];
+  entityLoading?: Partial<Record<WidgetTags, boolean>>;
+  groupedCards: WidgetCardsGroupedByTags;
+  searchPlaceholderText?: string;
+  emptyMessage?: string;
+}
 
 function UIEntitySidebar({
+  cards,
+  emptyMessage,
+  entityLoading,
   focusSearchInput,
+  groupedCards,
   isActive,
-}: {
-  isActive: boolean;
-  focusSearchInput?: boolean;
-}) {
-  const { cards, entityLoading, groupedCards } = useUIExplorerItems();
+  searchPlaceholderText,
+}: UIEntitySidebarProps) {
   const [filteredCards, setFilteredCards] =
     useState<WidgetCardsGroupedByTags>(groupedCards);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
@@ -91,7 +96,7 @@ function UIEntitySidebar({
   // update widgets list after building blocks have been fetched async
   useEffect(() => {
     setFilteredCards(groupedCards);
-  }, [entityLoading[WIDGET_TAGS.BUILDING_BLOCKS]]);
+  }, [entityLoading?.[WIDGET_TAGS.BUILDING_BLOCKS]]);
 
   useEffect(() => {
     if (focusSearchInput) searchInputRef.current?.focus();
@@ -109,7 +114,7 @@ function UIEntitySidebar({
           autoComplete="off"
           id={ENTITY_EXPLORER_SEARCH_ID}
           onChange={search}
-          placeholder={createMessage(UI_ELEMENT_PANEL_SEARCH_TEXT)}
+          placeholder={searchPlaceholderText}
           ref={searchInputRef}
           type="text"
         />
@@ -126,13 +131,15 @@ function UIEntitySidebar({
             renderAs="p"
             style={{ marginBottom: "15px" }}
           >
-            {createMessage(WIDGET_PANEL_EMPTY_MESSAGE)} `
-            {searchInputRef.current?.value}`
+            {emptyMessage} `{searchInputRef.current?.value}`
           </Text>
         )}
         <div>
           {Object.entries(filteredCards).map(([tag, cardsForThisTag]) => {
-            if (!cardsForThisTag?.length && !entityLoading[tag as WidgetTags]) {
+            if (
+              !cardsForThisTag?.length &&
+              !entityLoading?.[tag as WidgetTags]
+            ) {
               return null;
             }
 
@@ -143,7 +150,7 @@ function UIEntitySidebar({
             return (
               <UIEntityTagGroup
                 cards={cardsForThisTag}
-                isLoading={!!entityLoading[tag as WidgetTags]}
+                isLoading={!!entityLoading?.[tag as WidgetTags]}
                 key={tag}
                 tag={tag}
               />

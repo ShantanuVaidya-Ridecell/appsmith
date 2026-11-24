@@ -4,8 +4,8 @@ import { ValidationTypes } from "constants/WidgetValidation";
 import type { SetterConfig, Stylesheet } from "entities/AppTheming";
 import React from "react";
 import { isAutoLayout } from "layoutSystems/autolayout/utils/flexWidgetUtils";
-import type { DerivedPropertiesMap } from "WidgetProvider/factory";
-import { AlignWidgetTypes } from "WidgetProvider/constants";
+import type { DerivedPropertiesMap } from "WidgetProvider/factory/types";
+import { AlignWidgetTypes } from "WidgetProvider/types";
 import {
   isAutoHeightEnabledForWidget,
   DefaultAutocompleteDefinitions,
@@ -16,13 +16,13 @@ import CheckboxComponent from "../component";
 import type {
   AnvilConfig,
   AutocompletionDefinitions,
-} from "WidgetProvider/constants";
+} from "WidgetProvider/types";
 import { FILL_WIDGET_MIN_WIDTH } from "constants/minWidthConstants";
 import { ResponsiveBehavior } from "layoutSystems/common/utils/constants";
 import type {
   SnipingModeProperty,
   PropertyUpdates,
-} from "WidgetProvider/constants";
+} from "WidgetProvider/types";
 
 import IconSVG from "../icon.svg";
 import ThumbnailSVG from "../thumbnail.svg";
@@ -200,6 +200,16 @@ class CheckboxWidget extends BaseWidget<CheckboxWidgetProps, WidgetState> {
       {
         sectionName: "General",
         children: [
+          {
+            helpText: "Show help text or details about current input",
+            propertyName: "labelTooltip",
+            label: "Tooltip",
+            controlType: "INPUT_TEXT",
+            placeholderText: "Add hints to guide the user",
+            isBindProperty: true,
+            isTriggerProperty: false,
+            validation: { type: ValidationTypes.TEXT },
+          },
           {
             propertyName: "defaultCheckedState",
             label: "Default state",
@@ -416,6 +426,14 @@ class CheckboxWidget extends BaseWidget<CheckboxWidgetProps, WidgetState> {
     ) {
       this.props.updateWidgetMetaProperty("isDirty", false);
     }
+
+    // Handle programmatic changes
+    if (
+      this.props.isChecked !== prevProps.isChecked &&
+      this.props.onCheckChange
+    ) {
+      this.props.updateWidgetMetaProperty("isChecked", this.props.isChecked);
+    }
   }
 
   static getSetterConfig(): SetterConfig {
@@ -460,6 +478,7 @@ class CheckboxWidget extends BaseWidget<CheckboxWidgetProps, WidgetState> {
         labelStyle={this.props.labelStyle}
         labelTextColor={this.props.labelTextColor}
         labelTextSize={this.props.labelTextSize}
+        labelTooltip={this.props.labelTooltip}
         minHeight={this.props.minHeight}
         onCheckChange={this.onCheckChange}
         widgetId={this.props.widgetId}
@@ -496,6 +515,7 @@ export interface CheckboxWidgetProps extends WidgetProps {
   labelTextColor?: string;
   labelTextSize?: string;
   labelStyle?: string;
+  labelTooltip?: string;
 }
 
 export default CheckboxWidget;

@@ -18,6 +18,7 @@ import {
   MULTISELECT_CHECKBOX_WIDTH,
   POPOVER_ITEMS_TEXT_MAP,
   StickyType,
+  TEXT_ALIGN,
 } from "../Constants";
 import { TooltipContentWrapper } from "../TableStyledWrappers";
 import { isColumnTypeEditable } from "widgets/TableWidgetV2/widget/utilities";
@@ -25,6 +26,7 @@ import { Popover2 } from "@blueprintjs/popover2";
 import { MenuDivider } from "@design-system/widgets-old";
 import { importRemixIcon, importSvg } from "@design-system/widgets-old";
 import { CANVAS_ART_BOARD } from "constants/componentClassNameConstants";
+import { useAppsmithTable } from "../TableContext";
 
 const Check = importRemixIcon(
   async () => import("remixicon-react/CheckFillIcon"),
@@ -36,10 +38,12 @@ const EditIcon = importSvg(
   async () => import("assets/icons/control/edit-variant1.svg"),
 );
 
-const AscendingIcon = styled(ControlIcons.SORT_CONTROL)`
+const AscendingIcon = styled(ControlIcons.SORT_CONTROL)<{
+  $inWrappedRow?: boolean;
+}>`
   padding: 0;
   position: relative;
-  top: 3px;
+  top: ${({ $inWrappedRow }) => ($inWrappedRow ? 0 : 3)}px;
   cursor: pointer;
   transform: rotate(180deg);
   && svg {
@@ -49,10 +53,12 @@ const AscendingIcon = styled(ControlIcons.SORT_CONTROL)`
   }
 `;
 
-const DescendingIcon = styled(ControlIcons.SORT_CONTROL)`
+const DescendingIcon = styled(ControlIcons.SORT_CONTROL)<{
+  $inWrappedRow?: boolean;
+}>`
   padding: 0;
   position: relative;
-  top: 3px;
+  top: ${({ $inWrappedRow }) => ($inWrappedRow ? 0 : 3)}px;
   cursor: pointer;
   && svg {
     path {
@@ -63,32 +69,57 @@ const DescendingIcon = styled(ControlIcons.SORT_CONTROL)`
 
 const ColumnNameContainer = styled.div<{
   horizontalAlignment: CellAlignment;
+  $fill?: boolean;
 }>`
   display: flex;
   align-items: center;
   justify-content: ${(props) =>
     props?.horizontalAlignment && JUSTIFY_CONTENT[props.horizontalAlignment]};
+  ${({ $fill }) =>
+    $fill &&
+    `
+      flex: 1;
+      min-width: 0;
+      width: 100%;
+    `}
 `;
 
-const StyledEditIcon = styled(EditIcon)`
+const StyledEditIcon = styled(EditIcon)<{ $fixed?: boolean }>`
   width: 14px;
   min-width: 14px;
   margin-right: 3px;
+  ${({ $fixed }) => ($fixed ? "flex-shrink: 0;" : "")}
 `;
 
-const TitleWrapper = styled.div`
+const TitleWrapper = styled.div<{
+  $align?: CellAlignment;
+  $constrain?: boolean;
+  $wrap?: boolean;
+}>`
+  ${({ $align, $constrain, $wrap }) =>
+    $constrain &&
+    `
+      flex: 1;
+      min-width: 0;
+      text-align: ${$align ? TEXT_ALIGN[$align] : "left"};
+      ${$wrap ? "width: 100%;" : ""}
+    `}
   &,
   span {
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    overflow: ${({ $wrap }) => ($wrap ? "visible" : "hidden")};
+    text-overflow: ${({ $wrap }) => ($wrap ? "clip" : "ellipsis")};
+    white-space: ${({ $wrap }) => ($wrap ? "break-spaces" : "nowrap")};
+    ${({ $wrap }) => ($wrap ? "word-break: break-word;" : "")}
   }
 `;
 
 interface TitleProps {
+  align?: CellAlignment;
   children: React.ReactNode;
+  constrain?: boolean;
   tableWidth?: number;
   width?: number;
+  wrap?: boolean;
 }
 
 function Title(props: TitleProps) {
@@ -96,6 +127,12 @@ function Title(props: TitleProps) {
   const [useToolTip, updateToolTip] = useState(false);
 
   useEffect(() => {
+    if (props.wrap) {
+      updateToolTip(false);
+
+      return;
+    }
+
     const element = ref.current;
 
     if (element && element.offsetWidth < element.scrollWidth) {
@@ -103,10 +140,16 @@ function Title(props: TitleProps) {
     } else {
       updateToolTip(false);
     }
-  }, [ref.current, props.width, props.children]);
+  }, [ref.current, props.width, props.children, props.wrap]);
 
   return (
-    <TitleWrapper ref={ref}>
+    <TitleWrapper
+      $align={props.align}
+      $constrain={props.constrain}
+      $wrap={props.wrap}
+      className="header-title"
+      ref={ref}
+    >
       {useToolTip && props.children ? (
         <Tooltip
           autoFocus={false}
@@ -130,25 +173,15 @@ function Title(props: TitleProps) {
 const ICON_SIZE = 16;
 
 interface HeaderProps {
-  canFreezeColumn?: boolean;
   columnName: string;
   columnIndex: number;
   isHidden: boolean;
   isAscOrder?: boolean;
-  handleColumnFreeze?: (columnName: string, sticky?: StickyType) => void;
-  handleReorderColumn: (columnOrder: string[]) => void;
   columnOrder?: string[];
-  sortTableColumn: (columnIndex: number, asc: boolean) => void;
-  isResizingColumn: boolean;
   // TODO: Fix this the next time the file is edited
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   column: any;
-  editMode?: boolean;
-  isSortable?: boolean;
-  width?: number;
-  widgetId: string;
   stickyRightModifier: string;
-  multiRowSelection?: boolean;
   onDrag: (e: React.DragEvent<HTMLDivElement>) => void;
   onDragEnter: (
     e: React.DragEvent<HTMLDivElement>,
@@ -162,23 +195,35 @@ interface HeaderProps {
     e: React.DragEvent<HTMLDivElement>,
     destinationIndex: number,
   ) => void;
+  isWrappedHeaderRow?: boolean;
 }
 
 const HeaderCellComponent = (props: HeaderProps) => {
-  const { column, editMode, isSortable } = props;
+  const {
+    canFreezeColumn,
+    editMode,
+    handleColumnFreeze,
+    isInfiniteScrollEnabled,
+    isResizingColumn,
+    isSortable,
+    multiRowSelection,
+    sortTableColumn,
+    widgetId,
+    width,
+  } = useAppsmithTable();
   const [isMenuOpen, setIsMenuOpen] = useState(false);
 
-  const headerProps = { ...column.getHeaderProps() };
+  const headerProps = { ...props.column.getHeaderProps() };
 
   headerProps["style"] = {
     ...headerProps.style,
     left:
-      column.sticky === StickyType.LEFT && props.multiRowSelection
-        ? MULTISELECT_CHECKBOX_WIDTH + column.totalLeft
+      props.column.sticky === StickyType.LEFT && multiRowSelection
+        ? MULTISELECT_CHECKBOX_WIDTH + props.column.totalLeft
         : headerProps.style.left,
   };
   const handleSortColumn = () => {
-    if (props.isResizingColumn) return;
+    if (isResizingColumn.current) return;
 
     let columnIndex = props.columnIndex;
 
@@ -189,19 +234,23 @@ const HeaderCellComponent = (props: HeaderProps) => {
     const sortOrder =
       props.isAscOrder === undefined ? false : !props.isAscOrder;
 
-    props.sortTableColumn(columnIndex, sortOrder);
+    sortTableColumn(columnIndex, sortOrder);
   };
 
-  const disableSort = editMode === false && isSortable === false;
+  const disableSort =
+    isInfiniteScrollEnabled || (editMode === false && isSortable === false);
 
   const isColumnEditable =
-    column.columnProperties.isCellEditable &&
-    column.columnProperties.isEditable &&
-    isColumnTypeEditable(column.columnProperties.columnType);
+    props.column.columnProperties.isCellEditable &&
+    props.column.columnProperties.isEditable &&
+    isColumnTypeEditable(
+      props.column.columnProperties.columnType,
+      isInfiniteScrollEnabled,
+    );
 
   const toggleColumnFreeze = (value: StickyType) => {
-    props.handleColumnFreeze &&
-      props.handleColumnFreeze(
+    handleColumnFreeze &&
+      handleColumnFreeze(
         props.column.id,
         props.column.sticky !== value ? value : StickyType.NONE,
       );
@@ -248,11 +297,19 @@ const HeaderCellComponent = (props: HeaderProps) => {
     [props.onDrop, props.columnIndex],
   );
 
+  const allowHeaderWrapping =
+    props.column.columnProperties?.allowHeaderWrapping === true;
+  const horizontalAlignment = props.column.columnProperties.horizontalAlignment;
+  const headerLabel = allowHeaderWrapping
+    ? props.columnName
+    : props.columnName.replace(/\s/g, "\u00a0");
+
   return (
     <div
       {...headerProps}
       className={`th header-reorder ${props.stickyRightModifier}`}
       data-header={props.columnName}
+      data-header-wrap={allowHeaderWrapping ? "true" : undefined}
     >
       <div
         className={!props.isHidden ? `draggable-header` : "hidden-header"}
@@ -270,17 +327,25 @@ const HeaderCellComponent = (props: HeaderProps) => {
         onDrop={onDrop}
       >
         <ColumnNameContainer
-          horizontalAlignment={column.columnProperties.horizontalAlignment}
+          $fill={props.isWrappedHeaderRow}
+          horizontalAlignment={horizontalAlignment}
         >
-          {isColumnEditable && <StyledEditIcon />}
-          <Title width={props.width}>
-            {props.columnName.replace(/\s/g, "\u00a0")}
+          {isColumnEditable && (
+            <StyledEditIcon $fixed={props.isWrappedHeaderRow} />
+          )}
+          <Title
+            align={horizontalAlignment}
+            constrain={props.isWrappedHeaderRow}
+            width={width}
+            wrap={allowHeaderWrapping}
+          >
+            {headerLabel}
           </Title>
         </ColumnNameContainer>
       </div>
       <div
         className={`header-menu ${
-          !isSortable && !props.canFreezeColumn && "hide-menu"
+          !isSortable && !canFreezeColumn && "hide-menu"
         } ${!isMenuOpen && "hide"}`}
       >
         <Popover2
@@ -290,7 +355,7 @@ const HeaderCellComponent = (props: HeaderProps) => {
                 disabled={disableSort}
                 labelElement={props.isAscOrder === true ? <Check /> : undefined}
                 onClick={() => {
-                  props.sortTableColumn(props.columnIndex, true);
+                  sortTableColumn(props.columnIndex, true);
                 }}
                 text={POPOVER_ITEMS_TEXT_MAP.SORT_ASC}
               />
@@ -300,7 +365,7 @@ const HeaderCellComponent = (props: HeaderProps) => {
                   props.isAscOrder === false ? <Check /> : undefined
                 }
                 onClick={() => {
-                  props.sortTableColumn(props.columnIndex, false);
+                  sortTableColumn(props.columnIndex, false);
                 }}
                 text={POPOVER_ITEMS_TEXT_MAP.SORT_DSC}
               />
@@ -311,9 +376,11 @@ const HeaderCellComponent = (props: HeaderProps) => {
                 }}
               />
               <MenuItem
-                disabled={!props.canFreezeColumn}
+                disabled={!canFreezeColumn}
                 labelElement={
-                  column.sticky === StickyType.LEFT ? <Check /> : undefined
+                  props.column.sticky === StickyType.LEFT ? (
+                    <Check />
+                  ) : undefined
                 }
                 onClick={() => {
                   toggleColumnFreeze(StickyType.LEFT);
@@ -321,9 +388,11 @@ const HeaderCellComponent = (props: HeaderProps) => {
                 text={POPOVER_ITEMS_TEXT_MAP.FREEZE_LEFT}
               />
               <MenuItem
-                disabled={!props.canFreezeColumn}
+                disabled={!canFreezeColumn}
                 labelElement={
-                  column.sticky === StickyType.RIGHT ? <Check /> : undefined
+                  props.column.sticky === StickyType.RIGHT ? (
+                    <Check />
+                  ) : undefined
                 }
                 onClick={() => {
                   toggleColumnFreeze(StickyType.RIGHT);
@@ -337,7 +406,7 @@ const HeaderCellComponent = (props: HeaderProps) => {
           minimal
           onInteraction={setIsMenuOpen}
           placement="bottom-end"
-          portalClassName={`${HEADER_MENU_PORTAL_CLASS}-${props.widgetId}`}
+          portalClassName={`${HEADER_MENU_PORTAL_CLASS}-${widgetId}`}
           portalContainer={
             document.getElementById(CANVAS_ART_BOARD) || undefined
           }
@@ -346,17 +415,25 @@ const HeaderCellComponent = (props: HeaderProps) => {
         </Popover2>
       </div>
       {props.isAscOrder !== undefined ? (
-        <div>
+        <div className="header-sort-icon">
           {props.isAscOrder ? (
-            <AscendingIcon height={ICON_SIZE} width={ICON_SIZE} />
+            <AscendingIcon
+              $inWrappedRow={props.isWrappedHeaderRow}
+              height={ICON_SIZE}
+              width={ICON_SIZE}
+            />
           ) : (
-            <DescendingIcon height={ICON_SIZE} width={ICON_SIZE} />
+            <DescendingIcon
+              $inWrappedRow={props.isWrappedHeaderRow}
+              height={ICON_SIZE}
+              width={ICON_SIZE}
+            />
           )}
         </div>
       ) : null}
       <div
-        {...column.getResizerProps()}
-        className={`resizer ${column.isResizing ? "isResizing" : ""}`}
+        {...props.column.getResizerProps()}
+        className={`resizer ${props.column.isResizing ? "isResizing" : ""}`}
         onClick={(e: React.MouseEvent<HTMLElement>) => {
           e.preventDefault();
           e.stopPropagation();

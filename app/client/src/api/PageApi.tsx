@@ -6,9 +6,10 @@ import type {
   LayoutOnLoadActionErrors,
   PageAction,
 } from "constants/AppsmithActionConstants/ActionConstants";
-import type { DSLWidget } from "WidgetProvider/constants";
+import type { DSLWidget } from "WidgetProvider/types";
 import type { FetchApplicationResponse } from "ee/api/ApplicationApi";
 import type { APP_MODE } from "entities/App";
+import type { ActionRunBehaviourType } from "PluginActionEditor/types/PluginActionTypes";
 
 export interface FetchPageRequest {
   pageId: string;
@@ -69,7 +70,7 @@ export interface SavePageResponseData {
   dsl: Partial<DSLWidget>;
   messages: string[];
   actionUpdates: Array<{
-    executeOnLoad: boolean;
+    runBehaviour: ActionRunBehaviourType;
     id: string;
     name: string;
     collectionId?: string;
@@ -88,6 +89,7 @@ export interface UpdatePageRequest {
   name?: string;
   isHidden?: boolean;
   customSlug?: string;
+  uniqueSlug?: string;
 }
 
 export interface UpdatePageResponse {
@@ -96,6 +98,7 @@ export interface UpdatePageResponse {
   name: string;
   slug: string;
   customSlug?: string;
+  uniqueSlug?: string;
   applicationId: string;
   layouts: Array<PageLayout>;
   isHidden: boolean;
@@ -135,10 +138,12 @@ export interface ClonePageRequest {
 }
 
 export interface UpdateWidgetNameRequest {
-  pageId: string;
+  pageId?: string;
   layoutId: string;
   newName: string;
   oldName: string;
+  moduleId?: string;
+  contextType?: "MODULE" | "PAGE";
 }
 
 export interface GenerateTemplatePageRequest {
@@ -296,6 +301,20 @@ class PageApi extends Api {
     params: FetchAppAndPagesRequest,
   ): Promise<AxiosPromise<FetchApplicationResponse>> {
     return Api.get(PageApi.url, params);
+  }
+
+  static async persistPageSlug(request: {
+    branchedPageId: string;
+    uniquePageSlug: string;
+  }): Promise<AxiosPromise<ApiResponse>> {
+    return Api.patch(`${PageApi.url}/static-url`, request);
+  }
+
+  static async validatePageSlug(
+    pageId: string,
+    uniqueSlug: string,
+  ): Promise<AxiosPromise<ApiResponse>> {
+    return Api.get(`${PageApi.url}/${pageId}/static-url/verify/${uniqueSlug}`);
   }
 }
 

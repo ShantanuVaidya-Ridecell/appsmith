@@ -10,10 +10,7 @@ import type { EvalMetaUpdates } from "ee/workers/common/DataTreeEvaluator/types"
 import { makeEntityConfigsAsObjProperties } from "ee/workers/Evaluation/dataTreeUtils";
 import type { DataTreeDiff } from "ee/workers/Evaluation/evaluationUtils";
 import { serialiseToBigInt } from "ee/workers/Evaluation/evaluationUtils";
-import {
-  CrashingError,
-  getSafeToRenderDataTree,
-} from "ee/workers/Evaluation/evaluationUtils";
+import { getSafeToRenderDataTree } from "ee/workers/Evaluation/evaluationUtils";
 import type { EvalTreeRequestData, EvalWorkerASyncRequest } from "../types";
 import { clearAllIntervals } from "../fns/overrides/interval";
 import JSObjectCollection from "workers/Evaluation/JSObject/Collection";
@@ -22,6 +19,7 @@ import { errorModifier } from "../errorModifier";
 import {
   generateOptimisedUpdatesAndSetPrevState,
   uniqueOrderUpdatePaths,
+  updateEvalProps,
 } from "../helpers";
 import DataStore from "../dataStore";
 import type { TransmissionErrorHandler } from "../fns/utils/Messenger";
@@ -31,7 +29,7 @@ import {
   newWebWorkerSpanData,
   profileAsyncFn,
 } from "instrumentation/generateWebWorkerTraces";
-import type { CanvasWidgetsReduxState } from "reducers/entityReducers/canvasWidgetsReducer";
+import type { CanvasWidgetsReduxState } from "ee/reducers/entityReducers/canvasWidgetsReducer";
 import type { MetaWidgetsReduxState } from "reducers/entityReducers/metaWidgetsReducer";
 import type { Attributes } from "instrumentation/types";
 import { updateActionsToEvalTree } from "./updateActionData";
@@ -69,6 +67,7 @@ export async function evalTree(
   let staleMetaIds: string[] = [];
   let removedPaths: Array<{ entityId: string; fullpath: string }> = [];
   let isNewWidgetAdded = false;
+  let executeReactiveActions: string[] = [];
 
   const {
     actionDataPayloadConsolidated,
@@ -134,10 +133,10 @@ export async function evalTree(
         ),
       );
 
-      dataTree = makeEntityConfigsAsObjProperties(dataTreeResponse.evalTree, {
-        evalProps: dataTreeEvaluator.evalProps,
-      });
+      dataTree = updateEvalProps(dataTreeEvaluator) || {};
+
       staleMetaIds = dataTreeResponse.staleMetaIds;
+      executeReactiveActions = dataTreeResponse.executeReactiveActions;
       isNewTree = true;
     } else if (dataTreeEvaluator.hasCyclicalDependency || forceEvaluation) {
       if (dataTreeEvaluator && !isEmpty(allActionValidationConfig)) {
@@ -187,10 +186,11 @@ export async function evalTree(
           (dataTreeEvaluator as DataTreeEvaluator).evalAndValidateFirstTree(),
       );
 
-      dataTree = makeEntityConfigsAsObjProperties(dataTreeResponse.evalTree, {
-        evalProps: dataTreeEvaluator.evalProps,
-      });
+      dataTree = updateEvalProps(dataTreeEvaluator) || {};
+
       staleMetaIds = dataTreeResponse.staleMetaIds;
+      executeReactiveActions = dataTreeResponse.executeReactiveActions;
+      isNewTree = true;
     } else {
       const tree = dataTreeEvaluator.getEvalTree();
 
@@ -244,14 +244,14 @@ export async function evalTree(
           ),
       );
 
-      dataTree = makeEntityConfigsAsObjProperties(dataTreeEvaluator.evalTree, {
-        evalProps: dataTreeEvaluator.evalProps,
-      });
+      dataTree = updateEvalProps(dataTreeEvaluator) || {};
 
       evalMetaUpdates = JSON.parse(
         JSON.stringify(updateResponse.evalMetaUpdates),
       );
       staleMetaIds = updateResponse.staleMetaIds;
+      executeReactiveActions = updateResponse.executeReactiveActions;
+      isNewTree = false;
     }
 
     dependencies = dataTreeEvaluator.inverseDependencies;
@@ -272,14 +272,14 @@ export async function evalTree(
       logs = dataTreeEvaluator.logs;
     }
 
-    if (!(error instanceof CrashingError)) {
-      errors.push({
-        type: EvalErrorTypes.UNKNOWN_ERROR,
-        message: (error as Error).message,
-      });
-      // eslint-disable-next-line
-      console.error(error);
-    }
+    errors.push({
+      type: EvalErrorTypes.EVAL_TREE_ERROR,
+      message: (error as Error).message,
+      stack: (error as Error).stack,
+    });
+
+    // eslint-disable-next-line
+    console.error(error);
 
     dataTree = getSafeToRenderDataTree(
       makeEntityConfigsAsObjProperties(unevalTree, {
@@ -306,9 +306,17 @@ export async function evalTree(
         try {
           //for new tree send the whole thing, don't diff at all
           updates = serialiseToBigInt([{ kind: "newTree", rhs: dataTree }]);
-          dataTreeEvaluator?.setPrevState(dataTree);
+          const parsedUpdates = JSON.parse(updates);
+
+          dataTreeEvaluator?.setPrevState(parsedUpdates[0].rhs);
         } catch (e) {
           updates = "[]";
+
+          errors.push({
+            type: EvalErrorTypes.EVAL_TREE_ERROR,
+            message: (e as Error).message,
+            stack: (e as Error).stack,
+          });
         }
         isNewTree = false;
       } else {
@@ -325,6 +333,8 @@ export async function evalTree(
           dataTree,
           dataTreeEvaluator,
           completeEvalOrder,
+          undefined,
+          true,
         );
       }
 
@@ -350,6 +360,7 @@ export async function evalTree(
     isNewWidgetAdded,
     undefinedEvalValuesMap: dataTreeEvaluator?.undefinedEvalValuesMap || {},
     jsVarsCreatedEvent,
+    executeReactiveActions,
   };
 
   webworkerTelemetry["transferDataToMainThread"] = newWebWorkerSpanData(

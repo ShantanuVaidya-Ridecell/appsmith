@@ -11,16 +11,16 @@ import {
   TabBehaviour,
 } from "components/editorComponents/CodeEditor/EditorConfig";
 import { QUERY_EDITOR_FORM_NAME } from "ee/constants/forms";
-import type { AppState } from "ee/reducers";
+import type { DefaultRootState } from "react-redux";
 import styled from "styled-components";
 import {
   getPluginResponseTypes,
   getPluginNameFromId,
 } from "ee/selectors/entitiesSelector";
 import { actionPathFromName } from "components/formControls/utils";
-import type { EvaluationSubstitutionType } from "entities/DataTree/dataTreeFactory";
 import { getSqlEditorModeFromPluginName } from "components/editorComponents/CodeEditor/sql/config";
 import { Flex } from "@appsmith/ads";
+import type { EvaluationSubstitutionType } from "constants/EvaluationConstants";
 
 const Wrapper = styled.div`
   min-width: 260px;
@@ -97,7 +97,10 @@ export interface DynamicTextFieldProps extends ControlProps {
   pluginName: string;
 }
 
-const mapStateToProps = (state: AppState, props: DynamicTextFieldProps) => {
+const mapStateToProps = (
+  state: DefaultRootState,
+  props: DynamicTextFieldProps,
+) => {
   const valueSelector = formValueSelector(
     props.formName || QUERY_EDITOR_FORM_NAME,
   );

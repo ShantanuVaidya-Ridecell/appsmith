@@ -3,6 +3,8 @@ import React from "react";
 import styled from "styled-components";
 import { ASSETS_CDN_URL } from "constants/ThirdPartyConstants";
 import { Avatar } from "@appsmith/ads";
+import { getIsAiAgentInstanceEnabled } from "ee/selectors/aiAgentSelectors";
+import { useSelector } from "react-redux";
 
 const Wrapper = styled.div`
   width: 432px;
@@ -57,39 +59,51 @@ const Wrapper = styled.div`
   .client-logo-container .client-logo-section {
     display: flex;
     justify-content: space-around;
-    margin-bottom: 24px;
     gap: var(--ads-spaces-3);
     flex-wrap: wrap;
   }
 `;
 
+const QUOTE = {
+  quote: `"We’d been looking for a tool like Appsmith for years. With Appsmith we were able to build a UI on top of 12 different Snowflake control tables. Appsmith was easy for our developers to learn, and it’s easy to implement."`,
+  author: "Thomas Zwick",
+  authorTitle: "Director, Omron",
+  authorImage: `${getAssetUrl(`${ASSETS_CDN_URL}/thomas-zwick.png`)}`,
+};
+
 function LeftSideContent() {
+  const isAiAgentInstanceEnabled = useSelector(getIsAiAgentInstanceEnabled);
+
   return (
     <Wrapper>
-      <div className="left-description">
-        <div className="left-description-container">
-          &quot;We’d been looking for a tool like Appsmith for years. With
-          Appsmith we were able to build a UI on top of 12 different Snowflake
-          control tables. Appsmith was easy for our developers to learn, and
-          it’s easy to implement.&quot;
+      {!isAiAgentInstanceEnabled && (
+        <div className="left-description">
+          <div className="left-description-container">
+            &quot;{QUOTE.quote}&quot;
+          </div>
+          <div className="left-description-author">
+            {QUOTE.authorImage && (
+              <Avatar
+                image={QUOTE.authorImage}
+                label={QUOTE.author}
+                size="sm"
+              />
+            )}
+            <div>{QUOTE.author}</div>
+            <div className="dot">&#183;</div>
+            <div>{QUOTE.authorTitle}</div>
+          </div>
         </div>
-        <div className="left-description-author">
-          <Avatar
-            image={`${getAssetUrl(`${ASSETS_CDN_URL}/thomas-zwick.png`)}`}
-            label="Thomas Zwick"
-            size="sm"
-          />
-          <div>Thomas Zwick</div>
-          <div className="dot">&#183;</div>
-          <div>Director, Omron</div>
-        </div>
-      </div>
+      )}
 
       <div className="client-logo-container">
         <div className="client-heading">
           Used by more than 10,000 organisations across the globe
         </div>
-        <div className="client-logo-section">
+        <div
+          className="client-logo-section"
+          style={{ marginBottom: isAiAgentInstanceEnabled ? "0px" : "24px" }}
+        >
           <img
             alt="GSK logo"
             src={`${getAssetUrl(`${ASSETS_CDN_URL}/gsk-logo-grey.svg`)}`}

@@ -2,14 +2,19 @@ package com.appsmith.server.controllers.ce;
 
 import com.appsmith.external.views.Views;
 import com.appsmith.server.constants.Url;
+import com.appsmith.server.domains.Application;
 import com.appsmith.server.domains.User;
 import com.appsmith.server.domains.UserData;
+import com.appsmith.server.dtos.AIRequestDTO;
 import com.appsmith.server.dtos.InviteUsersDTO;
 import com.appsmith.server.dtos.ResendEmailVerificationDTO;
 import com.appsmith.server.dtos.ResetUserPasswordDTO;
 import com.appsmith.server.dtos.ResponseDTO;
 import com.appsmith.server.dtos.UserProfileDTO;
 import com.appsmith.server.dtos.UserUpdateDTO;
+import com.appsmith.server.exceptions.AppsmithError;
+import com.appsmith.server.exceptions.AppsmithException;
+import com.appsmith.server.services.AIAssistantService;
 import com.appsmith.server.services.SessionUserService;
 import com.appsmith.server.services.UserDataService;
 import com.appsmith.server.services.UserService;
@@ -17,6 +22,7 @@ import com.appsmith.server.services.UserWorkspaceService;
 import com.appsmith.server.solutions.UserAndAccessManagementService;
 import com.appsmith.server.solutions.UserSignup;
 import com.fasterxml.jackson.annotation.JsonView;
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
@@ -51,6 +57,7 @@ public class UserControllerCE {
     private final UserSignup userSignup;
     private final UserDataService userDataService;
     private final UserAndAccessManagementService userAndAccessManagementService;
+    private final AIAssistantService aiAssistantService;
 
     @JsonView(Views.Public.class)
     @PostMapping(consumes = {MediaType.APPLICATION_FORM_URLENCODED_VALUE})
@@ -72,15 +79,13 @@ public class UserControllerCE {
     @PutMapping()
     public Mono<ResponseDTO<User>> update(@RequestBody UserUpdateDTO updates, ServerWebExchange exchange) {
         return service.updateCurrentUser(updates, exchange)
-                .map(updatedUser -> new ResponseDTO<>(HttpStatus.OK.value(), updatedUser, null));
+                .map(updatedUser -> new ResponseDTO<>(HttpStatus.OK, updatedUser));
     }
 
     @JsonView(Views.Public.class)
     @PutMapping("/leaveWorkspace/{workspaceId}")
     public Mono<ResponseDTO<User>> leaveWorkspace(@PathVariable String workspaceId) {
-        return userWorkspaceService
-                .leaveWorkspace(workspaceId)
-                .map(user -> new ResponseDTO<>(HttpStatus.OK.value(), user, null));
+        return userWorkspaceService.leaveWorkspace(workspaceId).map(user -> new ResponseDTO<>(HttpStatus.OK, user));
     }
 
     /**
@@ -97,15 +102,13 @@ public class UserControllerCE {
         // username scraping, where the response of this API can prove whether an email has an account or not.
         return service.forgotPasswordTokenGenerate(userPasswordDTO)
                 .defaultIfEmpty(true)
-                .onErrorReturn(true)
-                .thenReturn(new ResponseDTO<>(HttpStatus.OK.value(), true, null));
+                .thenReturn(new ResponseDTO<>(HttpStatus.OK, true));
     }
 
     @JsonView(Views.Public.class)
     @GetMapping("/verifyPasswordResetToken")
     public Mono<ResponseDTO<Boolean>> verifyPasswordResetToken(@RequestParam String token) {
-        return service.verifyPasswordResetToken(token)
-                .map(result -> new ResponseDTO<>(HttpStatus.OK.value(), result, null));
+        return service.verifyPasswordResetToken(token).map(result -> new ResponseDTO<>(HttpStatus.OK, result));
     }
 
     @JsonView(Views.Public.class)
@@ -113,14 +116,13 @@ public class UserControllerCE {
     public Mono<ResponseDTO<Boolean>> resetPasswordAfterForgotPassword(
             @RequestBody ResetUserPasswordDTO userPasswordDTO) {
         return service.resetPasswordAfterForgotPassword(userPasswordDTO.getToken(), userPasswordDTO)
-                .map(result -> new ResponseDTO<>(HttpStatus.OK.value(), result, null));
+                .map(result -> new ResponseDTO<>(HttpStatus.OK, result));
     }
 
     @JsonView(Views.Public.class)
     @GetMapping("/me")
     public Mono<ResponseDTO<UserProfileDTO>> getUserProfile(@AuthenticationPrincipal User user) {
-        return service.buildUserProfileDTO(user)
-                .map(profile -> new ResponseDTO<>(HttpStatus.OK.value(), profile, null));
+        return service.buildUserProfileDTO(user).map(profile -> new ResponseDTO<>(HttpStatus.OK, profile));
     }
 
     /**
@@ -139,7 +141,7 @@ public class UserControllerCE {
             @RequestParam(required = false) String recaptchaToken) {
         return userAndAccessManagementService
                 .inviteUsers(inviteUsersDTO, originHeader, recaptchaToken)
-                .map(users -> new ResponseDTO<>(HttpStatus.OK.value(), users, null));
+                .map(users -> new ResponseDTO<>(HttpStatus.OK, users));
     }
 
     @JsonView(Views.Public.class)
@@ -148,20 +150,19 @@ public class UserControllerCE {
         return sessionUserService
                 .getCurrentUser()
                 .flatMap(userDataService::setViewedCurrentVersionReleaseNotes)
-                .thenReturn(new ResponseDTO<>(HttpStatus.OK.value(), null, null));
+                .thenReturn(new ResponseDTO<>(HttpStatus.OK, null));
     }
 
     @JsonView(Views.Public.class)
     @PostMapping(value = "/photo", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public Mono<ResponseDTO<UserData>> uploadProfilePhoto(@RequestPart("file") Mono<Part> fileMono) {
-        return fileMono.flatMap(userDataService::saveProfilePhoto)
-                .map(url -> new ResponseDTO<>(HttpStatus.OK.value(), url, null));
+        return fileMono.flatMap(userDataService::saveProfilePhoto).map(url -> new ResponseDTO<>(HttpStatus.OK, url));
     }
 
     @JsonView(Views.Public.class)
     @DeleteMapping("/photo")
     public Mono<ResponseDTO<Void>> deleteProfilePhoto() {
-        return userDataService.deleteProfilePhoto().thenReturn(new ResponseDTO<>(HttpStatus.OK.value(), null, null));
+        return userDataService.deleteProfilePhoto().thenReturn(new ResponseDTO<>(HttpStatus.OK, null));
     }
 
     @JsonView(Views.Public.class)
@@ -183,9 +184,7 @@ public class UserControllerCE {
     @JsonView(Views.Public.class)
     @GetMapping("/features")
     public Mono<ResponseDTO<Map<String, Boolean>>> getFeatureFlags() {
-        return userDataService
-                .getFeatureFlagsForCurrentUser()
-                .map(map -> new ResponseDTO<>(HttpStatus.OK.value(), map, null));
+        return userDataService.getFeatureFlagsForCurrentUser().map(map -> new ResponseDTO<>(HttpStatus.OK, map));
     }
 
     /**
@@ -199,7 +198,7 @@ public class UserControllerCE {
             @RequestHeader("Origin") String originHeader) {
         resendEmailVerificationDTO.setBaseUrl(originHeader);
         return service.resendEmailVerification(resendEmailVerificationDTO, null)
-                .thenReturn(new ResponseDTO<>(HttpStatus.OK.value(), true, null));
+                .thenReturn(new ResponseDTO<>(HttpStatus.OK, true));
     }
 
     /**
@@ -213,5 +212,65 @@ public class UserControllerCE {
             consumes = {MediaType.APPLICATION_FORM_URLENCODED_VALUE})
     public Mono<Void> verifyEmailVerificationToken(ServerWebExchange exchange) {
         return service.verifyEmailVerificationToken(exchange);
+    }
+
+    @JsonView(Views.Public.class)
+    @PostMapping("/ai-assistant/request")
+    public Mono<ResponseDTO<Map<String, String>>> requestAIResponse(@RequestBody @Valid AIRequestDTO request) {
+        return aiAssistantService
+                .getAIResponse(
+                        request.getProvider(),
+                        request.getPrompt(),
+                        request.getContext(),
+                        request.getConversationHistory())
+                .map(response -> Map.of("response", response, "provider", request.getProvider()))
+                .map(result -> new ResponseDTO<>(HttpStatus.OK, result))
+                // Signal the error instead of completing normally with a 400 inside the body. Returning a Mono.just
+                // here made the WIRE status 200 for every AI failure: clients that branch on HTTP status saw success,
+                // and server error metrics stayed clean while requests were failing. Propagating lets the global
+                // handler set a real status, and the friendly message still reaches responseMeta.error.message,
+                // which is what the client actually reads.
+                .onErrorMap(error -> {
+                    if (!(error instanceof AppsmithException appsmithException)) {
+                        // A database, serialization or connector failure. Keep it as the cause so the stack trace
+                        // survives, and report 5xx rather than telling the caller they sent a bad request.
+                        return new AppsmithException(error, AppsmithError.INTERNAL_SERVER_ERROR);
+                    }
+                    if (appsmithException.getError() == AppsmithError.INVALID_CREDENTIALS) {
+                        // INVALID_CREDENTIALS carries HTTP 200, which would report a failed request as a success.
+                        return new AppsmithException(
+                                error, AppsmithError.INVALID_PARAMETER, aiAssistantService.getAIErrorMessage(error));
+                    }
+                    // Everything else already carries a usable status: throttling is 429, a missing configuration
+                    // is 404, a provider outage is 5xx. Rewriting all of them to INVALID_PARAMETER reported 400 for
+                    // each, which kept provider outages out of server-error metrics and left a client unable to
+                    // tell "back off and retry" from "you sent something invalid".
+                    return appsmithException;
+                });
+    }
+
+    /**
+     * Toggle favorite status for an application
+     * @param applicationId Application ID to toggle favorite status for
+     * @return Updated user data with modified favorites list
+     */
+    @JsonView(Views.Public.class)
+    @PutMapping("/applications/{applicationId}/favorite")
+    public Mono<ResponseDTO<UserData>> toggleFavoriteApplication(@PathVariable String applicationId) {
+        return userDataService
+                .toggleFavoriteApplication(applicationId)
+                .map(userData -> new ResponseDTO<>(HttpStatus.OK, userData));
+    }
+
+    /**
+     * Get all favorite applications for the current user
+     * @return List of favorited applications
+     */
+    @JsonView(Views.Public.class)
+    @GetMapping("/favoriteApplications")
+    public Mono<ResponseDTO<List<Application>>> getFavoriteApplications() {
+        return userDataService
+                .getFavoriteApplications()
+                .map(applications -> new ResponseDTO<>(HttpStatus.OK, applications));
     }
 }

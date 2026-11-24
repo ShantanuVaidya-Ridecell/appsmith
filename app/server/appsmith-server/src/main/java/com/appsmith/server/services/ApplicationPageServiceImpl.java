@@ -5,12 +5,14 @@ import com.appsmith.server.actioncollections.base.ActionCollectionService;
 import com.appsmith.server.applications.base.ApplicationService;
 import com.appsmith.server.clonepage.ClonePageService;
 import com.appsmith.server.domains.ActionCollection;
+import com.appsmith.server.domains.Application;
 import com.appsmith.server.domains.NewAction;
 import com.appsmith.server.helpers.CommonGitFileUtils;
 import com.appsmith.server.helpers.DSLMigrationUtils;
 import com.appsmith.server.layouts.UpdateLayoutService;
 import com.appsmith.server.newactions.base.NewActionService;
 import com.appsmith.server.newpages.base.NewPageService;
+import com.appsmith.server.postpublishhooks.base.PostPublishHookCoordinatorService;
 import com.appsmith.server.repositories.ActionCollectionRepository;
 import com.appsmith.server.repositories.ApplicationRepository;
 import com.appsmith.server.repositories.CacheableRepositoryHelper;
@@ -24,6 +26,7 @@ import com.appsmith.server.solutions.ApplicationPermission;
 import com.appsmith.server.solutions.DatasourcePermission;
 import com.appsmith.server.solutions.PagePermission;
 import com.appsmith.server.solutions.WorkspacePermission;
+import com.appsmith.server.staticurl.StaticUrlService;
 import com.appsmith.server.themes.base.ThemeService;
 import io.micrometer.observation.ObservationRegistry;
 import lombok.extern.slf4j.Slf4j;
@@ -36,6 +39,7 @@ public class ApplicationPageServiceImpl extends ApplicationPageServiceCEImpl imp
     public ApplicationPageServiceImpl(
             WorkspaceService workspaceService,
             ApplicationService applicationService,
+            StaticUrlService staticUrlService,
             SessionUserService sessionUserService,
             WorkspaceRepository workspaceRepository,
             UpdateLayoutService updateLayoutService,
@@ -62,10 +66,13 @@ public class ApplicationPageServiceImpl extends ApplicationPageServiceCEImpl imp
             ClonePageService<NewAction> actionClonePageService,
             ClonePageService<ActionCollection> actionCollectionClonePageService,
             ObservationRegistry observationRegistry,
-            CacheableRepositoryHelper cacheableRepositoryHelper) {
+            CacheableRepositoryHelper cacheableRepositoryHelper,
+            PostPublishHookCoordinatorService<Application> postApplicationPublishHookCoordinatorService,
+            UserDataService userDataService) {
         super(
                 workspaceService,
                 applicationService,
+                staticUrlService,
                 sessionUserService,
                 workspaceRepository,
                 updateLayoutService,
@@ -92,6 +99,8 @@ public class ApplicationPageServiceImpl extends ApplicationPageServiceCEImpl imp
                 actionClonePageService,
                 actionCollectionClonePageService,
                 observationRegistry,
-                cacheableRepositoryHelper);
+                cacheableRepositoryHelper,
+                postApplicationPublishHookCoordinatorService,
+                userDataService);
     }
 }

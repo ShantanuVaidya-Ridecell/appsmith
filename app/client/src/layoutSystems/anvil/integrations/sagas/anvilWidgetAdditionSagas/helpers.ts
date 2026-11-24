@@ -1,14 +1,14 @@
 import type {
   FlattenedWidgetProps,
   WidgetBlueprint,
-} from "WidgetProvider/constants";
+} from "WidgetProvider/types";
 import { getNextEntityName } from "utils/AppsmithUtils";
 import type { DataTree } from "entities/DataTree/dataTreeTypes";
 import { getDataTree } from "selectors/dataTreeSelectors";
 import WidgetFactory from "WidgetProvider/factory";
 import { executeWidgetBlueprintOperations } from "sagas/WidgetBlueprintSagas";
 import { call, put, select } from "redux-saga/effects";
-import type { CanvasWidgetsReduxState } from "reducers/entityReducers/canvasWidgetsReducer";
+import type { CanvasWidgetsReduxState } from "ee/reducers/entityReducers/canvasWidgetsReducer";
 import AppsmithConsole from "utils/AppsmithConsole";
 import { ENTITY_TYPE } from "ee/entities/AppsmithConsole/utils";
 import { WidgetReduxActionTypes } from "ee/constants/ReduxActionConstants";

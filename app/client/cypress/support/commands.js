@@ -1,7 +1,7 @@
 /* eslint-disable cypress/no-unnecessary-waiting */
 /* eslint-disable cypress/no-assigning-return-values */
 /* This file is used to maintain comman methods across tests , refer other *.js files for adding common methods */
-import { ANVIL_EDITOR_TEST } from "./Constants.js";
+import { ANVIL_EDITOR_TEST, AI_AGENTS_TEST } from "./Constants.js";
 import advancedFormat from "dayjs/plugin/advancedFormat";
 
 import EditorNavigation, {
@@ -24,6 +24,7 @@ dayjs.extend(advancedFormat);
 
 const commonlocators = require("../locators/commonlocators.json");
 const widgetsPage = require("../locators/Widgets.json");
+const formWidgetsPage = require("../locators/FormWidgets.json");
 import ApiEditor from "../locators/ApiEditor";
 import { CURRENT_REPO, REPO } from "../fixtures/REPO";
 
@@ -35,7 +36,10 @@ const queryLocators = require("../locators/QueryEditor.json");
 const welcomePage = require("../locators/welcomePage.json");
 import { ObjectsRegistry } from "../support/Objects/Registry";
 import RapidMode from "./RapidMode";
-import { featureFlagIntercept } from "./Objects/FeatureFlags";
+import {
+  featureFlagIntercept,
+  rewriteUpstreamResponse,
+} from "./Objects/FeatureFlags";
 import { PluginActionForm } from "./Pages/PluginActionForm";
 
 const propPane = ObjectsRegistry.PropertyPane;
@@ -98,11 +102,15 @@ export const addIndexedDBKey = (key, value) => {
 };
 
 Cypress.Commands.add("stubPostHeaderReq", () => {
+  // GHSA-j9gf-vw2f-9hrw: server-side strict-mode now requires Origin to match
+  // APPSMITH_BASE_URL. Use the live Cypress baseUrl so the intercept produces a
+  // valid Origin (the literal string "Cypress" used to live here as a synthetic-
+  // traffic flag and no longer parses as a URL).
   cy.intercept("POST", "/api/v1/users/invite", (req) => {
-    req.headers["origin"] = "Cypress";
+    req.headers["origin"] = Cypress.config("baseUrl");
   }).as("mockPostInvite");
   cy.intercept("POST", "/api/v1/applications/invite", (req) => {
-    req.headers["origin"] = "Cypress";
+    req.headers["origin"] = Cypress.config("baseUrl");
   }).as("mockPostAppInvite");
 });
 
@@ -171,7 +179,15 @@ Cypress.Commands.add("LogintoApp", (uname, pword) => {
   initLocalstorage();
 });
 
-Cypress.Commands.add("LoginFromAPI", (uname, pword) => {
+Cypress.Commands.add("LoginFromAPI", (uname, pword, redirectUrl) => {
+  // Unload the open app page first. Its requests get a 401 after the logout,
+  // and the client answers a 401 with its own logout, which can arrive after
+  // the login below and end the new session. cy.visit resolves "about:blank"
+  // against baseUrl and loads the app again, so navigate the window instead.
+  cy.window({ log: false }).then((win) => {
+    win.location.href = "about:blank";
+  });
+  cy.location("href").should("eq", "about:blank");
   homePageTS.LogOutviaAPI();
   let baseURL = Cypress.config().baseUrl;
   baseURL = baseURL.endsWith("/") ? baseURL.slice(0, -1) : baseURL;
@@ -181,9 +197,10 @@ Cypress.Commands.add("LoginFromAPI", (uname, pword) => {
 
   cy.visit({
     method: "POST",
-    url: "api/v1/login",
+    url: `api/v1/login${redirectUrl ? "?redirectUrl=" + redirectUrl : ""}`,
     headers: {
       origin: baseURL,
+      "X-Requested-By": "Appsmith",
     },
     followRedirect: true,
     body: {
@@ -208,13 +225,19 @@ Cypress.Commands.add("LoginFromAPI", (uname, pword) => {
     }
 
     cy.location().should((loc) => {
-      expect(loc.href).to.eq(loc.origin + "/applications");
+      if (redirectUrl) {
+        expect(loc.href).to.eq(loc.origin + redirectUrl);
+      } else {
+        expect(loc.href).to.eq(loc.origin + "/applications");
+      }
     });
 
     if (CURRENT_REPO === REPO.EE) {
       cy.wait(2000);
     } else {
-      assertHelper.AssertNetworkStatus("getAllWorkspaces");
+      if (!redirectUrl) {
+        assertHelper.AssertNetworkStatus("getAllWorkspaces");
+      }
       assertHelper.AssertNetworkStatus("getConsolidatedData");
     }
   });
@@ -225,9 +248,6 @@ Cypress.Commands.add("LogOut", (toCheckgetPluginForm = true) => {
 
   // Logout is a POST request in CE
   let httpMethod = "POST";
-  if (CURRENT_REPO === REPO.EE) {
-    httpMethod = "GET";
-  }
 
   if (CURRENT_REPO === REPO.CE)
     toCheckgetPluginForm &&
@@ -525,21 +545,37 @@ Cypress.Commands.add(
   },
 );
 
-Cypress.Commands.add("getDate", (date, dateFormate) => {
-  const eDate = dayjs().add(date, "days").format(dateFormate);
-  return eDate;
-});
+// Clicks a day in an open date picker. `day` is a dayjs date in the month the calendar shows: use
+// otherDayThisMonth() (support/otherDayThisMonth.js), never today + N days, which can fall outside that month.
+//   - v2: the property pane's date control (ADS DatePicker). `dateFormate` is not used.
+//   - v1: the widget's own calendar (Blueprint DateInput). Its day labels are Date.toDateString() text, such as
+//     "Thu Oct 15 2026", so `dateFormate` defaults to that format.
+Cypress.Commands.add("setDate", (day, dateFormate, ver = "v2") => {
+  // A shape check, not dayjs.isDayjs: Cypress bundles this file and each spec separately, each with its own copy
+  // of dayjs, so a date made in a spec is not an instance of this file's dayjs class.
+  if (typeof day === "number" || typeof day?.format !== "function") {
+    throw new Error(
+      "setDate takes a dayjs date in the shown month, such as otherDayThisMonth(), not a number of days from today",
+    );
+  }
 
-Cypress.Commands.add("setDate", (date, dateFormate, ver = "v2") => {
+  // The day locators (FormWidgets.json) leave out the greyed-out days of the next or previous month.
   if (ver == "v2") {
-    const expDate = dayjs().add(date, "days").format("dddd, MMMM D");
-    cy.get(`.react-datepicker__day[aria-label^="Choose ${expDate}"]`)
+    cy.get(
+      formWidgetsPage.propertyPaneCalendarDay.replace(
+        "{day}",
+        day.format("dddd, MMMM D"),
+      ),
+    )
       .first()
       .click();
   } else if (ver == "v1") {
-    const expDate = dayjs().add(date, "days").format(dateFormate);
-    const sel = `.DayPicker-Day[aria-label=\"${expDate}\"]`;
-    cy.get(sel).click();
+    cy.get(
+      formWidgetsPage.widgetCalendarDay.replace(
+        "{day}",
+        day.format(dateFormate ?? "ddd MMM DD YYYY"),
+      ),
+    ).click();
   }
 });
 
@@ -582,11 +618,8 @@ Cypress.Commands.add("startServerAndRoutes", () => {
   cy.intercept("GET", "/api/v1/users/profile").as("getUser");
   cy.intercept("GET", "/api/v1/plugins?workspaceId=*").as("getPlugins");
 
-  if (CURRENT_REPO === REPO.CE) {
-    cy.intercept("POST", "/api/v1/logout").as("postLogout");
-  } else if (CURRENT_REPO === REPO.EE) {
-    cy.intercept("GET", "/api/v1/logout").as("postLogout");
-  }
+  cy.intercept("POST", "/api/v1/logout").as("postLogout");
+
   cy.intercept("GET", "/api/v1/datasources?workspaceId=*").as("getDataSources");
   cy.intercept("GET", "/api/v1/pages?*mode=EDIT").as("getPagesForCreateApp");
   cy.intercept("GET", "/api/v1/pages?*mode=PUBLISHED").as("getPagesForViewApp");
@@ -633,7 +666,6 @@ Cypress.Commands.add("startServerAndRoutes", () => {
   cy.intercept("PUT", "/api/v1/layouts/*/pages/*").as("updateLayout");
 
   cy.intercept("POST", "/track/*").as("postTrack");
-  cy.intercept("PUT", "/api/v1/actions/executeOnLoad/*").as("setExecuteOnLoad");
 
   cy.intercept("POST", "/api/v1/actions").as("createNewApi");
   cy.intercept("POST", "/api/v1/import?type=CURL&contextId=*&name=*").as(
@@ -643,7 +675,18 @@ Cypress.Commands.add("startServerAndRoutes", () => {
 
   cy.intercept("GET", "/api/v1/plugins/*/form").as("getPluginForm");
   cy.intercept("DELETE", "/api/v1/applications/*").as("deleteApplication");
-  cy.intercept("POST", "/api/v1/applications").as("createNewApplication");
+  cy.intercept("POST", "/api/v1/applications", (req) => {
+    // we don't let creating application in anvil or ai agents test with create application button,
+    // but our tests are written to use the create application button, so we override the request body
+    // to create an application with anvil layout system and hide the navbar
+    if (
+      Cypress.currentTest.titlePath[0].includes(ANVIL_EDITOR_TEST) ||
+      Cypress.currentTest.titlePath[0].includes(AI_AGENTS_TEST)
+    ) {
+      req.body.positioningType = "ANVIL";
+      req.body.showNavbar = false;
+    }
+  }).as("createNewApplication");
   cy.intercept("PUT", "/api/v1/applications/*").as("updateApplication");
   cy.intercept("PUT", "/api/v1/actions/*").as("saveAction");
   cy.intercept("PUT", "/api/v1/actions/move").as("moveAction");
@@ -676,10 +719,14 @@ Cypress.Commands.add("startServerAndRoutes", () => {
   cy.intercept("POST", "/api/v1/comments/threads").as("createNewThread");
   cy.intercept("POST", "/api/v1/comments?threadId=*").as("createNewComment");
 
-  cy.intercept("POST", "api/v1/git/commit/app/*").as("commit");
-  cy.intercept("POST", "/api/v1/git/import/*").as("importFromGit");
-  cy.intercept("POST", "/api/v1/git/merge/app/*").as("mergeBranch");
-  cy.intercept("POST", "/api/v1/git/merge/status/app/*").as("mergeStatus");
+  cy.intercept("POST", "/api/v1/git/applications/*/commit").as("commit");
+  cy.intercept("POST", /\/api\/v1\/git\/artifacts\/import\?workspaceId=.*/).as(
+    "importFromGit",
+  );
+  cy.intercept("POST", "/api/v1/git/applications/*/merge").as("mergeBranch");
+  cy.intercept("POST", "/api/v1/git/applications/*/merge/status").as(
+    "mergeStatus",
+  );
   cy.intercept("PUT", "api/v1/collections/actions/refactor").as(
     "renameJsAction",
   );
@@ -698,10 +745,21 @@ Cypress.Commands.add("startServerAndRoutes", () => {
   cy.intercept("POST", "/api/v1/users/super").as("createSuperUser");
   cy.intercept("POST", "/api/v1/actions/execute").as("postExecute");
   cy.intercept("GET", "/api/v1/admin/env").as("getEnvVariables");
-  cy.intercept("DELETE", "/api/v1/git/branch/app/*").as("deleteBranch");
-  cy.intercept("GET", "/api/v1/git/branch/app/*").as("getBranch");
-  cy.intercept("POST", "/api/v1/git/create-branch/app/*").as("createBranch");
-  cy.intercept("GET", "/api/v1/git/status/app/*").as("gitStatus");
+  cy.intercept(
+    "DELETE",
+    /\/api\/v1\/git\/applications\/.*\/ref\?refType=.*&refName=.*/,
+  ).as("deleteBranch");
+  cy.intercept(
+    "GET",
+    /\/api\/v1\/git\/applications\/.*\/refs\?refType=.*&pruneRefs=.*/,
+  ).as("getBranch");
+  cy.intercept("POST", "/api/v1/git/applications/*/create-ref").as(
+    "createBranch",
+  );
+  cy.intercept(
+    "GET",
+    /\/api\/v1\/git\/applications\/.*\/status\?compareRemote=.*/,
+  ).as("gitStatus");
   cy.intercept("PUT", "/api/v1/layouts/refactor").as("updateWidgetName");
   cy.intercept("GET", "/api/v1/workspaces/*/members").as("getMembers");
   cy.intercept("POST", "/api/v1/datasources/mocks").as("getMockDb");
@@ -711,18 +769,23 @@ Cypress.Commands.add("startServerAndRoutes", () => {
     "getTemplatePages",
   );
   cy.intercept("PUT", "/api/v1/datasources/*").as("updateDatasource");
-  cy.intercept("POST", "/api/v1/applications/ssh-keypair/*").as("generateKey");
-  cy.intercept("GET", "/api/v1/applications/ssh-keypair/*").as("generatedKey");
+  cy.intercept("POST", "/api/v1/git/applications/*/ssh-keypair").as(
+    "generateKey",
+  );
+  cy.intercept("GET", "/api/v1/git/applications/*/ssh-keypair").as(
+    "generatedKey",
+  );
   cy.intercept("POST", "/api/v1/applications/snapshot/*").as("snapshotSuccess");
   cy.intercept("GET", "/api/v1/applications/snapshot/*").as("pageSnap");
   cy.intercept(
     {
       method: "POST",
-      url: "/api/v1/git/connect/app/*",
+      url: "/api/v1/git/applications/*/connect",
       hostname: window.location.host,
     },
     (req) => {
-      req.headers["origin"] = "Cypress";
+      // GHSA-j9gf-vw2f-9hrw: send a real Origin matching APPSMITH_BASE_URL.
+      req.headers["origin"] = Cypress.config("baseUrl");
     },
   ).as("connectGitLocalRepo");
 
@@ -735,21 +798,49 @@ Cypress.Commands.add("startServerAndRoutes", () => {
     });
   });
 
+  // Stub the BetterBugs recording-link scripts that index.html injects on every
+  // page load. They play no role in tests, and when the fetch from the external
+  // CDN flakes the browser evaluates the error response as JS and throws a
+  // "SyntaxError: Unexpected token" that fails unrelated specs across shards.
+  // Serve an empty body so the fetch never leaves the CI network.
+  cy.intercept("GET", "https://pkg.betterbugs.io/**", {
+    statusCode: 200,
+    body: "",
+    headers: { "content-type": "application/javascript" },
+  });
+
   cy.intercept("PUT", "/api/v1/admin/env", (req) => {
-    req.headers["origin"] = "Cypress";
+    // GHSA-j9gf-vw2f-9hrw: server-side strict-mode now requires Origin to match
+    // APPSMITH_BASE_URL. Use the live Cypress baseUrl instead of the legacy
+    // synthetic-traffic flag "Cypress" (which no longer parses as a URL).
+    req.headers["origin"] = Cypress.config("baseUrl");
   }).as("postEnv");
 
   cy.intercept("GET", "/settings/general").as("getGeneral");
   cy.intercept("GET", "/api/v1/tenants/current").as("signUpLogin");
   cy.intercept("PUT", "/api/v1/tenants", (req) => {
-    req.headers["origin"] = "Cypress";
+    // GHSA-j9gf-vw2f-9hrw: see note above.
+    req.headers["origin"] = Cypress.config("baseUrl");
   }).as("postTenant");
-  cy.intercept("PUT", "/api/v1/git/discard/app/*").as("discardChanges");
+  cy.intercept("PUT", "/api/v1/git/applications/*/discard").as(
+    "discardChanges",
+  );
   cy.intercept("GET", "/api/v1/libraries/*").as("getLibraries");
 
-  if (Cypress.currentTest.titlePath[0].includes(ANVIL_EDITOR_TEST)) {
+  if (
+    Cypress.currentTest.titlePath[0].includes(ANVIL_EDITOR_TEST) ||
+    Cypress.currentTest.titlePath[0].includes(AI_AGENTS_TEST)
+  ) {
     // intercept features call for creating pages that support Anvil + WDS tests
     featureFlagIntercept({ release_anvil_enabled: true }, false);
+  } else if (
+    Cypress.currentTest.titlePath.some((title) =>
+      title.toLowerCase().includes("git"),
+    ) ||
+    (Cypress.currentTest.tags && Cypress.currentTest.tags.includes("@tag.Git"))
+  ) {
+    // intercept features call for Git tests that require release_git_api_contracts_enabled flag
+    featureFlagIntercept({ release_git_api_contracts_enabled: true }, false);
   } else {
     featureFlagIntercept({}, false);
   }
@@ -760,7 +851,7 @@ Cypress.Commands.add("startServerAndRoutes", () => {
       url: "/api/v1/product-alert/alert",
     },
     (req) => {
-      req.reply((res) => {
+      rewriteUpstreamResponse(req, (res) => {
         if (res) {
           if (res.statusCode === 200) {
             // Modify the response body to have empty data
@@ -792,6 +883,22 @@ Cypress.Commands.add("startServerAndRoutes", () => {
     "schemaPreview",
   );
   cy.intercept("GET", "/api/v1/pages/*/view?v=*").as("templatePreview");
+  cy.intercept("GET", "/api/v1/applications/*/static-url/suggest-app-slug").as(
+    "fetchAppSlugSuggestion",
+  );
+  cy.intercept("PATCH", "/api/v1/applications/*/static-url").as(
+    "persistAppSlug",
+  );
+  cy.intercept("GET", "/api/v1/applications/*/static-url/*").as(
+    "validateAppSlug",
+  );
+  cy.intercept("GET", "/api/v1/pages/*/static-url/verify/*").as(
+    "validatePageSlug",
+  );
+  cy.intercept("PATCH", "/api/v1/pages/static-url").as("persistPageSlug");
+  cy.intercept("DELETE", "/api/v1/applications/*/static-url").as(
+    "disableStaticUrl",
+  );
 });
 
 Cypress.Commands.add("startErrorRoutes", () => {
@@ -938,9 +1045,23 @@ Cypress.Commands.add("createSuperUser", () => {
 });
 
 Cypress.Commands.add("SignupFromAPI", (uname, pword) => {
+  // Unload the open app page first. Its requests get a 401 after the logout
+  // that comes before a signup, and the client answers a 401 with its own
+  // logout. That logout can end the session this request runs in, and the
+  // server then answers the signup with a 500. cy.visit resolves "about:blank"
+  // against baseUrl and loads the app again, so navigate the window instead.
+  cy.window({ log: false }).then((win) => {
+    win.location.href = "about:blank";
+  });
+  cy.location("href").should("eq", "about:blank");
+  // Drop the logged-out session cookie so the signup starts a new session.
+  cy.clearCookie("SESSION");
   cy.request({
     method: "POST",
     url: "api/v1/users",
+    headers: {
+      "X-Requested-By": "Appsmith",
+    },
     followRedirect: false,
     form: true,
     body: {
@@ -1312,20 +1433,24 @@ Cypress.Commands.add("skipSignposting", () => {
   onboarding.skipSignposting();
 });
 
-Cypress.Commands.add("stubPricingPage", () => {
+// Replaces window.open with a stub that records the call and its URL. The
+// stub never navigates, so the test stays in the app. Restores any earlier
+// stub first, so a test can call this more than once on the same window.
+const stubWindowOpen = (alias) => {
   cy.window().then((win) => {
-    cy.stub(win, "open", (url) => {
-      win.location.href = "https://www.appsmith.com/pricing?";
-    }).as("pricingPage");
+    if (typeof win.open.restore === "function") {
+      win.open.restore();
+    }
+    cy.stub(win, "open").as(alias);
   });
+};
+
+Cypress.Commands.add("stubPricingPage", () => {
+  stubWindowOpen("pricingPage");
 });
 
 Cypress.Commands.add("stubCustomerPortalPage", () => {
-  cy.window().then((win) => {
-    cy.stub(win, "open", (url) => {
-      win.location.href = "https://customer.appsmith.com?";
-    }).as("customerPortalPage");
-  });
+  stubWindowOpen("customerPortalPage");
 });
 
 /**

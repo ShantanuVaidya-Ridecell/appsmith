@@ -1,7 +1,8 @@
 name: Github Release
 
 # This workflow builds Docker images for server and client, and then pushes them to Docker Hub.
-# The docker-tag with which this push happens is `latest` and the release tag (e.g., v1.2.3 etc.).
+# The docker-tag with which this push happens is the release tag (e.g., v1.2.3 etc.), plus `latest` when no
+# published release has a higher version.
 # This workflow does NOT run tests.
 # This workflow is automatically triggered when a release is created on GitHub.
 
@@ -24,15 +25,13 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.ref }}
-          fetch-depth: "5"
-          fetch-tags: "true"
 
       - name: Prelude checks and preparations
         uses: actions/github-script@v7
         id: main
         with:
           script: |
-            require(
+            await require(
               "${{ github.workspace }}/.github/workflows/scripts/github-release/prelude.js",
             )(
               { core, context, github },
@@ -80,7 +79,7 @@ jobs:
           REACT_APP_ENVIRONMENT: "PRODUCTION"
           REACT_APP_FUSIONCHARTS_LICENSE_KEY: "${{ secrets.APPSMITH_FUSIONCHARTS_LICENSE_KEY }}"
           REACT_APP_SEGMENT_CE_KEY: "${{ secrets.APPSMITH_SEGMENT_CE_KEY }}"
-          REACT_APP_INTERCOM_APP_ID: "${{ secrets.APPSMITH_INTERCOM_ID }}"
+          REACT_APP_PYLON_APP_ID: "${{ secrets.APPSMITH_PYLON_APP_ID }}"
           REACT_APP_VERSION_EDITION: "Community"
         run: |
           yarn build
@@ -106,17 +105,14 @@ jobs:
       run:
         working-directory: app/server
 
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04-8core
 
     steps:
       - name: Checkout the code
         uses: actions/checkout@v4
 
-      - name: Set up JDK 17
-        uses: actions/setup-java@v4
-        with:
-          distribution: "temurin"
-          java-version: "17"
+      - name: Set up JDK from dependency file
+        uses: ./.github/actions/setup-server-java
 
       # Retrieve maven dependencies from cache. After a successful run, these dependencies are cached again
       - name: Cache maven dependencies
@@ -165,7 +161,7 @@ jobs:
         with:
           node-version-file: app/client/package.json
 
-      # actions/setup-node@v4 doesn’t work properly with Yarn 3
+      # actions/setup-node@v4 doesn't work properly with Yarn 3
       # when the project lives in a subdirectory: https://github.com/actions/setup-node/issues/488
       # Restoring the cache manually instead
       - name: Restore Yarn cache
@@ -200,8 +196,16 @@ jobs:
           path: app/client/packages/rts/rts-dist.tar
           overwrite: true
 
+  mcp-build:
+    needs:
+      - prelude
+    uses: ./.github/workflows/mcp-build.yml
+    secrets: inherit
+    with:
+      branch: ${{ github.ref }}
+
   package:
-    needs: [prelude, client-build, server-build, rts-build]
+    needs: [prelude, client-build, server-build, rts-build, mcp-build]
 
     runs-on: ubuntu-latest
     permissions:
@@ -234,6 +238,18 @@ jobs:
           name: server-build
           path: app/server/dist
 
+      - name: Download the MCP build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: mcp-dist
+          path: app/client/packages/mcp/dist
+
+      - name: Untar the MCP folder
+        run: |
+          tar -xvf app/client/packages/mcp/dist/mcp-dist.tar -C app/client/packages/mcp/
+          echo "Cleaning up the MCP tar files"
+          rm app/client/packages/mcp/dist/mcp-dist.tar
+
       - name: Download the rts build artifact
         uses: actions/download-artifact@v4
         with:
@@ -247,6 +263,7 @@ jobs:
           rm app/client/packages/rts/dist/rts-dist.tar
 
       - name: Generate info.json
+        id: info_json
         run: |
           scripts/generate_info_json.sh
 
@@ -274,6 +291,12 @@ jobs:
           platforms: linux/arm64,linux/amd64
           build-args: |
             APPSMITH_SEGMENT_CE_KEY=${{ secrets.APPSMITH_SEGMENT_CE_KEY }}
-            BASE=${{ vars.DOCKER_HUB_ORGANIZATION }}/base-${{ vars.EDITION }}:nightly
+            APPSMITH_BETTERBUGS_API_KEY=${{ secrets.APPSMITH_BETTERBUGS_API_KEY }}
+            APPSMITH_PYLON_APP_ID=${{ secrets.APPSMITH_PYLON_APP_ID }}
+            BASE=${{ vars.DOCKER_HUB_ORGANIZATION }}/base-${{ vars.EDITION }}:release
           tags: |
             ${{ needs.prelude.outputs.docker_tags }}
+          labels: |
+            org.opencontainers.image.revision=${{ steps.info_json.outputs.commitSha }}
+            org.opencontainers.image.source=${{ steps.info_json.outputs.repo }}
+            org.opencontainers.image.version=${{ steps.info_json.outputs.version }}

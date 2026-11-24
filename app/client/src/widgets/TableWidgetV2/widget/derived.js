@@ -155,6 +155,20 @@ export default {
   },
   //
   getPageSize: (props, moment, _) => {
+    /* With auto height the widget grows to fit its rows, so the page size comes from Rows per page instead of the height. Auto layout children never use auto height. */
+    if (
+      !props.isFlexChild &&
+      (props.dynamicHeight === "AUTO_HEIGHT" ||
+        props.dynamicHeight === "AUTO_HEIGHT_WITH_LIMITS")
+    ) {
+      const MAX_AUTO_HEIGHT_ROW_COUNT = 200;
+      const autoHeightRowCount = Math.floor(Number(props.autoHeightRowCount));
+
+      return autoHeightRowCount >= 1
+        ? Math.min(autoHeightRowCount, MAX_AUTO_HEIGHT_ROW_COUNT)
+        : 10;
+    }
+
     const TABLE_SIZES = {
       DEFAULT: {
         COLUMN_HEADER_HEIGHT: 32,
@@ -198,10 +212,18 @@ export default {
   //
   getProcessedTableData: (props, moment, _) => {
     let data;
+    let tableData;
 
-    if (_.isArray(props.tableData)) {
+    if (props.infiniteScrollEnabled) {
+      /* This logic is needed as the cachedTableData will have data based on each pageNo. Since the object would be { 1: array of page 1 data, 2: array of page 2 data }, hence the values will have array of array data, hence it is flattened to store back in tableData for processing. */
+      tableData = _.flatten(_.values(props.cachedTableData));
+    } else {
+      tableData = props.tableData;
+    }
+
+    if (_.isArray(tableData)) {
       /* Populate meta keys (__originalIndex__, __primaryKey__) and transient values */
-      data = props.tableData.map((row, index) => ({
+      data = tableData.map((row, index) => ({
         ...row,
         __originalIndex__: index,
         __primaryKey__: props.primaryColumnId
@@ -281,6 +303,23 @@ export default {
       return [];
     }
 
+    /*
+     * Used only for search/filter/sort — never for rendering (XSS).
+     * Under linkedom (evaluation worker), DOMParser often returns empty
+     * textContent for tagged HTML and throws for plain text; the strip-tags
+     * fallback is the real production path for tagged cells.
+     */
+    const stripHtmlTags = (value) => {
+      if (typeof value !== "string") {
+        return "";
+      }
+
+      return value
+        .replace(/<[^>]*>/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+    };
+
     const getTextFromHTML = (html) => {
       if (!html) return "";
 
@@ -288,14 +327,29 @@ export default {
         html = JSON.stringify(html);
       }
 
+      /*
+       * Plain-text fast path: linkedom's DOMParser throws on non-HTML strings
+       * when accessing doc.body. Skip parsing when there are no tags.
+       */
+      if (typeof html === "string" && !/<[^>]*>/.test(html)) {
+        return html;
+      }
+
       try {
-        const tempDiv = document.createElement("div");
+        const parser = new DOMParser();
+        const doc = parser.parseFromString(html, "text/html");
+        const text = (doc.body && doc.body.textContent) || "";
 
-        tempDiv.innerHTML = html;
+        if (text.trim()) {
+          return text;
+        }
 
-        return tempDiv.textContent || tempDiv.innerText || "";
+        /*
+         * Fallback when DOMParser returns empty (e.g. parsing quirk in some envs).
+         */
+        return stripHtmlTags(html);
       } catch (e) {
-        return "";
+        return stripHtmlTags(html);
       }
     };
 
@@ -372,9 +426,9 @@ export default {
     const sortByColumnId = props.sortOrder.column;
 
     let sortedTableData;
-    /* 
-    Check if there are select columns, 
-    and if the columns are sorting by label instead of default value 
+    /*
+    Check if there are select columns,
+    and if the columns are sorting by label instead of default value
     */
     const selectColumnKeysWithSortByLabel = [];
 
@@ -389,9 +443,9 @@ export default {
       }
     });
 
-    /* 
-    If there are select columns, 
-    transform the specific columns data to show the label instead of the value for sorting 
+    /*
+    If there are select columns,
+    transform the specific columns data to show the label instead of the value for sorting
     */
     let processedTableDataWithLabelInsteadOfValue;
 
@@ -744,7 +798,9 @@ export default {
       props.searchText &&
       (!props.onSearchTextChanged || props.enableClientSideSearch)
     ) {
-      searchKey = props.searchText.toLowerCase();
+      searchKey = String(props.searchText ?? "")
+        .trim()
+        .toLowerCase();
     } else {
       searchKey = "";
     }
@@ -756,6 +812,15 @@ export default {
     const hiddenColumns = Object.values(props.primaryColumns)
       .filter((column) => !column.isVisible)
       .map((column) => column.alias);
+    /*
+     * HTML columns also stash plain text on __htmlExtractedText_*__ keys.
+     * Omitting only the alias is not enough — those keys must be omitted too
+     * or hidden HTML columns would still match search.
+     */
+    const hiddenHtmlExtractedTextKeys = Object.values(props.primaryColumns)
+      .filter((column) => !column.isVisible && column.columnType === "html")
+      .map((column) => getKeyForExtractedTextFromHTML(column.alias));
+    const systemColumns = ["__originalIndex__"];
 
     const finalTableData = sortedTableData.filter((row) => {
       let isSearchKeyFound = true;
@@ -888,9 +953,20 @@ export default {
 
       if (searchKey) {
         const combinedRowContent = [
-          ...Object.values(_.omit(displayedRow, hiddenColumns)),
           ...Object.values(
-            _.omit(originalRow, [...hiddenColumns, ...htmlColumnAliases]),
+            _.omit(
+              displayedRow,
+              hiddenColumns,
+              hiddenHtmlExtractedTextKeys,
+              systemColumns,
+            ),
+          ),
+          ...Object.values(
+            _.omit(originalRow, [
+              ...hiddenColumns,
+              ...htmlColumnAliases,
+              ...systemColumns,
+            ]),
           ),
         ]
           .join(", ")
@@ -1186,62 +1262,60 @@ export default {
 
     const validationMap = {};
 
-    editableColumns.forEach((validationObj) => {
-      const editedColumn = validationObj[0];
-      const value = validationObj[1];
+    editableColumns.forEach(([editedColumn, value]) => {
+      let isValid = true;
 
       if (editedColumn && editedColumn.validation) {
         const validation = editedColumn.validation;
 
-        /* General validations */
+        /**
+         * General validations
+         * 1. isColumnEditableCellValid
+         * 2. regex
+         * 3. isColumnEditableCellRequired
+         * 4. number/currency min/max
+         */
         if (
-          !validation.isColumnEditableCellRequired &&
+          !_.isNil(validation.isColumnEditableCellValid) &&
+          !validation.isColumnEditableCellValid
+        ) {
+          isValid = false;
+        } else if (
+          validation.regex &&
+          !createRegex(validation.regex).test(value)
+        ) {
+          isValid = false;
+        } else if (
+          validation.isColumnEditableCellRequired &&
           (value === "" || _.isNil(value))
         ) {
-          validationMap[editedColumn.alias] = true;
+          isValid = false;
+        } else {
+          switch (editedColumn.columnType) {
+            case "number":
+            case "currency":
+              if (
+                !_.isNil(validation.min) &&
+                validation.min !== "" &&
+                validation.min > value
+              ) {
+                isValid = false;
+              }
 
-          return;
-        } else if (
-          (!_.isNil(validation.isColumnEditableCellValid) &&
-            !validation.isColumnEditableCellValid) ||
-          (validation.regex && !createRegex(validation.regex).test(value)) ||
-          (validation.isColumnEditableCellRequired &&
-            (value === "" || _.isNil(value)))
-        ) {
-          validationMap[editedColumn.alias] = false;
+              if (
+                !_.isNil(validation.max) &&
+                validation.max !== "" &&
+                validation.max < value
+              ) {
+                isValid = false;
+              }
 
-          return;
-        }
-
-        /* Column type related validations */
-        switch (editedColumn.columnType) {
-          case "number":
-          case "currency":
-            if (
-              !_.isNil(validation.min) &&
-              validation.min !== "" &&
-              validation.min > value
-            ) {
-              validationMap[editedColumn.alias] = false;
-
-              return;
-            }
-
-            if (
-              !_.isNil(validation.max) &&
-              validation.max !== "" &&
-              validation.max < value
-            ) {
-              validationMap[editedColumn.alias] = false;
-
-              return;
-            }
-
-            break;
+              break;
+          }
         }
       }
 
-      validationMap[editedColumn.alias] = true;
+      validationMap[editedColumn.alias] = isValid;
     });
 
     return validationMap;

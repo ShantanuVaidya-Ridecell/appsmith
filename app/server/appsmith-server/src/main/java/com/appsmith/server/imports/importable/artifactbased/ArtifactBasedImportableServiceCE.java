@@ -8,6 +8,7 @@ import com.appsmith.server.domains.Context;
 import com.appsmith.server.dtos.ImportingMetaDTO;
 import com.appsmith.server.dtos.MappedImportableResourcesDTO;
 import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
 
 import java.util.List;
 import java.util.Map;
@@ -19,7 +20,7 @@ public interface ArtifactBasedImportableServiceCE<T extends BaseDomain, U extend
 
     Flux<T> getExistingResourcesInCurrentArtifactFlux(Artifact artifact);
 
-    Flux<T> getExistingResourcesInOtherBranchesFlux(List<String> branchedArtifactIds, String currentArtifactId);
+    Flux<T> getExistingResourcesInOtherBranchesFlux(List<String> branchedArtifactIds);
 
     void updateArtifactId(T resource, Artifact artifact);
 
@@ -40,7 +41,7 @@ public interface ArtifactBasedImportableServiceCE<T extends BaseDomain, U extend
         }
     }
 
-    void createNewResource(ImportingMetaDTO importingMetaDTO, T actionCollection, Context baseContext);
+    Mono<T> createNewResource(ImportingMetaDTO importingMetaDTO, T entity, Context baseContext);
 
     default T getExistingEntityInCurrentBranchForImportedEntity(
             MappedImportableResourcesDTO mappedImportableResourcesDTO,

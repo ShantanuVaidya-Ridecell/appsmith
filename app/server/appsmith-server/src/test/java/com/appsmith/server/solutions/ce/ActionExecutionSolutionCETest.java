@@ -25,14 +25,18 @@ import com.appsmith.server.datasourcestorages.base.DatasourceStorageService;
 import com.appsmith.server.domains.Application;
 import com.appsmith.server.domains.GitArtifactMetadata;
 import com.appsmith.server.domains.Layout;
+import com.appsmith.server.domains.PermissionGroup;
 import com.appsmith.server.domains.Plugin;
 import com.appsmith.server.domains.User;
 import com.appsmith.server.domains.Workspace;
+import com.appsmith.server.dtos.ApplicationAccessDTO;
 import com.appsmith.server.dtos.ApplicationJson;
 import com.appsmith.server.dtos.ExecuteActionMetaDTO;
+import com.appsmith.server.dtos.InviteUsersDTO;
 import com.appsmith.server.dtos.MockDataSource;
 import com.appsmith.server.dtos.PageDTO;
 import com.appsmith.server.exceptions.AppsmithError;
+import com.appsmith.server.exceptions.AppsmithException;
 import com.appsmith.server.exports.internal.ExportService;
 import com.appsmith.server.helpers.MockPluginExecutor;
 import com.appsmith.server.helpers.PluginExecutorHelper;
@@ -56,6 +60,7 @@ import com.appsmith.server.services.WorkspaceService;
 import com.appsmith.server.solutions.ActionExecutionSolution;
 import com.appsmith.server.solutions.ApplicationPermission;
 import com.appsmith.server.solutions.EnvironmentPermission;
+import com.appsmith.server.solutions.UserAndAccessManagementService;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -71,6 +76,11 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.boot.test.mock.mockito.SpyBean;
 import org.springframework.http.HttpMethod;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.ReactiveSecurityContextHolder;
+import org.springframework.security.core.context.SecurityContext;
+import org.springframework.security.core.context.SecurityContextImpl;
 import org.springframework.security.test.context.support.WithUserDetails;
 import reactor.core.publisher.Mono;
 import reactor.test.StepVerifier;
@@ -86,6 +96,9 @@ import java.util.Set;
 import java.util.UUID;
 
 import static com.appsmith.server.acl.AclPermission.READ_PAGES;
+import static com.appsmith.server.acl.AclPermission.READ_WORKSPACES;
+import static com.appsmith.server.constants.FieldName.ANONYMOUS_USER;
+import static com.appsmith.server.constants.FieldName.VIEWER;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 
@@ -168,11 +181,14 @@ public class ActionExecutionSolutionCETest {
     @Autowired
     ApplicationPermission applicationPermission;
 
-    @Autowired
+    @SpyBean
     SessionUserService sessionUserService;
 
     @Autowired
     CacheableRepositoryHelper cacheableRepositoryHelper;
+
+    @Autowired
+    UserAndAccessManagementService userAndAccessManagementService;
 
     Application testApp = null;
 
@@ -292,8 +308,9 @@ public class ActionExecutionSolutionCETest {
 
     @AfterEach
     public void cleanup() {
-        List<Application> deletedApplications = applicationService
-                .findByWorkspaceId(workspaceId, applicationPermission.getDeletePermission())
+        List<Application> deletedApplications = applicationPermission
+                .getDeletePermission()
+                .flatMapMany(permission -> applicationService.findByWorkspaceId(workspaceId, permission))
                 .flatMap(remainingApplication -> applicationPageService.deleteApplication(remainingApplication.getId()))
                 .collectList()
                 .block();
@@ -1976,5 +1993,261 @@ public class ActionExecutionSolutionCETest {
             assertThat(actionExecutionResult.getErrorType())
                     .isEqualTo(AppsmithError.NO_CONFIGURATION_FOUND_IN_DATASOURCE.getErrorType());
         });
+    }
+
+    @Test
+    @WithUserDetails(value = "api_user")
+    public void testAnonymousUserCannotExecuteUnpublishedAction() {
+        // Mock plugin executor helper FIRST - needed for action creation (datasource validation)
+        Mockito.when(pluginExecutorHelper.getPluginExecutor(any())).thenReturn(Mono.just(pluginExecutor));
+        Mockito.when(pluginExecutor.getHintMessages(any(), any()))
+                .thenReturn(Mono.zip(Mono.just(new HashSet<>()), Mono.just(new HashSet<>())));
+        Mockito.when(pluginExecutor.datasourceCreate(any())).thenReturn(Mono.empty());
+        Mockito.doReturn(Mono.just(false))
+                .when(spyDatasourceService)
+                .isEndpointBlockedForConnectionRequest(Mockito.any());
+
+        // Setup: Use existing testApp and testPage from @BeforeEach
+        // Create an action in the existing test app
+        ActionDTO action = new ActionDTO();
+        ActionConfiguration actionConfiguration = new ActionConfiguration();
+        actionConfiguration.setHttpMethod(HttpMethod.GET);
+        action.setActionConfiguration(actionConfiguration);
+        action.setPageId(testPage.getId());
+        action.setName("testAnonymousUserCannotExecuteUnpublishedAction");
+        action.setDatasource(datasource);
+        ActionDTO createdAction =
+                layoutActionService.createSingleAction(action, Boolean.FALSE).block();
+
+        // Publish the application to make it public
+        ApplicationAccessDTO applicationAccessDTO = new ApplicationAccessDTO();
+        applicationAccessDTO.setPublicAccess(true);
+        Application publishedApp = applicationService
+                .changeViewAccessForSingleBranchByBranchedApplicationId(testApp.getId(), applicationAccessDTO)
+                .block();
+
+        // Verify the app is public
+        assertThat(publishedApp.getIsPublic()).isTrue();
+
+        // Mock anonymous user - use doReturn for SpyBean
+        User anonymousUser = new User();
+        anonymousUser.setEmail(ANONYMOUS_USER);
+        anonymousUser.setName(ANONYMOUS_USER);
+        anonymousUser.setIsAnonymous(true);
+        Mockito.doReturn(Mono.just(anonymousUser)).when(sessionUserService).getCurrentUser();
+
+        // Test getValidActionForExecution directly - this is where the security check should happen
+        // Try to get action with viewMode=false (edit mode) as anonymous user
+        ExecuteActionDTO executeActionDTO = new ExecuteActionDTO();
+        executeActionDTO.setActionId(createdAction.getId());
+        executeActionDTO.setViewMode(false); // Attempting to access unpublished action
+
+        ExecuteActionMetaDTO executeActionMetaDTO = ExecuteActionMetaDTO.builder()
+                .environmentId(defaultEnvironmentId)
+                .build();
+
+        // Test the security check at getValidActionForExecution level
+        // This method calls findActionDTObyIdAndViewMode which should enforce the security boundary
+        Mono<ActionDTO> actionDTOMono =
+                actionExecutionSolution.getValidActionForExecution(executeActionDTO, executeActionMetaDTO);
+
+        // Expect error: Anonymous users should not be able to access unpublished actions
+        // The fix should either:
+        // 1. Force viewMode=true for anonymous users (in which case published action is returned), OR
+        // 2. Return an error/exception (ACL_NO_RESOURCE_FOUND or NO_RESOURCE_FOUND)
+        StepVerifier.create(actionDTOMono)
+                .expectErrorMatches(error -> {
+                    // Expect either:
+                    // - AppsmithException with ACL_NO_RESOURCE_FOUND (no permission for unpublished action)
+                    // - Or NO_RESOURCE_FOUND if unpublished action is not accessible to anonymous user
+                    if (error instanceof AppsmithException) {
+                        AppsmithException appsmithException = (AppsmithException) error;
+                        return appsmithException.getError() == AppsmithError.ACL_NO_RESOURCE_FOUND
+                                || appsmithException.getError() == AppsmithError.NO_RESOURCE_FOUND;
+                    }
+                    return false;
+                })
+                .verify();
+    }
+
+    @Test
+    @WithUserDetails(value = "api_user")
+    public void testViewerCannotExecuteUnpublishedAction() {
+        Mockito.when(pluginExecutorHelper.getPluginExecutor(any())).thenReturn(Mono.just(pluginExecutor));
+        Mockito.when(pluginExecutor.getHintMessages(any(), any()))
+                .thenReturn(Mono.zip(Mono.just(new HashSet<>()), Mono.just(new HashSet<>())));
+        Mockito.when(pluginExecutor.datasourceCreate(any())).thenReturn(Mono.empty());
+        Mockito.doReturn(Mono.just(false))
+                .when(spyDatasourceService)
+                .isEndpointBlockedForConnectionRequest(Mockito.any());
+
+        ActionDTO action = new ActionDTO();
+        ActionConfiguration actionConfiguration = new ActionConfiguration();
+        actionConfiguration.setHttpMethod(HttpMethod.GET);
+        action.setActionConfiguration(actionConfiguration);
+        action.setPageId(testPage.getId());
+        action.setName("testViewerCannotExecuteUnpublishedAction");
+        action.setDatasource(datasource);
+        ActionDTO createdAction =
+                layoutActionService.createSingleAction(action, Boolean.FALSE).block();
+
+        List<PermissionGroup> permissionGroups = workspaceService
+                .findById(workspaceId, READ_WORKSPACES)
+                .flatMapMany(workspace -> {
+                    Set<String> defaultPermissionGroups = workspace.getDefaultPermissionGroups();
+                    return permissionGroupRepository.findAllById(defaultPermissionGroups);
+                })
+                .collectList()
+                .block();
+
+        PermissionGroup viewerPermissionGroup = permissionGroups.stream()
+                .filter(pg -> pg.getName().startsWith(VIEWER))
+                .findFirst()
+                .get();
+
+        InviteUsersDTO inviteUsersDTO = new InviteUsersDTO();
+        inviteUsersDTO.setPermissionGroupId(viewerPermissionGroup.getId());
+        inviteUsersDTO.setUsernames(List.of("usertest@usertest.com"));
+        userAndAccessManagementService.inviteUsers(inviteUsersDTO, "test").block();
+
+        User viewerUser = userService.findByEmail("usertest@usertest.com").block();
+        Mockito.doReturn(Mono.just(viewerUser)).when(sessionUserService).getCurrentUser();
+
+        Authentication viewerAuth =
+                new UsernamePasswordAuthenticationToken(viewerUser, null, viewerUser.getAuthorities());
+        SecurityContext viewerSecurityContext = new SecurityContextImpl(viewerAuth);
+
+        ExecuteActionDTO executeActionDTO = new ExecuteActionDTO();
+        executeActionDTO.setActionId(createdAction.getId());
+        executeActionDTO.setViewMode(false);
+
+        ExecuteActionMetaDTO executeActionMetaDTO = ExecuteActionMetaDTO.builder()
+                .environmentId(defaultEnvironmentId)
+                .build();
+
+        Mono<ActionDTO> actionDTOMono = actionExecutionSolution
+                .getValidActionForExecution(executeActionDTO, executeActionMetaDTO)
+                .contextWrite(ReactiveSecurityContextHolder.withSecurityContext(Mono.just(viewerSecurityContext)));
+
+        StepVerifier.create(actionDTOMono)
+                .expectErrorMatches(error -> {
+                    if (error instanceof AppsmithException) {
+                        AppsmithException appsmithException = (AppsmithException) error;
+                        return appsmithException.getError() == AppsmithError.ACL_NO_RESOURCE_FOUND
+                                || appsmithException.getError() == AppsmithError.NO_RESOURCE_FOUND;
+                    }
+                    return false;
+                })
+                .verify();
+    }
+
+    @Test
+    @WithUserDetails(value = "api_user")
+    public void testViewerCanExecutePublishedAction() {
+        Mockito.when(pluginExecutorHelper.getPluginExecutor(any())).thenReturn(Mono.just(pluginExecutor));
+        Mockito.when(pluginExecutor.getHintMessages(any(), any()))
+                .thenReturn(Mono.zip(Mono.just(new HashSet<>()), Mono.just(new HashSet<>())));
+        Mockito.when(pluginExecutor.datasourceCreate(any())).thenReturn(Mono.empty());
+        Mockito.doReturn(Mono.just(false))
+                .when(spyDatasourceService)
+                .isEndpointBlockedForConnectionRequest(Mockito.any());
+
+        ActionDTO action = new ActionDTO();
+        ActionConfiguration actionConfiguration = new ActionConfiguration();
+        actionConfiguration.setHttpMethod(HttpMethod.GET);
+        action.setActionConfiguration(actionConfiguration);
+        action.setPageId(testPage.getId());
+        action.setName("testViewerCanExecutePublishedAction");
+        action.setDatasource(datasource);
+        ActionDTO createdAction =
+                layoutActionService.createSingleAction(action, Boolean.FALSE).block();
+
+        applicationPageService.publish(testApp.getId(), true).block();
+
+        List<PermissionGroup> permissionGroups = workspaceService
+                .findById(workspaceId, READ_WORKSPACES)
+                .flatMapMany(workspace -> {
+                    Set<String> defaultPermissionGroups = workspace.getDefaultPermissionGroups();
+                    return permissionGroupRepository.findAllById(defaultPermissionGroups);
+                })
+                .collectList()
+                .block();
+
+        PermissionGroup viewerPermissionGroup = permissionGroups.stream()
+                .filter(pg -> pg.getName().startsWith(VIEWER))
+                .findFirst()
+                .get();
+
+        InviteUsersDTO inviteUsersDTO = new InviteUsersDTO();
+        inviteUsersDTO.setPermissionGroupId(viewerPermissionGroup.getId());
+        inviteUsersDTO.setUsernames(List.of("usertest@usertest.com"));
+        userAndAccessManagementService.inviteUsers(inviteUsersDTO, "test").block();
+
+        User viewerUser = userService.findByEmail("usertest@usertest.com").block();
+
+        Mockito.doReturn(Mono.just(viewerUser)).when(sessionUserService).getCurrentUser();
+
+        Authentication viewerAuth =
+                new UsernamePasswordAuthenticationToken(viewerUser, null, viewerUser.getAuthorities());
+        SecurityContext viewerSecurityContext = new SecurityContextImpl(viewerAuth);
+
+        ExecuteActionDTO executeActionDTO = new ExecuteActionDTO();
+        executeActionDTO.setActionId(createdAction.getId());
+        executeActionDTO.setViewMode(true);
+
+        ExecuteActionMetaDTO executeActionMetaDTO = ExecuteActionMetaDTO.builder()
+                .environmentId(defaultEnvironmentId)
+                .build();
+
+        Mono<ActionDTO> actionDTOMono = actionExecutionSolution
+                .getValidActionForExecution(executeActionDTO, executeActionMetaDTO)
+                .contextWrite(ReactiveSecurityContextHolder.withSecurityContext(Mono.just(viewerSecurityContext)));
+
+        StepVerifier.create(actionDTOMono)
+                .assertNext(result -> {
+                    assertThat(result).isNotNull();
+                    assertThat(result.getName()).isEqualTo("testViewerCanExecutePublishedAction");
+                })
+                .verifyComplete();
+    }
+
+    @Test
+    @WithUserDetails(value = "api_user")
+    public void testEditorCanExecuteUnpublishedAction() {
+        Mockito.when(pluginExecutorHelper.getPluginExecutor(any())).thenReturn(Mono.just(pluginExecutor));
+        Mockito.when(pluginExecutor.getHintMessages(any(), any()))
+                .thenReturn(Mono.zip(Mono.just(new HashSet<>()), Mono.just(new HashSet<>())));
+        Mockito.when(pluginExecutor.datasourceCreate(any())).thenReturn(Mono.empty());
+        Mockito.doReturn(Mono.just(false))
+                .when(spyDatasourceService)
+                .isEndpointBlockedForConnectionRequest(Mockito.any());
+
+        ActionDTO action = new ActionDTO();
+        ActionConfiguration actionConfiguration = new ActionConfiguration();
+        actionConfiguration.setHttpMethod(HttpMethod.GET);
+        action.setActionConfiguration(actionConfiguration);
+        action.setPageId(testPage.getId());
+        action.setName("testEditorCanExecuteUnpublishedAction");
+        action.setDatasource(datasource);
+        ActionDTO createdAction =
+                layoutActionService.createSingleAction(action, Boolean.FALSE).block();
+
+        ExecuteActionDTO executeActionDTO = new ExecuteActionDTO();
+        executeActionDTO.setActionId(createdAction.getId());
+        executeActionDTO.setViewMode(false);
+
+        ExecuteActionMetaDTO executeActionMetaDTO = ExecuteActionMetaDTO.builder()
+                .environmentId(defaultEnvironmentId)
+                .build();
+
+        Mono<ActionDTO> actionDTOMono =
+                actionExecutionSolution.getValidActionForExecution(executeActionDTO, executeActionMetaDTO);
+
+        StepVerifier.create(actionDTOMono)
+                .assertNext(result -> {
+                    assertThat(result).isNotNull();
+                    assertThat(result.getName()).isEqualTo("testEditorCanExecuteUnpublishedAction");
+                })
+                .verifyComplete();
     }
 }

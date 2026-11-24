@@ -18,10 +18,10 @@ import lombok.RequiredArgsConstructor;
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
 
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -56,12 +56,24 @@ public class NewActionApplicationImportableServiceCEImpl
         return repository.findByApplicationId(artifact.getId(), Optional.empty(), Optional.empty());
     }
 
+    protected Flux<NewAction> getExistingResourcesInOtherBranchesFlux(
+            List<String> branchedArtifactIds, List<String> projectionForOtherBranches) {
+        return repository.findAllByApplicationIds(branchedArtifactIds, projectionForOtherBranches);
+    }
+
     @Override
-    public Flux<NewAction> getExistingResourcesInOtherBranchesFlux(
-            List<String> branchedArtifactIds, String currentArtifactId) {
-        return repository
-                .findAllByApplicationIds(branchedArtifactIds, null)
-                .filter(newAction -> !Objects.equals(newAction.getApplicationId(), currentArtifactId));
+    public Flux<NewAction> getExistingResourcesInOtherBranchesFlux(List<String> branchedArtifactIds) {
+        // Only project the fields consumed downstream during import (gitSyncId for the lookup map, and
+        // id/baseId for base-id resolution). Fetching full documents here loads the heavy
+        // unpublishedAction/publishedAction bodies across every branch, which for apps with many
+        // branches can exceed the Mongo transaction lifetime limit during branch creation.
+        final List<String> projectionForOtherBranches = List.of(
+                NewAction.Fields.id,
+                NewAction.Fields.baseId,
+                NewAction.Fields.applicationId,
+                NewAction.Fields.gitSyncId);
+
+        return getExistingResourcesInOtherBranchesFlux(branchedArtifactIds, projectionForOtherBranches);
     }
 
     @Override
@@ -89,25 +101,31 @@ public class NewActionApplicationImportableServiceCEImpl
     }
 
     @Override
-    public void createNewResource(ImportingMetaDTO importingMetaDTO, NewAction newAction, Context baseContext) {
-        if (!importingMetaDTO.getPermissionProvider().canCreateAction((NewPage) baseContext)) {
-            throw new AppsmithException(
-                    AppsmithError.ACL_NO_RESOURCE_FOUND, FieldName.PAGE, ((NewPage) baseContext).getId());
-        }
+    public Mono<NewAction> createNewResource(
+            ImportingMetaDTO importingMetaDTO, NewAction newAction, Context baseContext) {
+        Mono<Boolean> canCreateActionMono =
+                importingMetaDTO.getPermissionProvider().canCreateAction((NewPage) baseContext);
+        return canCreateActionMono.flatMap(canCreateAction -> {
+            if (!canCreateAction) {
+                return Mono.error(new AppsmithException(
+                        AppsmithError.ACL_NO_RESOURCE_FOUND, FieldName.PAGE, ((NewPage) baseContext).getId()));
+            }
 
-        // this will generate the id and other auto generated fields e.g. createdAt
-        newAction.updateForBulkWriteOperation();
-        newActionService.generateAndSetActionPolicies((NewPage) baseContext, newAction);
+            // this will generate the id and other auto generated fields e.g. createdAt
+            newAction.updateForBulkWriteOperation();
+            newActionService.generateAndSetActionPolicies((NewPage) baseContext, newAction);
 
-        // create or update base id for the action
-        // values already set to base id are kept unchanged
-        newAction.setBaseId(newAction.getBaseIdOrFallback());
-        newAction.setRefType(importingMetaDTO.getRefType());
-        newAction.setRefName(importingMetaDTO.getRefName());
+            // create or update base id for the action
+            // values already set to base id are kept unchanged
+            newAction.setBaseId(newAction.getBaseIdOrFallback());
+            newAction.setRefType(importingMetaDTO.getRefType());
+            newAction.setRefName(importingMetaDTO.getRefName());
 
-        // generate gitSyncId if it's not present
-        if (newAction.getGitSyncId() == null) {
-            newAction.setGitSyncId(newAction.getApplicationId() + "_" + UUID.randomUUID());
-        }
+            // generate gitSyncId if it's not present
+            if (newAction.getGitSyncId() == null) {
+                newAction.setGitSyncId(newAction.getApplicationId() + "_" + UUID.randomUUID());
+            }
+            return Mono.just(newAction);
+        });
     }
 }

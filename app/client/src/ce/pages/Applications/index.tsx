@@ -9,34 +9,39 @@ import {
 import type { UpdateApplicationPayload } from "ee/api/ApplicationApi";
 import {
   ANVIL_APPLICATIONS,
+  ANVIL_APPLICATION_CARD_LIST_ZERO_STATE,
   APPLICATIONS,
-  CLASSIC_APPLICATION_CARD_LIST_ZERO_STATE,
   CREATE_A_NEW_WORKSPACE,
   createMessage,
-  FIXED_APPLICATIONS,
   INVITE_USERS_PLACEHOLDER,
-  NEW_APPLICATION_CARD_LIST_ZERO_STATE,
   NO_APPS_FOUND,
   NO_WORKSPACE_HEADING,
   WORKSPACES_HEADING,
 } from "ee/constants/messages";
+import { getIsAiAgentInstanceEnabled } from "ee/selectors/aiAgentSelectors";
 import type { ApplicationPayload } from "entities/Application";
 import { ReduxActionTypes } from "ee/constants/ReduxActionConstants";
 import { createWorkspaceSubmitHandler } from "ee/pages/workspace/helpers";
-import type { AppState } from "ee/reducers";
+import type { DefaultRootState } from "react-redux";
 import type { creatingApplicationMap } from "ee/reducers/uiReducers/applicationsReducer";
 import {
   getApplicationList,
   getApplicationSearchKeyword,
   getCreateApplicationError,
   getCurrentApplicationIdForCreateNewApp,
+  getHasFavorites,
   getIsCreatingApplication,
   getIsDeletingApplication,
 } from "ee/selectors/applicationSelectors";
+import {
+  DEFAULT_FAVORITES_WORKSPACE,
+  FAVORITES_KEY,
+} from "ee/constants/workspaceConstants";
 import { Classes as BlueprintClasses } from "@blueprintjs/core";
 import { Position } from "@blueprintjs/core/lib/esm/common/position";
 import { leaveWorkspace } from "actions/userActions";
 import NoSearchImage from "assets/images/NoSearchResult.svg";
+import HeartIconRed from "assets/icons/ads/heart-fill-red.svg";
 import CenteredWrapper from "components/designSystems/appsmith/CenteredWrapper";
 import {
   thinScrollbar,
@@ -50,7 +55,6 @@ import {
   Option,
   Select,
   Tooltip,
-  Tag,
 } from "@appsmith/ads";
 import {
   AppIconCollection,
@@ -58,10 +62,12 @@ import {
   MenuItem as ListItem,
   Text,
   TextType,
+  FontWeight,
 } from "@appsmith/ads-old";
 import { loadingUserWorkspaces } from "pages/Applications/ApplicationLoaders";
 import PageWrapper from "pages/common/PageWrapper";
 import WorkspaceInviteUsersForm from "pages/workspace/WorkspaceInviteUsersForm";
+import PreviewTag from "components/editorComponents/PreviewTag";
 import React, {
   Component,
   useCallback,
@@ -71,7 +77,8 @@ import React, {
 } from "react";
 import { connect, useDispatch, useSelector } from "react-redux";
 import MediaQuery from "react-responsive";
-import { useHistory, useLocation, useRouteMatch } from "react-router-dom";
+import { useHistory, useLocation } from "react-router-dom";
+import { useIsBannerVisible } from "pages/common/useIsBannerVisible";
 import { getCurrentUser } from "selectors/usersSelectors";
 import styled, { ThemeContext } from "styled-components";
 import { getNextEntityName, getRandomPaletteColor } from "utils/AppsmithUtils";
@@ -95,11 +102,14 @@ import {
   getApplicationsOfWorkspace,
   getCurrentWorkspaceId,
   getIsFetchingApplications,
+  getIsFetchingFavoriteApplications,
 } from "ee/selectors/selectedWorkspaceSelectors";
 import {
-  getTenantPermissions,
-  shouldShowLicenseBanner,
-} from "ee/selectors/tenantSelectors";
+  getIsFetchingMyOrganizations,
+  getMyOrganizations,
+  getOrganizationPermissions,
+  activeOrganizationId,
+} from "ee/selectors/organizationSelectors";
 import { getWorkflowsList } from "ee/selectors/workflowSelectors";
 import {
   getFetchedWorkspaces,
@@ -130,23 +140,30 @@ import CreateNewAppFromTemplatesWrapper from "./CreateNewAppFromTemplateModal/Cr
 import { getAssetUrl } from "ee/utils/airgapHelpers";
 import { ASSETS_CDN_URL } from "constants/ThirdPartyConstants";
 import { LayoutSystemTypes } from "layoutSystems/types";
-import { getIsAnvilLayoutEnabled } from "layoutSystems/anvil/integrations/selectors";
 import OldGitSyncModal from "pages/Editor/gitSync/GitSyncModal";
 import { useGitModEnabled } from "pages/Editor/gitSync/hooks/modHooks";
 import {
   GitRepoLimitErrorModal as NewGitRepoLimitErrorModal,
   GitImportModal as NewGitImportModal,
+  GitImportOverrideModal,
 } from "git";
+import { GitImportContextProvider } from "git-artifact-helpers/application/components";
 import OldRepoLimitExceededErrorModal from "pages/Editor/gitSync/RepoLimitExceededErrorModal";
+import { trackCurrentDomain } from "utils/multiOrgDomains";
+import OrganizationDropdown from "components/OrganizationDropdown";
+import { fetchMyOrganizations } from "ee/actions/organizationActions";
+import type { Organization } from "ee/api/OrganizationApi";
+import { useIsCloudBillingEnabled } from "hooks";
 
 function GitModals() {
   const isGitModEnabled = useGitModEnabled();
 
   return isGitModEnabled ? (
-    <>
+    <GitImportContextProvider>
       <NewGitImportModal />
       <NewGitRepoLimitErrorModal />
-    </>
+      <GitImportOverrideModal />
+    </GitImportContextProvider>
   ) : (
     <>
       <OldGitSyncModal isImport />
@@ -276,21 +293,6 @@ const LeftPaneDataSection = styled.div<{ isBannerVisible?: boolean }>`
   flex-direction: column;
 `;
 
-// Tags for some reason take all available space.
-// We're changing the max width to fit the contents as Tags are supposed to be
-const TitleTag = styled(Tag)`
-  max-width: fit-content;
-`;
-
-// A static component that is a tag signifying Anvil applications
-// This will be passed down to the ApplicationCardsList component
-// in the titleTag prop.
-const AnvilTitleTag = (
-  <TitleTag isClosable={false} onClose={() => {}}>
-    Anvil α
-  </TitleTag>
-);
-
 export function LeftPaneSection(props: {
   heading: string;
   // TODO: Fix this the next time the file is edited
@@ -301,12 +303,12 @@ export function LeftPaneSection(props: {
 }) {
   const dispatch = useDispatch();
   const isFeatureEnabled = useFeatureFlag(FEATURE_FLAG.license_gac_enabled);
-  const tenantPermissions = useSelector(getTenantPermissions);
+  const organizationPermissions = useSelector(getOrganizationPermissions);
   const fetchedWorkspaces = useSelector(getFetchedWorkspaces);
 
   const canCreateWorkspace = getHasCreateWorkspacePermission(
     isFeatureEnabled,
-    tenantPermissions,
+    organizationPermissions,
   );
 
   const createNewWorkspace = async () => {
@@ -321,7 +323,6 @@ export function LeftPaneSection(props: {
       },
       dispatch,
     );
-    dispatch(fetchAllWorkspaces());
   };
 
   return (
@@ -387,6 +388,59 @@ export const textIconStyles = (props: { color: string; hover: string }) => {
   `;
 };
 
+const WorkspaceItemRow = styled.a<{ disabled?: boolean; selected?: boolean }>`
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  text-decoration: none;
+  padding: 0px var(--ads-spaces-6);
+  background-color: ${(props) =>
+    props.selected ? "var(--ads-v2-color-bg-muted)" : "transparent"};
+  .${Classes.TEXT} {
+    color: var(--ads-v2-color-fg);
+  }
+  .${Classes.ICON} {
+    svg {
+      path {
+        fill: var(--ads-v2-color-fg);
+      }
+    }
+  }
+  height: 38px;
+
+  ${(props) =>
+    !props.disabled
+      ? `
+    &:hover {
+      text-decoration: none;
+      cursor: pointer;
+      background-color: var(--ads-v2-color-bg-subtle);
+      border-radius: var(--ads-v2-border-radius);
+    }`
+      : `
+    &:hover {
+      text-decoration: none;
+      cursor: default;
+    }
+    `}
+`;
+
+const WorkspaceIconContainer = styled.span`
+  display: flex;
+  align-items: center;
+
+  .${Classes.ICON} {
+    margin-right: var(--ads-spaces-5);
+  }
+`;
+
+const WorkspaceLogoImage = styled.img`
+  width: 16px;
+  height: 16px;
+  object-fit: contain;
+  margin-right: var(--ads-spaces-5);
+`;
+
 export function WorkspaceMenuItem({
   isFetchingWorkspaces,
   selected,
@@ -395,6 +449,7 @@ export function WorkspaceMenuItem({
 }: any) {
   const history = useHistory();
   const location = useLocation();
+  const [imageError, setImageError] = React.useState(false);
 
   const handleWorkspaceClick = () => {
     const workspaceId = workspace?.id;
@@ -406,7 +461,68 @@ export function WorkspaceMenuItem({
     }
   };
 
+  const handleImageError = () => {
+    setImageError(true);
+  };
+
   if (!workspace.id) return null;
+
+  const isFavoritesWorkspace = workspace.id === FAVORITES_KEY;
+  const hasLogo = workspace?.logoUrl && !imageError;
+  const displayText = isFetchingWorkspaces
+    ? workspace?.name
+    : workspace?.name?.length > 22
+      ? workspace.name.slice(0, 22).concat(" ...")
+      : workspace?.name;
+
+  // Use custom component for favorites workspace with heart icon
+  if (isFavoritesWorkspace && !isFetchingWorkspaces) {
+    return (
+      <WorkspaceItemRow
+        className={selected ? "selected-workspace" : ""}
+        onClick={handleWorkspaceClick}
+        selected={selected}
+      >
+        <WorkspaceIconContainer>
+          <WorkspaceLogoImage alt="Favorites" src={HeartIconRed} />
+          <Text type={TextType.H5} weight={FontWeight.NORMAL}>
+            {displayText}
+          </Text>
+        </WorkspaceIconContainer>
+      </WorkspaceItemRow>
+    );
+  }
+
+  // Use custom component when there's a logo, otherwise use ListItem
+  if (hasLogo && !isFetchingWorkspaces) {
+    const showTooltip = workspace?.name && workspace.name.length > 22;
+    const itemContent = (
+      <WorkspaceItemRow
+        className={selected ? "selected-workspace" : ""}
+        onClick={handleWorkspaceClick}
+        selected={selected}
+      >
+        <WorkspaceIconContainer>
+          <WorkspaceLogoImage
+            alt={`${workspace.name} logo`}
+            onError={handleImageError}
+            src={workspace.logoUrl}
+          />
+          <Text type={TextType.H5} weight={FontWeight.NORMAL}>
+            {displayText}
+          </Text>
+        </WorkspaceIconContainer>
+      </WorkspaceItemRow>
+    );
+
+    return showTooltip ? (
+      <Tooltip content={workspace?.name} placement="bottomLeft">
+        {itemContent}
+      </Tooltip>
+    ) : (
+      itemContent
+    );
+  }
 
   return (
     <ListItem
@@ -433,25 +549,45 @@ export const submitCreateWorkspaceForm = async (data: any, dispatch: any) => {
 };
 
 export interface LeftPaneProps {
-  isBannerVisible?: boolean;
-  isFetchingWorkspaces: boolean;
-  workspaces: Workspace[];
+  activeOrganizationId?: string;
   activeWorkspaceId?: string;
+  isBannerVisible?: boolean;
+  isFetchingOrganizations: boolean;
+  isFetchingWorkspaces: boolean;
+  organizations: Organization[];
+  workspaces: Workspace[];
 }
 
 export function LeftPane(props: LeftPaneProps) {
   const {
+    activeOrganizationId,
     activeWorkspaceId,
     isBannerVisible = false,
+    isFetchingOrganizations,
     isFetchingWorkspaces,
+    organizations = [],
     workspaces = [],
   } = props;
   const isMobile = useIsMobileDevice();
+  const isCloudBillingEnabled = useIsCloudBillingEnabled();
 
   if (isMobile) return null;
 
   return (
     <LeftPaneWrapper isBannerVisible={isBannerVisible}>
+      {isCloudBillingEnabled &&
+        !isFetchingOrganizations &&
+        organizations.length > 0 && (
+          <OrganizationDropdown
+            organizations={organizations}
+            selectedOrganization={
+              organizations.find(
+                (organization) =>
+                  organization.organizationId === activeOrganizationId,
+              ) || organizations[0]
+            }
+          />
+        )}
       <LeftPaneSection
         heading={createMessage(WORKSPACES_HEADING)}
         isBannerVisible={isBannerVisible}
@@ -552,12 +688,12 @@ export function ApplicationsSection(props: any) {
   const isSavingWorkspaceInfo = useSelector(getIsSavingWorkspaceInfo);
   const isFetchingWorkspaces = useSelector(getIsFetchingWorkspaces);
   const isFetchingApplications = useSelector(getIsFetchingApplications);
+  const isFetchingFavoriteApps = useSelector(getIsFetchingFavoriteApplications);
   const isDeletingWorkspace = useSelector(getIsDeletingWorkspace);
   const { isFetchingPackages } = usePackage();
   const creatingApplicationMap = useSelector(getIsCreatingApplication);
-  // This checks if the Anvil feature flag is enabled and shows different sections in the workspace
-  // for Anvil and Classic applications
-  const isAnvilEnabled = useSelector(getIsAnvilLayoutEnabled);
+  const isAiAgentInstanceEnabled = useSelector(getIsAiAgentInstanceEnabled);
+  const isAnvilEnabled = useFeatureFlag(FEATURE_FLAG.license_gac_enabled);
   const currentUser = useSelector(getCurrentUser);
   const isMobile = useIsMobileDevice();
   const urlParams = new URLSearchParams(location.search);
@@ -587,7 +723,10 @@ export function ApplicationsSection(props: any) {
     dispatch(updateApplication(id, data));
   };
   const isLoadingResources =
-    isFetchingWorkspaces || isFetchingApplications || isFetchingPackages;
+    isFetchingWorkspaces ||
+    isFetchingApplications ||
+    isFetchingPackages ||
+    (activeWorkspaceId === FAVORITES_KEY && isFetchingFavoriteApps);
   const isGACEnabled = useFeatureFlag(FEATURE_FLAG.license_gac_enabled);
   const [
     isCreateAppFromTemplateModalOpen,
@@ -678,6 +817,7 @@ export function ApplicationsSection(props: any) {
   const createNewApplication = (
     applicationName: string,
     workspaceId: string,
+    layoutSystemType?: LayoutSystemTypes,
   ) => {
     const color = getRandomPaletteColor(theme.colors.appCardColors);
     const icon =
@@ -690,6 +830,7 @@ export function ApplicationsSection(props: any) {
         workspaceId,
         icon,
         color,
+        layoutSystemType,
       },
     });
   };
@@ -764,19 +905,23 @@ export function ApplicationsSection(props: any) {
       isManageEnvironmentEnabled &&
       hasManageWorkspaceEnvironmentPermission(activeWorkspace.userPermissions);
 
-    const onClickAddNewAppButton = (workspaceId: string) => {
+    const onClickAddNewAppButton = (
+      workspaceId: string,
+      layoutSystemType?: LayoutSystemTypes,
+    ) => {
       if (
         Object.entries(creatingApplicationMap).length === 0 ||
         (creatingApplicationMap && !creatingApplicationMap[workspaceId])
       ) {
         createNewApplication(
           getNextEntityName(
-            isAnvilEnabled ? "AI app " : "Untitled application ",
+            "Untitled application ",
             // TODO: Fix this the next time the file is edited
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             applications.map((el: any) => el.name),
           ),
           workspaceId,
+          layoutSystemType,
         );
       }
     };
@@ -902,13 +1047,30 @@ export function ApplicationsSection(props: any) {
             <ResourceListLoader isMobile={isMobile} resources={applications} />
           ) : (
             <>
-              {isAnvilEnabled && ( // Anvil Applications list
+              {!isAiAgentInstanceEnabled && (
+                <ApplicationCardList
+                  applications={nonAnvilApplications}
+                  canInviteToWorkspace={canInviteToWorkspace}
+                  deleteApplication={deleteApplication}
+                  enableImportExport={enableImportExport}
+                  hasCreateNewApplicationPermission={
+                    hasCreateNewApplicationPermission
+                  }
+                  hasManageWorkspacePermissions={hasManageWorkspacePermissions}
+                  isMobile={isMobile}
+                  onClickAddNewButton={onClickAddNewAppButton}
+                  title={createMessage(APPLICATIONS)}
+                  updateApplicationDispatch={updateApplicationDispatch}
+                  workspaceId={activeWorkspace.id}
+                />
+              )}
+              {isAnvilEnabled && (
                 <ApplicationCardList
                   applications={anvilApplications}
                   canInviteToWorkspace={canInviteToWorkspace}
                   deleteApplication={deleteApplication}
                   emptyStateMessage={createMessage(
-                    NEW_APPLICATION_CARD_LIST_ZERO_STATE,
+                    ANVIL_APPLICATION_CARD_LIST_ZERO_STATE,
                   )}
                   enableImportExport={enableImportExport}
                   hasCreateNewApplicationPermission={
@@ -918,39 +1080,11 @@ export function ApplicationsSection(props: any) {
                   isMobile={isMobile}
                   onClickAddNewButton={onClickAddNewAppButton}
                   title={createMessage(ANVIL_APPLICATIONS)}
-                  titleTag={AnvilTitleTag}
+                  titleTag={<PreviewTag />}
                   updateApplicationDispatch={updateApplicationDispatch}
                   workspaceId={activeWorkspace.id}
                 />
               )}
-              <ApplicationCardList
-                applications={nonAnvilApplications}
-                canInviteToWorkspace={canInviteToWorkspace}
-                deleteApplication={deleteApplication}
-                emptyStateMessage={
-                  // We let the original message includded in the ApplicationCardList component
-                  // show if Anvil is not enabled. If Anvil is enabled, we need to pass the message
-                  // to make them appropriate to the context.
-                  isAnvilEnabled
-                    ? createMessage(CLASSIC_APPLICATION_CARD_LIST_ZERO_STATE)
-                    : undefined
-                }
-                enableImportExport={enableImportExport}
-                hasCreateNewApplicationPermission={
-                  hasCreateNewApplicationPermission
-                }
-                hasManageWorkspacePermissions={hasManageWorkspacePermissions}
-                isMobile={isMobile}
-                onClickAddNewButton={onClickAddNewAppButton}
-                title={
-                  // The title is different based on whether Anvil is enabled or not
-                  createMessage(
-                    isAnvilEnabled ? FIXED_APPLICATIONS : APPLICATIONS,
-                  )
-                }
-                updateApplicationDispatch={updateApplicationDispatch}
-                workspaceId={activeWorkspace.id}
-              />
               <PackageCardList
                 isMobile={isMobile}
                 packages={packages}
@@ -997,10 +1131,12 @@ export const ApplictionsMainPage = (props: any) => {
   const fetchedPackages = useSelector(getPackagesList);
   const fetchedWorkflows = useSelector(getWorkflowsList);
   const fetchedWorkspaceId = useSelector(getCurrentWorkspaceId);
-  const showBanner = useSelector(shouldShowLicenseBanner);
-  const isHomePage = useRouteMatch("/applications")?.isExact;
-  const isLicensePage = useRouteMatch("/license")?.isExact;
-  const isBannerVisible = showBanner && (isHomePage || isLicensePage);
+  const isBannerVisible = useIsBannerVisible();
+  const organizations = useSelector(getMyOrganizations);
+  const isFetchingOrganizations = useSelector(getIsFetchingMyOrganizations);
+  const currentOrganizationId = useSelector(activeOrganizationId);
+  const isCloudBillingEnabled = useIsCloudBillingEnabled();
+  const hasFavorites = useSelector(getHasFavorites);
 
   // TODO: Fix this the next time the file is edited
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1016,11 +1152,25 @@ export const ApplictionsMainPage = (props: any) => {
     ) as any;
   }
 
+  // Inject virtual Favorites workspace at the top if user has favorites or URL is Favorites (e.g. after 404 redirect)
+  if (
+    (hasFavorites || workspaceIdFromQueryParams === FAVORITES_KEY) &&
+    !isFetchingWorkspaces
+  ) {
+    workspaces = [DEFAULT_FAVORITES_WORKSPACE, ...workspaces];
+  }
+
   const [activeWorkspaceId, setActiveWorkspaceId] = useState<
     string | undefined
   >(
     workspaceIdFromQueryParams ? workspaceIdFromQueryParams : workspaces[0]?.id,
   );
+
+  useEffect(() => {
+    if (isCloudBillingEnabled) {
+      dispatch(fetchMyOrganizations());
+    }
+  }, [isCloudBillingEnabled]);
 
   useEffect(() => {
     setActiveWorkspaceId(
@@ -1034,9 +1184,13 @@ export const ApplictionsMainPage = (props: any) => {
       fetchedWorkspaceId &&
       fetchedWorkspaceId !== activeWorkspaceId
     ) {
-      const activeWorkspace: Workspace = workspaces.find(
+      let activeWorkspace: Workspace | undefined = workspaces.find(
         (workspace: Workspace) => workspace.id === activeWorkspaceId,
       );
+
+      if (!activeWorkspace && activeWorkspaceId === FAVORITES_KEY) {
+        activeWorkspace = DEFAULT_FAVORITES_WORKSPACE;
+      }
 
       if (activeWorkspace) {
         dispatch({
@@ -1065,9 +1219,12 @@ export const ApplictionsMainPage = (props: any) => {
   return (
     <PageWrapper displayName="Applications">
       <LeftPane
+        activeOrganizationId={currentOrganizationId}
         activeWorkspaceId={activeWorkspaceId}
         isBannerVisible={isBannerVisible}
+        isFetchingOrganizations={isFetchingOrganizations}
         isFetchingWorkspaces={isFetchingWorkspaces}
+        organizations={organizations}
         workspaces={workspaces}
       />
       <MediaQuery maxWidth={MOBILE_MAX_WIDTH}>
@@ -1159,6 +1316,9 @@ export class Applications<
     // Whenever we go back to home page from application page,
     // we should reset current workspace, as this workspace is not in context anymore
     this.props.resetCurrentWorkspace();
+
+    // Track the current domain for multi-org functionality
+    trackCurrentDomain();
   }
 
   componentWillUnmount() {
@@ -1191,7 +1351,7 @@ export class Applications<
   }
 }
 
-export const mapStateToProps = (state: AppState) => ({
+export const mapStateToProps = (state: DefaultRootState) => ({
   applicationList: getApplicationList(state),
   isFetchingApplications: getIsFetchingApplications(state),
   isCreatingApplication: getIsCreatingApplication(state),

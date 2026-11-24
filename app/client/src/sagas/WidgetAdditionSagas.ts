@@ -5,11 +5,9 @@ import {
   WidgetReduxActionTypes,
 } from "ee/constants/ReduxActionConstants";
 import { ENTITY_TYPE } from "ee/entities/AppsmithConsole/utils";
-import type { WidgetBlueprint } from "WidgetProvider/constants";
-import {
-  BlueprintOperationTypes,
-  GRID_DENSITY_MIGRATION_V1,
-} from "WidgetProvider/constants";
+import type { WidgetBlueprint } from "WidgetProvider/types";
+import { GRID_DENSITY_MIGRATION_V1 } from "WidgetProvider/constants";
+import { BlueprintOperationTypes } from "WidgetProvider/types";
 import WidgetFactory from "WidgetProvider/factory";
 import { generateAutoHeightLayoutTreeAction } from "actions/autoHeightActions";
 import type { WidgetAddChild } from "actions/pageActions";
@@ -20,7 +18,7 @@ import {
 } from "constants/WidgetConstants";
 import { toast } from "@appsmith/ads";
 import type { DataTree } from "entities/DataTree/dataTreeTypes";
-import produce from "immer";
+import { create } from "mutative";
 import { klona as clone } from "klona/full";
 import { getWidgetMinMaxDimensionsInPixel } from "layoutSystems/autolayout/utils/flexWidgetUtils";
 import { ResponsiveBehavior } from "layoutSystems/common/utils/constants";
@@ -30,7 +28,7 @@ import log from "loglevel";
 import type {
   CanvasWidgetsReduxState,
   FlattenedWidgetProps,
-} from "reducers/entityReducers/canvasWidgetsReducer";
+} from "ee/reducers/entityReducers/canvasWidgetsReducer";
 import { all, call, put, select, takeEvery } from "redux-saga/effects";
 import { getDataTree } from "selectors/dataTreeSelectors";
 import {
@@ -53,6 +51,7 @@ import {
 import { getPropertiesToUpdate } from "./WidgetOperationSagas";
 import { getWidget, getWidgets } from "./selectors";
 import { addBuildingBlockToCanvasSaga } from "./BuildingBlockSagas/BuildingBlockAdditionSagas";
+import { handleModuleWidgetCreationSaga } from "ee/sagas/moduleInterfaceSaga";
 
 const WidgetTypes = WidgetFactory.widgetTypes;
 
@@ -112,7 +111,7 @@ function* getChildWidgetProps(
     // if (props) props.children = [];
 
     if (props) {
-      props = produce(props, (draft: WidgetProps) => {
+      props = create(props, (draft) => {
         if (!draft.children || !Array.isArray(draft.children)) {
           draft.children = [];
         }
@@ -378,12 +377,17 @@ export function* getUpdateDslAfterCreatingChild(
   // some widgets need to update property of parent if the parent have CHILD_OPERATIONS
   // so here we are traversing up the tree till we get to MAIN_CONTAINER_WIDGET_ID
   // while traversing, if we find any widget which has CHILD_OPERATION, we will call the fn in it
-  const updatedWidgets: CanvasWidgetsReduxState = yield call(
+  let updatedWidgets: CanvasWidgetsReduxState = yield call(
     traverseTreeAndExecuteBlueprintChildOperations,
     parent,
     [addChildPayload.newWidgetId],
     widgets,
   );
+
+  updatedWidgets = yield call(handleModuleWidgetCreationSaga, {
+    addChildPayload,
+    widgets: updatedWidgets,
+  });
 
   return updatedWidgets;
 }

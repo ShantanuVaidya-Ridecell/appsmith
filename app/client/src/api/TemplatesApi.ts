@@ -94,12 +94,12 @@ class TemplatesAPI extends Api {
   static async importTemplateToApplication(
     templateId: string,
     applicationId: string,
-    organizationId: string,
+    workspaceId: string,
     body?: string[],
   ): Promise<AxiosPromise<ImportTemplateResponse>> {
     return Api.post(
       TemplatesAPI.baseUrl +
-        `/app-templates/${templateId}/merge/${applicationId}/${organizationId}`,
+        `/app-templates/${templateId}/merge/${applicationId}/${workspaceId}`,
       body,
     );
   }
@@ -115,6 +115,18 @@ class TemplatesAPI extends Api {
       TemplatesAPI.baseUrl + `/app-templates/publish/community-template`,
       body,
     );
+  }
+
+  // This endpoint imports the application from a template and creates a workflow,
+  // and attaches the workflow to the application.
+  static async importAgentTemplate(
+    templateId: string,
+    workspaceId: string,
+  ): Promise<AxiosPromise<ImportTemplateResponse>> {
+    return Api.post(TemplatesAPI.baseUrl + `/applications/agents`, {
+      templateId,
+      workspaceId,
+    });
   }
 }
 

@@ -1,6 +1,8 @@
 package com.external.plugins;
 
+import com.appsmith.external.configurations.connectionpool.ConnectionPoolConfig;
 import com.appsmith.external.constants.DataType;
+import com.appsmith.external.constants.spans.ce.ActionSpanCE;
 import com.appsmith.external.datatypes.AppsmithType;
 import com.appsmith.external.dtos.ExecuteActionDTO;
 import com.appsmith.external.exceptions.pluginExceptions.AppsmithPluginError;
@@ -27,18 +29,22 @@ import com.appsmith.external.plugins.PluginExecutor;
 import com.appsmith.external.plugins.SmartSubstitutionInterface;
 import com.external.plugins.exceptions.MssqlErrorMessages;
 import com.external.plugins.exceptions.MssqlPluginError;
+import com.external.plugins.utils.MssqlAuthenticationSettings;
 import com.external.plugins.utils.MssqlDatasourceUtils;
 import com.external.plugins.utils.MssqlExecuteUtils;
+import com.external.plugins.utils.MssqlKerberosDataSource;
 import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
 import com.zaxxer.hikari.pool.HikariPool;
+import io.micrometer.observation.ObservationRegistry;
 import lombok.NonNull;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.io.IOUtils;
-import org.apache.commons.lang.ObjectUtils;
+import org.apache.commons.lang3.ObjectUtils;
 import org.pf4j.Extension;
 import org.pf4j.PluginWrapper;
 import org.springframework.util.StringUtils;
+import reactor.core.observability.micrometer.Micrometer;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Scheduler;
 import reactor.core.scheduler.Schedulers;
@@ -65,6 +71,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.IntStream;
 
 import static com.appsmith.external.constants.ActionConstants.ACTION_CONFIGURATION_BODY;
@@ -72,6 +79,7 @@ import static com.appsmith.external.constants.PluginConstants.PluginName.MSSQL_P
 import static com.appsmith.external.helpers.PluginUtils.getIdenticalColumns;
 import static com.appsmith.external.helpers.PluginUtils.getPSParamLabel;
 import static com.appsmith.external.helpers.SmartSubstitutionHelper.replaceQuestionMarkWithDollarIndex;
+import static com.appsmith.external.models.Connection.Mode.READ_ONLY;
 import static com.external.plugins.constants.MssqlPluginConstants.GENERATE_CRUD_PAGE_SELECT_QUERY;
 import static com.external.plugins.exceptions.MssqlErrorMessages.CONNECTION_CLOSED_ERROR_MSG;
 import static com.external.plugins.exceptions.MssqlErrorMessages.CONNECTION_INVALID_ERROR_MSG;
@@ -113,6 +121,15 @@ public class MssqlPlugin extends BasePlugin {
         public static final Scheduler scheduler = Schedulers.boundedElastic();
 
         private static final int PREPARED_STATEMENT_INDEX = 0;
+
+        private final ConnectionPoolConfig connectionPoolConfig;
+
+        private final ObservationRegistry observationRegistry;
+
+        public MssqlPluginExecutor(ConnectionPoolConfig connectionPoolConfig, ObservationRegistry observationRegistry) {
+            this.connectionPoolConfig = connectionPoolConfig;
+            this.observationRegistry = observationRegistry;
+        }
 
         /**
          * Instead of using the default executeParametrized provided by pluginExecutor, this implementation affords an opportunity
@@ -174,7 +191,10 @@ public class MssqlPlugin extends BasePlugin {
             // Replace all the bindings with a `?` as expected in a prepared statement.
             String updatedQuery = MustacheHelper.replaceMustacheWithQuestionMark(query, mustacheKeysInOrder);
             actionConfiguration.setBody(updatedQuery);
-            return executeCommon(hikariDSConnection, actionConfiguration, TRUE, mustacheKeysInOrder, executeActionDTO);
+            return executeCommon(hikariDSConnection, actionConfiguration, TRUE, mustacheKeysInOrder, executeActionDTO)
+                    .tag("plugin", this.getClass().getName())
+                    .name(ActionSpanCE.PLUGIN_EXECUTE_COMMON)
+                    .tap(Micrometer.observation(observationRegistry));
         }
 
         public Mono<ActionExecutionResult> executeCommon(
@@ -251,9 +271,21 @@ public class MssqlPlugin extends BasePlugin {
                                 MessageFormat.format("Before executing Mssql query [{0}]", query), hikariDSConnection);
                         ;
 
+                        // The reactive timeout below cannot interrupt this blocking call: it reports the timeout only
+                        // after the call returns. So the query gets the same timeout here:
+                        // - the driver's query timeout, while SQL Server has not answered yet;
+                        // - a timer that cancels the query at the deadline, while a read of later results blocks;
+                        // - checks between reads, which stop a query that returns results without end.
+                        final int timeoutMillis = actionConfiguration.getTimeoutInMillisecond();
+                        final int queryTimeoutSeconds = MssqlExecuteUtils.queryTimeoutSeconds(timeoutMillis);
+                        final long deadlineNanos = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMillis);
+                        MssqlExecuteUtils.DeadlineCancel cancelAtDeadline = null;
+
                         try {
                             if (FALSE.equals(preparedStatement)) {
                                 statement = sqlConnectionFromPool.createStatement();
+                                statement.setQueryTimeout(queryTimeoutSeconds);
+                                cancelAtDeadline = MssqlExecuteUtils.cancelAtDeadline(statement, deadlineNanos);
                                 isResultSet = statement.execute(query);
                                 resultSet = statement.getResultSet();
                             } else {
@@ -272,6 +304,8 @@ public class MssqlPlugin extends BasePlugin {
                                                         parameters.get(i).getKey(),
                                                         parameters.get(i).getValue())));
 
+                                preparedQuery.setQueryTimeout(queryTimeoutSeconds);
+                                cancelAtDeadline = MssqlExecuteUtils.cancelAtDeadline(preparedQuery, deadlineNanos);
                                 isResultSet = preparedQuery.execute();
                                 resultSet = preparedQuery.getResultSet();
                             }
@@ -283,22 +317,42 @@ public class MssqlPlugin extends BasePlugin {
                                     isResultSet,
                                     preparedStatement,
                                     statement,
-                                    preparedQuery);
+                                    preparedQuery,
+                                    timeoutMillis,
+                                    deadlineNanos);
 
                         } catch (SQLException e) {
+                            // After the deadline, the error comes from the cancel or the driver's query timeout.
+                            String errorMessage = MssqlExecuteUtils.isPastDeadline(deadlineNanos)
+                                    ? String.format(MssqlErrorMessages.QUERY_TIMEOUT_ERROR_MSG, timeoutMillis)
+                                    : e.getMessage();
                             return Mono.error(new AppsmithPluginException(
                                     MssqlPluginError.QUERY_EXECUTION_FAILED,
                                     MssqlErrorMessages.QUERY_EXECUTION_FAILED_ERROR_MSG,
-                                    e.getMessage(),
+                                    errorMessage,
                                     "SQLSTATE: " + e.getSQLState()));
 
                         } finally {
+                            // Stop the cancel before the connection goes back to the pool, so that it never cancels
+                            // a query that another action runs on the same connection. The connection is removed
+                            // from the pool instead when:
+                            // - the timer's cancel ran, or may still be on its way;
+                            // - the deadline passed, because this thread may then have cancelled the query itself.
+                            boolean cancelStopped = cancelAtDeadline == null || cancelAtDeadline.stop();
+                            boolean reusable = cancelStopped && !MssqlExecuteUtils.isPastDeadline(deadlineNanos);
+
                             // Log HikariCP status
                             logHikariCPStatus(
                                     MessageFormat.format("After executing Mssql query [{0}]", query),
                                     hikariDSConnection);
 
-                            closeConnectionPostExecution(resultSet, statement, preparedQuery, sqlConnectionFromPool);
+                            closeConnectionPostExecution(
+                                    resultSet,
+                                    statement,
+                                    preparedQuery,
+                                    sqlConnectionFromPool,
+                                    hikariDSConnection,
+                                    reusable);
                         }
 
                         ActionExecutionResult result = new ActionExecutionResult();
@@ -356,11 +410,14 @@ public class MssqlPlugin extends BasePlugin {
         @Override
         public Mono<HikariDataSource> datasourceCreate(DatasourceConfiguration datasourceConfiguration) {
             log.debug(Thread.currentThread().getName() + ": datasourceCreate() called for MSSQL plugin.");
-            return Mono.fromCallable(() -> {
-                        log.debug(Thread.currentThread().getName() + ": Connecting to SQL Server db");
-                        return createConnectionPool(datasourceConfiguration);
-                    })
-                    .subscribeOn(scheduler);
+            return Mono.defer(() -> Mono.zip(
+                            connectionPoolConfig.getMaxConnectionPoolSize(),
+                            connectionPoolConfig.getSocketTimeoutSeconds())
+                    .flatMap(tuple -> Mono.fromCallable(() -> {
+                                log.debug(Thread.currentThread().getName() + ": Connecting to SQL Server db");
+                                return createConnectionPool(datasourceConfiguration, tuple.getT1(), tuple.getT2());
+                            })
+                            .subscribeOn(scheduler)));
         }
 
         @Override
@@ -377,6 +434,12 @@ public class MssqlPlugin extends BasePlugin {
 
             if (isEmpty(datasourceConfiguration.getEndpoints())) {
                 invalids.add(MssqlErrorMessages.DS_MISSING_ENDPOINT_ERROR_MSG);
+            } else if (datasourceConfiguration.getEndpoints().stream()
+                    .anyMatch(endpoint ->
+                            endpoint != null && hostContainsConnectionStringInjection(endpoint.getHost()))) {
+                // The host is put into the JDBC connection string as it is. Refuse one that could add connection
+                // properties, as for the database name below.
+                invalids.add(MssqlErrorMessages.DS_INVALID_HOST_ERROR_MSG);
             }
 
             if (datasourceConfiguration.getConnection() != null
@@ -395,6 +458,31 @@ public class MssqlPlugin extends BasePlugin {
 
                 if (StringUtils.isEmpty(auth.getPassword())) {
                     invalids.add(MssqlErrorMessages.DS_MISSING_PASSWORD_ERROR_MSG);
+                }
+
+                // The database name is concatenated verbatim into the JDBC connection string
+                // (database=<value>;). Reject any value that could smuggle additional
+                // connection properties, so a database name cannot inject e.g. an NTLM auth
+                // scheme pointing at an attacker-controlled host.
+                if (containsConnectionStringInjection(auth.getDatabaseName())) {
+                    invalids.add(MssqlErrorMessages.DS_INVALID_DATABASE_NAME_ERROR_MSG);
+                }
+            }
+
+            String authenticationMethod = MssqlAuthenticationSettings.method(datasourceConfiguration);
+            if (!MssqlAuthenticationSettings.isKnownMethod(authenticationMethod)) {
+                invalids.add(MssqlErrorMessages.DS_INVALID_AUTHENTICATION_TYPE_ERROR_MSG);
+            } else if (MssqlAuthenticationSettings.KERBEROS.equals(authenticationMethod)) {
+                if (auth != null) {
+                    String usernameError = MssqlAuthenticationSettings.kerberosUsernameError(auth.getUsername());
+                    if (usernameError != null) {
+                        invalids.add(usernameError);
+                    }
+                }
+                String serverSpnError = MssqlAuthenticationSettings.serverSpnError(
+                        MssqlAuthenticationSettings.serverSpn(datasourceConfiguration));
+                if (serverSpnError != null) {
+                    invalids.add(serverSpnError);
                 }
             }
 
@@ -561,7 +649,41 @@ public class MssqlPlugin extends BasePlugin {
      * @param datasourceConfiguration
      * @return connection pool
      */
-    private static HikariDataSource createConnectionPool(DatasourceConfiguration datasourceConfiguration)
+    /**
+     * Returns true if the given database name could inject additional JDBC connection
+     * properties. The value is concatenated verbatim into the connection string as
+     * {@code database=<value>;}, so a {@code ;} (the JDBC property separator) or any ISO
+     * control character must be rejected. A null/blank value is safe (it is simply not
+     * appended).
+     */
+    private static boolean containsConnectionStringInjection(String databaseName) {
+        if (!StringUtils.hasLength(databaseName)) {
+            return false;
+        }
+        return databaseName.chars().anyMatch(c -> c == ';' || Character.isISOControl(c));
+    }
+
+    /**
+     * Returns true if the given host could inject JDBC connection properties. The host is put into the connection
+     * string as it is ({@code jdbc:sqlserver://<host>:<port>;}), so these characters are refused:
+     * <ul>
+     *   <li>a semicolon, which starts a new property, such as {@code ;authenticationScheme=NTLM};</li>
+     *   <li>an equals sign, which gives a property its value;</li>
+     *   <li>an opening or closing brace, which the driver uses to quote a value;</li>
+     *   <li>any ISO control character.</li>
+     * </ul>
+     * A backslash stays allowed, for a named instance ({@code host\SQLEXPRESS}). A null or blank host is not checked
+     * here.
+     */
+    static boolean hostContainsConnectionStringInjection(String host) {
+        if (!StringUtils.hasLength(host)) {
+            return false;
+        }
+        return host.chars().anyMatch(c -> c == ';' || c == '=' || c == '{' || c == '}' || Character.isISOControl(c));
+    }
+
+    private static HikariDataSource createConnectionPool(
+            DatasourceConfiguration datasourceConfiguration, Integer maxPoolSize, Integer socketTimeoutSeconds)
             throws AppsmithPluginException {
 
         DBAuth authentication = null;
@@ -572,21 +694,45 @@ public class MssqlPlugin extends BasePlugin {
         hikariConfig = new HikariConfig();
         hikariConfig.setDriverClassName(JDBC_DRIVER);
         hikariConfig.setMinimumIdle(MINIMUM_POOL_SIZE);
-        hikariConfig.setMaximumPoolSize(MAXIMUM_POOL_SIZE);
+
+        // Use maxPoolSize from config if available, otherwise use default
+        int maximumPoolSize = maxPoolSize != null ? maxPoolSize : MAXIMUM_POOL_SIZE;
+        hikariConfig.setMaximumPoolSize(maximumPoolSize);
+
         // Configuring leak detection threshold for 60 seconds. Any connection which hasn't been released in 60 seconds
         // should get tracked (may be falsely for long running queries) as leaked connection
         hikariConfig.setLeakDetectionThreshold(LEAK_DETECTION_TIME_MS);
 
+        // Send a TCP keepalive probe on idle connections every 150s. Prevents half-open
+        // sockets caused by NAT idle-eviction (AWS NAT Gateway default is 350s).
+        hikariConfig.setKeepaliveTime(150_000);
+
+        // Bound any single socket read so a half-open connection cannot wedge the pool's
+        // single-threaded connection-adder. mssql-jdbc takes socketTimeout in milliseconds.
+        // The pool ignores data source properties when it is given a DataSource, as on the Kerberos path below. So
+        // MssqlKerberosDataSource sets the socket timeout itself. Set any new driver property in both places.
+        hikariConfig.addDataSourceProperty("socketTimeout", String.valueOf(socketTimeoutSeconds * 1000));
+
         authentication = (DBAuth) datasourceConfiguration.getAuthentication();
-        if (authentication.getUsername() != null) {
-            hikariConfig.setUsername(authentication.getUsername());
-        }
-        if (authentication.getPassword() != null) {
-            hikariConfig.setPassword(authentication.getPassword());
+        boolean kerberos = MssqlAuthenticationSettings.isKerberos(datasourceConfiguration);
+        if (!kerberos) {
+            if (authentication.getUsername() != null) {
+                hikariConfig.setUsername(authentication.getUsername());
+            }
+            if (authentication.getPassword() != null) {
+                hikariConfig.setPassword(authentication.getPassword());
+            }
         }
 
         urlBuilder = new StringBuilder("jdbc:sqlserver://");
         for (Endpoint endpoint : datasourceConfiguration.getEndpoints()) {
+            // Defence in depth: validateDatasource() already refuses this. Never build a JDBC URL from a host that
+            // could add connection properties.
+            if (hostContainsConnectionStringInjection(endpoint.getHost())) {
+                throw new AppsmithPluginException(
+                        AppsmithPluginError.PLUGIN_DATASOURCE_ARGUMENT_ERROR,
+                        MssqlErrorMessages.DS_INVALID_HOST_ERROR_MSG);
+            }
             urlBuilder
                     .append(endpoint.getHost())
                     .append(":")
@@ -595,6 +741,13 @@ public class MssqlPlugin extends BasePlugin {
         }
 
         if (StringUtils.hasLength(authentication.getDatabaseName())) {
+            // Defence in depth: validateDatasource() already rejects this, but never build a
+            // JDBC URL from a database name that could inject extra connection properties.
+            if (containsConnectionStringInjection(authentication.getDatabaseName())) {
+                throw new AppsmithPluginException(
+                        AppsmithPluginError.PLUGIN_DATASOURCE_ARGUMENT_ERROR,
+                        MssqlErrorMessages.DS_INVALID_DATABASE_NAME_ERROR_MSG);
+            }
             urlBuilder
                     .append("database=")
                     .append(authentication.getDatabaseName())
@@ -603,7 +756,34 @@ public class MssqlPlugin extends BasePlugin {
 
         addSslOptionsToUrlBuilder(datasourceConfiguration, urlBuilder);
 
-        hikariConfig.setJdbcUrl(urlBuilder.toString());
+        // Driver 13.2 and later return a vector column (SQL Server 2025, Azure SQL) as a driver object. Keep the
+        // earlier behavior, where it comes back as a JSON string.
+        urlBuilder.append("vectorTypeSupport=off;");
+
+        // By default the driver sends a bound time value as datetime, so WHERE time_column = {{...}} failed with "The
+        // data types time and datetime are incompatible". Send it as time.
+        urlBuilder.append("sendTimeAsDatetime=false;");
+
+        com.appsmith.external.models.Connection configurationConnection = datasourceConfiguration.getConnection();
+        if (configurationConnection != null && configurationConnection.getMode() == READ_ONLY) {
+            urlBuilder.append("ApplicationIntent=ReadOnly;");
+            hikariConfig.setReadOnly(true);
+        }
+
+        if (kerberos) {
+            // The plugin logs in to Kerberos itself and gives the driver the credential. The driver's own login could
+            // use a ticket cached on the Appsmith server instead of this datasource's account. See
+            // MssqlKerberosLogin.
+            urlBuilder.append(MssqlKerberosDataSource.KERBEROS_URL_PROPERTIES);
+            hikariConfig.setDataSource(new MssqlKerberosDataSource(
+                    urlBuilder.toString(),
+                    MssqlAuthenticationSettings.kerberosPrincipal(authentication.getUsername()),
+                    authentication.getPassword(),
+                    MssqlAuthenticationSettings.serverSpn(datasourceConfiguration),
+                    socketTimeoutSeconds * 1000));
+        } else {
+            hikariConfig.setJdbcUrl(urlBuilder.toString());
+        }
 
         try {
             hikariDatasource = new HikariDataSource(hikariConfig);

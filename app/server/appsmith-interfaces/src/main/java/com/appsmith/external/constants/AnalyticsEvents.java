@@ -24,6 +24,7 @@ public enum AnalyticsEvents {
     PAGE_REORDER,
     GENERATE_CRUD_PAGE("generate_CRUD_PAGE"),
     CREATE_SUPERUSER,
+    ACTION_RUN_BEHAVIOUR_CHANGED("action_RUN_BEHAVIOUR_CHANGED"),
     SUBSCRIBE_MARKETING_EMAILS,
     UNSUBSCRIBE_MARKETING_EMAILS,
     INSTALLATION_SETUP_COMPLETE("Installation Setup Complete"),
@@ -93,7 +94,28 @@ public enum AnalyticsEvents {
 
     PARTIAL_EXPORT,
 
-    COMMUNITY_TEMPLATE_PUBLISHED;
+    COMMUNITY_TEMPLATE_PUBLISHED,
+
+    // MCP (Model Context Protocol) events
+    CREATE_MCP_TOKEN("create_MCP_TOKEN"),
+
+    // Static URL events
+    STATIC_URL_ENABLED,
+    STATIC_URL_DISABLED,
+    STATIC_URL_APP_SLUG_UPDATED,
+    STATIC_URL_PAGE_SLUG_UPDATED,
+
+    /** Fired when org AI Assistant settings are saved (Segment → Mixpanel). */
+    ASK_AI_ORG_CONFIG_UPDATED("ask_ai_ORG_CONFIG_UPDATED"),
+
+    /** API key test or local LLM connection test from AI Assistant admin. */
+    ASK_AI_ORG_TEST_RUN("ask_ai_ORG_TEST_RUN"),
+
+    /** Audit log for creating an application snapshot. Not sent to product analytics on its own. */
+    APPLICATION_SNAPSHOT_CREATED,
+    /** Audit log for publishing an application as a template. */
+    APPLICATION_PUBLISHED_AS_TEMPLATE,
+    ;
 
     private final String eventName;
 

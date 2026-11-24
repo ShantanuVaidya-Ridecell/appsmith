@@ -7,6 +7,7 @@ import {
   take,
   type TakeEffect,
 } from "redux-saga/effects";
+import type { SagaIterator } from "redux-saga";
 import type {
   ReduxAction,
   ReduxActionWithPromise,
@@ -49,6 +50,7 @@ import {
 import AnalyticsUtil from "ee/utils/AnalyticsUtil";
 import { INVITE_USERS_TO_WORKSPACE_FORM } from "ee/constants/forms";
 import type { User } from "constants/userConstants";
+import { ANONYMOUS_USERNAME } from "constants/userConstants";
 import {
   flushErrorsAndRedirect,
   safeCrashAppRequest,
@@ -65,6 +67,7 @@ import {
   getFirstTimeUserOnboardingApplicationIds,
   getFirstTimeUserOnboardingIntroModalVisibility,
 } from "utils/storage";
+import { disableStartSignpostingAction } from "actions/onboardingActions";
 import { getAppsmithConfigs } from "ee/configs";
 import type { FeatureFlags } from "ee/entities/FeatureFlag";
 import { DEFAULT_FEATURE_FLAG_VALUE } from "ee/entities/FeatureFlag";
@@ -124,7 +127,7 @@ export function* getCurrentUserSaga(action?: {
 function* getSessionRecordingConfig() {
   const featureFlags: FeatureFlags = yield select(selectFeatureFlags);
 
-  // This is a tenant level flag to kill session recordings
+  // This is a organization level flag to kill session recordings
   // If this is true, we do not do any session recordings
   if (featureFlags.kill_session_recordings_enabled) {
     return {
@@ -142,7 +145,7 @@ function* getSessionRecordingConfig() {
     };
   }
 
-  // Now we know that both tenant and user level flags are not blocking session recordings
+  // Now we know that both organization and user level flags are not blocking session recordings
   return {
     enabled: true,
     // Check if we need to mask the session recordings from feature flags
@@ -150,7 +153,18 @@ function* getSessionRecordingConfig() {
   };
 }
 
-function* initTrackers(currentUser: User) {
+export function shouldTrackUser(currentUser: User): boolean {
+  try {
+    const isAnonymous =
+      currentUser?.isAnonymous || currentUser?.username === ANONYMOUS_USERNAME;
+
+    return !isAnonymous;
+  } catch (error) {
+    return true;
+  }
+}
+
+function* initTrackers(currentUser: User): SagaIterator {
   try {
     const isFFFetched: boolean = yield select(getFeatureFlagsFetched);
 
@@ -162,7 +176,14 @@ function* initTrackers(currentUser: User) {
       getSessionRecordingConfig,
     );
 
-    yield call(AnalyticsUtil.initialize, currentUser, sessionRecordingConfig);
+    const shouldTrack = shouldTrackUser(currentUser);
+
+    yield call(
+      AnalyticsUtil.initialize,
+      currentUser,
+      sessionRecordingConfig,
+      shouldTrack,
+    );
     yield put(segmentInitSuccess());
   } catch (e) {
     log.error(e);
@@ -247,10 +268,11 @@ export function* runUserSideEffectsSaga() {
   if (enableTelemetry) {
     yield fork(initTrackers, currentUser);
   } else {
+    yield call(AnalyticsUtil.avoidTracking);
     yield put(segmentInitSuccess());
   }
 
-  if (currentUser.emptyInstance) {
+  if (currentUser.isEmptyInstance) {
     history.replace(SETUP);
   }
 }
@@ -519,7 +541,7 @@ export function* logoutSaga(action: ReduxAction<{ redirectURL: string }>) {
       AnalyticsUtil.reset();
       const currentUser: User | undefined = yield select(getCurrentUser);
 
-      yield put(logoutUserSuccess(!!currentUser?.emptyInstance));
+      yield put(logoutUserSuccess(!!currentUser?.isEmptyInstance));
       localStorage.clear();
       yield put(flushErrorsAndRedirect(redirectURL || AUTH_LOGIN_URL));
     }
@@ -617,6 +639,14 @@ export function* fetchFeatureFlags(action?: {
 }
 
 export function* updateFirstTimeUserOnboardingSage() {
+  // Signposting is unreachable without the Help button, so clear any stored
+  // onboarding state instead of loading it.
+  if (getAppsmithConfigs().disableHelpIcon) {
+    yield put(disableStartSignpostingAction());
+
+    return;
+  }
+
   const enable: boolean | null = yield call(getEnableStartSignposting);
 
   if (enable) {
@@ -723,3 +753,16 @@ export const setMessageConfig = (id: string, config: ProductAlertConfig) => {
     JSON.stringify(updatedConfig),
   );
 };
+
+export function* globalFunctionLogoutUser(
+  action: ReduxAction<{ redirectURL: string }>,
+) {
+  const redirectURL = `${AUTH_LOGIN_URL}?redirectUrl=${encodeURIComponent(action.payload?.redirectURL ? action.payload?.redirectURL : history.location.pathname)}`;
+
+  yield call(logoutSaga, {
+    type: ReduxActionTypes.LOGOUT_USER_INIT,
+    payload: {
+      redirectURL,
+    },
+  });
+}

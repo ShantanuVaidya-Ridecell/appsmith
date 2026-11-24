@@ -156,20 +156,20 @@ public class JsonSchemaMigration {
             case 8:
                 MigrationHelperMethods.migrateThemeSettingsForAnvil(applicationJson);
                 applicationJson.setServerSchemaVersion(9);
-                // In Server version 9, there was a bug where the Embedded REST API datasource URL
-                // was not being persisted correctly. Once the bug was fixed,
-                // any previously uncommitted changes started appearing as uncommitted modifications
-                // in the apps. To automatically commit these changes
-                // (which were now appearing as uncommitted), a migration process was needed.
-                // This migration fetches the datasource URL from the database
-                // and serializes it in Git if the URL exists.
-                // If the URL is missing, it copies the empty datasource configuration
-                // if the configuration is present in the database.
-                // Otherwise, it leaves the configuration unchanged.
-                // Due to an update in the migration logic after version 10 was shipped,
-                // the entire migration process was moved to version 11.
-                // This adjustment ensures that the same operation can be
-                // performed again for the changes introduced in version 10.
+            // In Server version 9, there was a bug where the Embedded REST API datasource URL
+            // was not being persisted correctly. Once the bug was fixed,
+            // any previously uncommitted changes started appearing as uncommitted modifications
+            // in the apps. To automatically commit these changes
+            // (which were now appearing as uncommitted), a migration process was needed.
+            // This migration fetches the datasource URL from the database
+            // and serializes it in Git if the URL exists.
+            // If the URL is missing, it copies the empty datasource configuration
+            // if the configuration is present in the database.
+            // Otherwise, it leaves the configuration unchanged.
+            // Due to an update in the migration logic after version 10 was shipped,
+            // the entire migration process was moved to version 11.
+            // This adjustment ensures that the same operation can be
+            // performed again for the changes introduced in version 10.
             case 9:
                 applicationJson.setServerSchemaVersion(10);
             case 10:
@@ -179,6 +179,25 @@ public class JsonSchemaMigration {
                                     baseApplicationId, branchName, migratedJson));
                 }
                 applicationJson.setServerSchemaVersion(11);
+            case 11:
+                // This server version bump has been made to support an autocommit for
+                // structural changes to the git directory. This change refactors
+                // source modules from source modules directory to subdirectories named after
+                // packages of the respective modules.
+                // I.e., source modules/module1.json -> source modules/package1/module1.json
+                migrateApplicationJsonMono = migrateApplicationJsonMono.map(migratedJson -> {
+                    MigrationHelperMethods.addRunBehaviourToApplicationJson(migratedJson);
+                    return migratedJson;
+                });
+
+                applicationJson.setServerSchemaVersion(12);
+            case 12:
+                // Server version 13 rewrites edition-specific action references into their portable form. The
+                // bump makes Git-connected applications pick the rewrite up through the server autocommit.
+                migrateApplicationJsonMono = migrateApplicationJsonMono.flatMap(
+                        migratedJson -> jsonSchemaMigrationHelper.migrateActionReferencesToPortableForm(
+                                baseApplicationId, migratedJson));
+                applicationJson.setServerSchemaVersion(13);
             default:
         }
 

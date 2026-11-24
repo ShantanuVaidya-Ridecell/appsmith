@@ -17,6 +17,8 @@ import {
   MULTISELECT_CHECKBOX_WIDTH,
   TABLE_SCROLLBAR_HEIGHT,
   TABLE_SCROLLBAR_WIDTH,
+  CompactModeTypes,
+  TABLE_CELL_ACTION_VERTICAL_PADDING,
 } from "./Constants";
 import type { Color } from "constants/Colors";
 import { Colors } from "constants/Colors";
@@ -24,32 +26,39 @@ import { hideScrollbar, invisible } from "constants/DefaultTheme";
 import { lightenColor, darkenColor } from "widgets/WidgetUtils";
 import { FontStyleTypes } from "constants/WidgetConstants";
 import { Classes } from "@blueprintjs/core";
-import type { TableVariant } from "../constants";
+import type { RowColorStyles, TableVariant } from "../constants";
 import { TableVariantTypes } from "../constants";
+import { resolveHeaderFontWeight } from "./headerFontWeight";
+import { getHeaderEmphasis } from "./headerFontStyle";
 import { Layers } from "constants/Layers";
 
 const BORDER_RADIUS = "border-radius: 4px;";
 const HEADER_CONTROL_FONT_SIZE = "12px";
+const HEADER_WRAP_LINE_HEIGHT = 20;
 
-export const TableWrapper = styled.div<{
-  width: number;
-  height: number;
-  tableSizes: TableSizes;
-  accentColor: string;
-  backgroundColor?: Color;
-  triggerRowSelection: boolean;
-  isHeaderVisible?: boolean;
-  borderRadius: string;
-  boxShadow?: string;
-  borderColor?: string;
-  borderWidth?: number;
-  isResizingColumn?: boolean;
-  variant?: TableVariant;
-  isAddRowInProgress: boolean;
-  multiRowSelection?: boolean;
-}>`
+export const TableWrapper = styled.div<
+  RowColorStyles & {
+    width: number;
+    height: number;
+    tableSizes: TableSizes;
+    accentColor: string;
+    backgroundColor?: Color;
+    triggerRowSelection: boolean;
+    isHeaderVisible?: boolean;
+    borderRadius: string;
+    boxShadow?: string;
+    borderColor?: string;
+    borderWidth?: number;
+    isResizingColumn?: boolean;
+    variant?: TableVariant;
+    isAddRowInProgress: boolean;
+    multiRowSelection?: boolean;
+    isAutoHeightEnabled?: boolean;
+  }
+>`
   width: 100%;
-  height: 100%;
+  height: ${({ isAutoHeightEnabled }) =>
+    isAutoHeightEnabled ? "auto" : "100%"};
   background: white;
   border-style: solid;
   border-width: ${({ borderWidth }) => `${borderWidth}px`};
@@ -64,13 +73,15 @@ export const TableWrapper = styled.div<{
   .simplebar-track {
     opacity: 0.7;
     &.simplebar-horizontal {
+      /* this height moves the scrollbar up and down */
       height: ${TABLE_SCROLLBAR_HEIGHT}px;
       .simplebar-scrollbar {
-        height: 5px;
+        /*this actual height of the scrollbar */
+        height: 8px;
       }
       &.simplebar-hover {
-        height: 10px;
         & .simplebar-scrollbar {
+          transition: height 0.15s ease-in-out;
           height: 8px;
         }
       }
@@ -89,7 +100,8 @@ export const TableWrapper = styled.div<{
     }
   }
   .tableWrap {
-    height: 100%;
+    height: ${({ isAutoHeightEnabled }) =>
+      isAutoHeightEnabled ? "auto" : "100%"};
     display: block;
     position: relative;
     width: ${({ width }) => width}px;
@@ -112,6 +124,12 @@ export const TableWrapper = styled.div<{
     .tr {
       cursor: ${(props) => props.triggerRowSelection && "pointer"};
       background: ${Colors.WHITE};
+      &.odd-row {
+        background: ${(props) => props.oddRowColor || Colors.WHITE};
+      }
+      &.even-row {
+        background: ${(props) => props.evenRowColor || Colors.WHITE};
+      }
       &.selected-row {
         background: ${({ accentColor }) =>
           `${lightenColor(accentColor)}`} !important;
@@ -194,8 +212,9 @@ export const TableWrapper = styled.div<{
         props.isHeaderVisible ? props.tableSizes.COLUMN_HEADER_HEIGHT : 40}px;
       line-height: ${(props) =>
         props.isHeaderVisible ? props.tableSizes.COLUMN_HEADER_HEIGHT : 40}px;
-      background: var(--wds-color-bg);
-      font-weight: bold;
+      background: ${(props) => props.headerRowColor || "var(--wds-color-bg)"};
+      font-weight: ${(props) =>
+        resolveHeaderFontWeight(props.headerFontWeight)};
     }
     .td {
       min-height: ${(props) => props.tableSizes.ROW_HEIGHT}px;
@@ -220,7 +239,8 @@ export const TableWrapper = styled.div<{
     }
 
     [role="columnheader"] {
-      background-color: var(--wds-color-bg) !important;
+      background-color: ${(props) =>
+        props.headerRowColor || "var(--wds-color-bg)"} !important;
     }
 
     [data-sticky-td] {
@@ -277,7 +297,23 @@ export const TableWrapper = styled.div<{
     width: 100%;
     text-overflow: ellipsis;
     overflow: hidden;
-    color: ${Colors.OXFORD_BLUE};
+    color: ${(props) => props.headerTextColor || Colors.OXFORD_BLUE};
+    font-style: ${(props) =>
+      getHeaderEmphasis(props.headerFontStyle).italic ? "italic" : "normal"};
+    text-decoration: ${(props) =>
+      getHeaderEmphasis(props.headerFontStyle).underline
+        ? "underline"
+        : "none"};
+    /* Italic glyphs lean past the overflow box and clip the last letter. */
+    ${(props) =>
+      getHeaderEmphasis(props.headerFontStyle).italic
+        ? css`
+            .header-title,
+            .header-title span {
+              padding-inline-end: 0.2em;
+            }
+          `
+        : ""}
     padding-left: 10px;
     &.sorted {
       padding-left: 5px;
@@ -326,6 +362,50 @@ export const TableWrapper = styled.div<{
     cursor: pointer;
     height: ${(props) => props.tableSizes.COLUMN_HEADER_HEIGHT}px;
     line-height: ${(props) => props.tableSizes.COLUMN_HEADER_HEIGHT}px;
+  }
+  .tr.header[data-header-wrap="true"] {
+    .th {
+      align-items: center;
+      height: auto;
+      line-height: ${HEADER_WRAP_LINE_HEIGHT}px;
+      min-height: ${(props) => props.tableSizes.COLUMN_HEADER_HEIGHT}px;
+    }
+
+    .draggable-header,
+    .hidden-header {
+      align-items: center;
+      align-self: stretch;
+      display: flex;
+      flex: 1 1 auto;
+      height: auto;
+      min-height: min-content;
+      min-width: 0;
+      overflow: hidden;
+      width: auto;
+    }
+
+    .header-sort-icon {
+      align-self: center;
+      flex-shrink: 0;
+    }
+
+    /*
+     * The arrow is display:none until .header-menu is hovered. align-items:center
+     * on .th would shrink that box to 0 height, so the hover target must stretch
+     * to the full header the way it does in a single-line row. The popover target
+     * fills that strip so the menu opens anywhere along it, with the arrow centered.
+     */
+    .header-menu {
+      align-self: stretch;
+      flex-shrink: 0;
+
+      &.hide:hover .bp3-popover2-target {
+        align-items: center;
+        display: flex;
+        height: 100%;
+        justify-content: center;
+      }
+    }
   }
   .th {
     display: flex !important;
@@ -637,6 +717,17 @@ export const CellWrapper = styled.div<{
       display: inline;
     }
   }
+`;
+
+/**
+ * Icon Button / Video cells: SHORT keeps 0 vertical padding; DEFAULT/TALL use
+ * TABLE_CELL_ACTION_VERTICAL_PADDING (including TALL, so a 30px control fits).
+ */
+export const ActionCellWrapper = styled(CellWrapper)<{ compactMode?: string }>`
+  padding: ${({ compactMode }) =>
+    compactMode === CompactModeTypes.SHORT
+      ? "0 10px"
+      : `${TABLE_CELL_ACTION_VERTICAL_PADDING}px 10px`};
 `;
 
 export const CellCheckboxWrapper = styled(CellWrapper)<{

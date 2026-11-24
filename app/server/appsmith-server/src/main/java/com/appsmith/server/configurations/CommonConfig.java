@@ -37,9 +37,6 @@ public class CommonConfig {
     public static final Integer LATEST_INSTANCE_SCHEMA_VERSION = 2;
 
     @Setter(AccessLevel.NONE)
-    private boolean isSignupDisabled = false;
-
-    @Setter(AccessLevel.NONE)
     private Set<String> adminEmails = Collections.emptySet();
 
     @Value("${oauth2.allowed-domains}")
@@ -61,17 +58,20 @@ public class CommonConfig {
     @Value("${appsmith.admin.envfile:}")
     public String envFilePath;
 
+    // The connection URLs the server process actually runs with — as opposed to whatever
+    // docker.env holds, which can be stale or unused when the deployment overrides these
+    // via real environment variables (external DB/Redis, Helm, clustering).
+    @Value("${appsmith.db.url:}")
+    private String dbUrl;
+
+    @Value("${appsmith.redis.url:}")
+    private String redisUrl;
+
+    @Value("${appsmith.mcp.internal-secret:}")
+    private String mcpInternalSecret;
+
     @Value("${disable.telemetry:true}")
     private boolean isTelemetryDisabled;
-
-    @Value("${appsmith.observability.tracing.detail.enabled:false}")
-    private boolean tracingDetail;
-
-    @Value("${appsmith.observability.metrics.detail.enabled:false}")
-    private boolean metricsDetail;
-
-    @Value("${appsmith.observability.metrics.interval.millis:60000}")
-    private int metricsIntervalMillis;
 
     private List<String> allowedDomains;
 
@@ -136,12 +136,6 @@ public class CommonConfig {
     @Autowired
     public void setAdminEmails(@Value("${admin.emails}") String value) {
         adminEmails = Set.of(value.trim().split("\\s*,\\s*"));
-    }
-
-    @Autowired
-    public void setSignupDisabled(@Value("${signup.disabled}") String value) {
-        // If `true`, then disable signup. If anything else, including empty string, then signups will be enabled.
-        isSignupDisabled = "true".equalsIgnoreCase(value);
     }
 
     public Long getCurrentTimeInstantEpochMilli() {

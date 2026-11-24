@@ -1,7 +1,7 @@
 package com.appsmith.server.helpers.ce.bridge;
 
 import lombok.NonNull;
-import org.apache.commons.lang.NotImplementedException;
+import org.apache.commons.lang3.NotImplementedException;
 import org.bson.Document;
 import org.springframework.data.mongodb.core.query.Update;
 import org.springframework.data.mongodb.core.query.UpdateDefinition;
@@ -19,6 +19,11 @@ public class BridgeUpdate implements UpdateDefinition {
 
     public BridgeUpdate push(@NonNull String key, @NonNull Object value) {
         update.push(key, value);
+        return this;
+    }
+
+    public BridgeUpdate addToSet(@NonNull String key, @NonNull Object value) {
+        update.addToSet(key, value);
         return this;
     }
 

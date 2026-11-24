@@ -1,7 +1,9 @@
-import type { EntityTypeValue } from "ee/entities/DataTree/types";
-import { ACTION_TYPE, JSACTION_TYPE } from "ee/entities/DataTree/types";
+import {
+  ACTION_TYPE,
+  JSACTION_TYPE,
+  ENTITY_TYPE,
+} from "ee/entities/DataTree/types";
 import type { DataTree } from "entities/DataTree/dataTreeTypes";
-import { ENTITY_TYPE } from "entities/DataTree/dataTreeFactory";
 import { createSelector } from "reselect";
 import {
   getCurrentActions,
@@ -26,30 +28,12 @@ import {
   getEntityNameAndPropertyPath,
   isJSAction,
 } from "ee/workers/Evaluation/evaluationUtils";
-import type { AppState } from "ee/reducers";
+import type { DefaultRootState } from "react-redux";
 import { PluginType } from "entities/Plugin";
 import type { StoredDatasource } from "entities/Action";
 import type { Datasource } from "entities/Datasource";
 import { getModuleInstanceNavigationData } from "ee/utils/moduleInstanceNavigationData";
-
-export interface NavigationData {
-  name: string;
-  id: string;
-  type: EntityTypeValue;
-  isfunction?: boolean;
-  url: string | undefined;
-  navigable: boolean;
-  children: EntityNavigationData;
-  key?: string;
-  pluginName?: string;
-  pluginId?: string;
-  isMock?: boolean;
-  datasourceId?: string;
-  actionType?: string;
-  widgetType?: string;
-  value?: boolean | string;
-}
-export type EntityNavigationData = Record<string, NavigationData>;
+import type { EntityNavigationData } from "entities/DataTree/dataTreeTypes";
 
 export const getModulesData = createSelector(
   getModuleInstances,
@@ -189,7 +173,7 @@ export const getEntitiesForNavigation = createSelector(
 );
 export const getPathNavigationUrl = createSelector(
   [
-    (state: AppState, entityName: string) =>
+    (state: DefaultRootState, entityName: string) =>
       getEntitiesForNavigation(state, entityName),
     (_, __, fullPath: string | undefined) => fullPath,
   ],

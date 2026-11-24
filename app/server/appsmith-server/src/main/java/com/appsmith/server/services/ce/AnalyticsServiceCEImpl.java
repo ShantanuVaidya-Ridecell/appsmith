@@ -2,19 +2,18 @@ package com.appsmith.server.services.ce;
 
 import com.appsmith.external.constants.AnalyticsEvents;
 import com.appsmith.external.helpers.Identifiable;
-import com.appsmith.external.models.ActionDTO;
 import com.appsmith.external.models.BaseDomain;
 import com.appsmith.server.configurations.CommonConfig;
 import com.appsmith.server.configurations.DeploymentProperties;
 import com.appsmith.server.configurations.ProjectProperties;
 import com.appsmith.server.constants.FieldName;
-import com.appsmith.server.domains.NewPage;
 import com.appsmith.server.domains.User;
 import com.appsmith.server.domains.UserData;
 import com.appsmith.server.helpers.ExchangeUtils;
 import com.appsmith.server.helpers.UserUtils;
 import com.appsmith.server.repositories.UserDataRepository;
 import com.appsmith.server.services.ConfigService;
+import com.appsmith.server.services.FeatureFlagService;
 import com.appsmith.server.services.SessionUserService;
 import com.segment.analytics.Analytics;
 import com.segment.analytics.messages.IdentifyMessage;
@@ -24,11 +23,13 @@ import org.apache.commons.codec.digest.DigestUtils;
 import org.apache.commons.lang3.ObjectUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Lazy;
 import reactor.core.publisher.Mono;
 
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 import static com.appsmith.external.constants.AnalyticsConstants.ADMIN_EMAIL_DOMAIN_HASH;
@@ -44,10 +45,29 @@ import static com.appsmith.server.constants.ce.FieldNameCE.ROLE;
 @Slf4j
 public class AnalyticsServiceCEImpl implements AnalyticsServiceCE {
 
+    /**
+     * High-volume events that nobody reads in Segment, so they are not forwarded there. Audit logging (EE) is
+     * unaffected: it is written before {@link #sendObjectEvent} reaches this check.
+     */
+    private static final Set<String> SEGMENT_SUPPRESSED_EVENTS = Set.of(
+            "view_NEWPAGE",
+            "update_layout",
+            "update_NEWACTION",
+            "update_ACTIONCOLLECTION",
+            "unit_execution_time",
+            "login_USER",
+            "logout_USER");
+
+    /**
+     * Forwarded only when user-invoked; most of these updates are OAuth token refreshes.
+     */
+    private static final String DATASOURCE_STORAGE_UPDATE_EVENT = "update_DATASOURCESTORAGE";
+
     private final Analytics analytics;
     private final SessionUserService sessionUserService;
     private final CommonConfig commonConfig;
     private final ConfigService configService;
+    private final FeatureFlagService featureFlagService;
 
     private final UserUtils userUtils;
 
@@ -65,11 +85,13 @@ public class AnalyticsServiceCEImpl implements AnalyticsServiceCE {
             UserUtils userUtils,
             ProjectProperties projectProperties,
             DeploymentProperties deploymentProperties,
-            UserDataRepository userDataRepository) {
+            UserDataRepository userDataRepository,
+            @Lazy FeatureFlagService featureFlagService) {
         this.analytics = analytics;
         this.sessionUserService = sessionUserService;
         this.commonConfig = commonConfig;
         this.configService = configService;
+        this.featureFlagService = featureFlagService;
         this.userUtils = userUtils;
         this.projectProperties = projectProperties;
         this.deploymentProperties = deploymentProperties;
@@ -125,8 +147,9 @@ public class AnalyticsServiceCEImpl implements AnalyticsServiceCE {
                     String name = savedUser.getName();
                     String email = savedUser.getEmail();
                     final String emailDomainHash = getEmailDomainHash(email);
+                    String organizationId = savedUser.getOrganizationId();
 
-                    if (!commonConfig.isCloudHosting()) {
+                    if (!commonConfig.getIsCloudHosting()) {
                         username = hash(username);
                         name = hash(name);
                         email = hash(email);
@@ -135,15 +158,26 @@ public class AnalyticsServiceCEImpl implements AnalyticsServiceCE {
                     analytics.enqueue(IdentifyMessage.builder()
                             .userId(ObjectUtils.defaultIfNull(username, ""))
                             .traits(Map.of(
-                                    "name", ObjectUtils.defaultIfNull(name, ""),
-                                    "email", ObjectUtils.defaultIfNull(email, ""),
-                                    "emailDomainHash", emailDomainHash,
-                                    "isSuperUser", isSuperUser,
-                                    "instanceId", instanceId,
-                                    "mostRecentlyUsedWorkspaceId", tuple.getT4(),
-                                    "role", "",
-                                    "proficiency", ObjectUtils.defaultIfNull(userData.getProficiency(), ""),
-                                    "goal", ObjectUtils.defaultIfNull(userData.getUseCase(), ""))));
+                                    "name",
+                                    ObjectUtils.defaultIfNull(name, ""),
+                                    "email",
+                                    ObjectUtils.defaultIfNull(email, ""),
+                                    "emailDomainHash",
+                                    emailDomainHash,
+                                    "isSuperUser",
+                                    isSuperUser,
+                                    "instanceId",
+                                    instanceId,
+                                    "organizationId",
+                                    ObjectUtils.defaultIfNull(organizationId, ""),
+                                    "mostRecentlyUsedWorkspaceId",
+                                    tuple.getT4(),
+                                    "role",
+                                    "",
+                                    "proficiency",
+                                    ObjectUtils.defaultIfNull(userData.getProficiency(), ""),
+                                    "goal",
+                                    ObjectUtils.defaultIfNull(userData.getUseCase(), ""))));
                     analytics.flush();
                     return savedUser;
                 });
@@ -184,7 +218,27 @@ public class AnalyticsServiceCEImpl implements AnalyticsServiceCE {
 
     @Override
     public Mono<Void> sendEvent(String event, String userId, Map<String, ?> properties, boolean hashUserId) {
-        if (!isActive()) {
+        // Anonymous visitors are never sent: each anonymous id would be billed by Segment as a tracked user.
+        // sendObjectEvent drops anonymous sessions upstream; this covers direct callers.
+        if (!isActive() || FieldName.ANONYMOUS_USER.equals(userId)) {
+            return Mono.empty();
+        }
+
+        return sendEventInternal(event, userId, properties, hashUserId);
+    }
+
+    private static boolean isSuppressedForSegment(String event, Map<String, ?> properties) {
+        if (SEGMENT_SUPPRESSED_EVENTS.contains(event)) {
+            return true;
+        }
+        return DATASOURCE_STORAGE_UPDATE_EVENT.equals(event)
+                && (properties == null
+                        || !Boolean.TRUE.equals(properties.get(FieldName.IS_DATASOURCE_UPDATE_USER_INVOKED_KEY)));
+    }
+
+    // Protected so an edition can extend the Segment forward stage (EE adds its own suppressed names).
+    protected Mono<Void> sendEventInternal(String event, String userId, Map<String, ?> properties, boolean hashUserId) {
+        if (isSuppressedForSegment(event, properties)) {
             return Mono.empty();
         }
 
@@ -198,7 +252,7 @@ public class AnalyticsServiceCEImpl implements AnalyticsServiceCE {
         final String emailDomainHash = getEmailDomainHash(immutableUserId);
 
         // Hash usernames at all places for self-hosted instance
-        if (shouldHashUserId(event, userId, hashUserId, commonConfig.isCloudHosting())) {
+        if (shouldHashUserId(event, userId, hashUserId, commonConfig.getIsCloudHosting())) {
             final String hashedUserId = hash(userId);
             // Remove request key, if it's self-hosted as it contains user's evaluated params
             analyticsProperties.remove("request");
@@ -225,19 +279,13 @@ public class AnalyticsServiceCEImpl implements AnalyticsServiceCE {
         final String finalUserId = userId;
 
         return Mono.zip(
-                        ExchangeUtils.getAnonymousUserIdFromCurrentRequest(),
                         ExchangeUtils.getUserAgentFromCurrentRequest(),
                         configService.getInstanceId().defaultIfEmpty("unknown-instance-id"))
                 .map(tuple -> {
-                    final String userIdFromClient = tuple.getT1();
-                    final String userAgent = tuple.getT2();
-                    final String instanceId = tuple.getT3();
-                    String userIdToSend = finalUserId;
-                    if (FieldName.ANONYMOUS_USER.equals(finalUserId)) {
-                        userIdToSend = StringUtils.defaultIfEmpty(userIdFromClient, FieldName.ANONYMOUS_USER);
-                    }
+                    final String userAgent = tuple.getT1();
+                    final String instanceId = tuple.getT2();
                     TrackMessage.Builder messageBuilder =
-                            TrackMessage.builder(event).userId(userIdToSend).context(Map.of("userAgent", userAgent));
+                            TrackMessage.builder(event).userId(finalUserId).context(Map.of("userAgent", userAgent));
                     // For Installation Setup Complete event we are using `instanceId` as tracking id
                     // As this does not satisfy the email validation it's not getting hashed correctly
                     if (AnalyticsEvents.INSTALLATION_SETUP_COMPLETE
@@ -286,6 +334,13 @@ public class AnalyticsServiceCEImpl implements AnalyticsServiceCE {
             return Mono.just(object);
         }
 
+        // User events are keyed by the *object* user (see `username` below), so a delete event would create a
+        // tracked identity for the very user being removed, one that never acts again. Deletions are kept in the
+        // audit log; analytics does not need them.
+        if (object instanceof User && event == AnalyticsEvents.DELETE) {
+            return Mono.just(object);
+        }
+
         // Get the event name tag based on the event and object
         // Event tag is of the form `eventName_objectClassName` or just `eventName` if the event is not associated with
         // any object.
@@ -294,53 +349,27 @@ public class AnalyticsServiceCEImpl implements AnalyticsServiceCE {
         // For more info on this, refer to the `getEventTag` method and `getNonResourceEvents` method
         final String eventTag = getEventTag(event, object);
 
-        // We will create an anonymous user object for event tracking if no user is present
-        // Without this, a lot of flows meant for anonymous users will error out
-
-        // In case the event needs to be sent during sign in, then `sessionUserService.getCurrentUser()` returns
-        // Mono.empty()
-        // Handle the same by returning an anonymous user only for sending events.
-        User anonymousUser = new User();
-        anonymousUser.setName(FieldName.ANONYMOUS_USER);
-        anonymousUser.setEmail(FieldName.ANONYMOUS_USER);
-        anonymousUser.setIsAnonymous(true);
-
-        Mono<User> userMono = sessionUserService.getCurrentUser().switchIfEmpty(Mono.just(anonymousUser));
-
-        return userMono.flatMap(user -> Mono.zip(
-                        user.isAnonymous()
-                                ? ExchangeUtils.getAnonymousUserIdFromCurrentRequest()
-                                : Mono.just(user.getUsername()),
-                        Mono.just(user)))
-                .flatMap(tuple -> {
-                    final String id = tuple.getT1();
-                    final User user = tuple.getT2();
-
-                    // In case the user is anonymous, don't raise an event, unless it's a signup, logout, page view or
-                    // action execution event.
-                    boolean isEventUserSignUpOrLogout = object instanceof User
-                            && (event == AnalyticsEvents.CREATE || event == AnalyticsEvents.LOGOUT);
-                    boolean isEventPageView = object instanceof NewPage && event == AnalyticsEvents.VIEW;
-                    boolean isEventActionExecution =
-                            object instanceof ActionDTO && event == AnalyticsEvents.EXECUTE_ACTION;
-                    boolean isAvoidLoggingEvent = user.isAnonymous()
-                            && !(isEventUserSignUpOrLogout || isEventPageView || isEventActionExecution);
-                    if (isAvoidLoggingEvent) {
-                        return Mono.just(object);
-                    }
+        // Anonymous visitors (no session user, e.g. during sign-in or sign-up) are never sent: each anonymous id would
+        // be billed by Segment as a tracked user.
+        return sessionUserService
+                .getCurrentUser()
+                .filter(user -> !user.isAnonymous())
+                .flatMap(user -> {
+                    String organizationId = user.getOrganizationId();
 
                     final String username = (object instanceof User objectAsUser ? objectAsUser : user).getUsername();
 
                     HashMap<String, Object> analyticsProperties = new HashMap<>();
-                    analyticsProperties.put("id", id);
+                    analyticsProperties.put("id", user.getUsername());
                     analyticsProperties.put("oid", ((Identifiable) object).getId());
+                    analyticsProperties.put("organizationId", ObjectUtils.defaultIfNull(organizationId, ""));
                     if (extraProperties != null) {
                         analyticsProperties.putAll(extraProperties);
                         // To avoid sending extra event data to analytics
                         analyticsProperties.remove(FieldName.EVENT_DATA);
                     }
                     if (analyticsProperties.containsKey(FieldName.CLOUD_HOSTED_EXTRA_PROPS)) {
-                        if (commonConfig.isCloudHosting()) {
+                        if (commonConfig.getIsCloudHosting()) {
                             Map<String, Object> extraPropsForCloudHostedInstance =
                                     (Map<String, Object>) analyticsProperties.get(FieldName.CLOUD_HOSTED_EXTRA_PROPS);
                             analyticsProperties.putAll(extraPropsForCloudHostedInstance);
@@ -348,8 +377,10 @@ public class AnalyticsServiceCEImpl implements AnalyticsServiceCE {
                         analyticsProperties.remove(FieldName.CLOUD_HOSTED_EXTRA_PROPS);
                     }
 
-                    return sendEvent(eventTag, username, analyticsProperties).thenReturn(object);
-                });
+                    return sendEventInternal(eventTag, username, analyticsProperties, true);
+                })
+                // Return the original object after sending the event
+                .then(Mono.just(object));
     }
 
     /**
@@ -385,7 +416,10 @@ public class AnalyticsServiceCEImpl implements AnalyticsServiceCE {
                 AnalyticsEvents.DS_TEST_EVENT,
                 AnalyticsEvents.DS_TEST_EVENT_SUCCESS,
                 AnalyticsEvents.DS_TEST_EVENT_FAILED,
-                AnalyticsEvents.DS_SCHEMA_FETCH_EVENT);
+                AnalyticsEvents.DS_SCHEMA_FETCH_EVENT,
+                // Keep Segment event names as partial_import / partial_export (no _APPLICATION suffix).
+                AnalyticsEvents.PARTIAL_IMPORT,
+                AnalyticsEvents.PARTIAL_EXPORT);
     }
 
     /**

@@ -8,6 +8,7 @@ import {
   getAllTableColumnKeys,
   getArrayPropertyValue,
   getColumnType,
+  getDefaultColumnProperties,
   getDerivedColumns,
   getHeaderClassNameOnDragDirection,
   getOriginalRowIndex,
@@ -2712,7 +2713,7 @@ describe("getSelectOptions", () => {
     ]);
   });
 
-  it("Should return select options while adding a new row and when 'Same options in new row' option is turned on", () => {
+  it("Should return select options while adding a new row and when 'Use top row values in new rows' option is turned on", () => {
     const columnProperties = {
       allowSameOptionsInNewRow: true,
       selectOptions: [
@@ -2779,5 +2780,14 @@ describe("convertNumToCompactString", () => {
   it("formats a number less than 1000 as is", () => {
     expect(convertNumToCompactString(42)).toBe("42");
     expect(convertNumToCompactString(999)).toBe("999");
+  });
+});
+
+describe("getDefaultColumnProperties", () => {
+  it("defaults header wrapping off so existing single-line headers stay unchanged", () => {
+    const column = getDefaultColumnProperties("Name", "Name", 0, "Table1");
+
+    expect(column.allowHeaderWrapping).toBe(false);
+    expect(column.allowCellWrapping).toBe(false);
   });
 });

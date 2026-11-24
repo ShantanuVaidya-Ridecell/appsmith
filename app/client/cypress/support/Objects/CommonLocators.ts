@@ -10,8 +10,8 @@ export class CommonLocators {
   _link = ".ads-v2-link";
   _btnSpinner = ".ads-v2-spinner";
   _sidebar = ".t--sidebar";
-  _queryName = ".editor-tab.active > .ads-v2-text";
-  _queryNameTxt = ".editor-tab.active > .ads-v2-text input";
+  _activeEntityTab = ".editor-tab.active .ads-v2-text";
+  _activeEntityTabInput = ".editor-tab.active .ads-v2-text input";
   _editIcon = ".t--action-name-edit-icon";
   _emptyCanvasCta = "[data-testid='canvas-ctas']";
   _dsName = ".t--edit-datasource-name span";
@@ -49,8 +49,11 @@ export class CommonLocators {
     )}`;
   _textWidget = ".t--draggable-textwidget .t--text-widget-container span";
   _tableWidget = ".t--widget-tablewidgetv2";
+  _tabWidget = (tabNumber: string) => `.t--tabid-tab${tabNumber}`;
   _inputWidget = ".t--draggable-inputwidgetv2 input";
   _publishButton = ".t--application-publish-btn";
+  _deployPopup = ".t--deploy-popup-option-trigger";
+  _currentDeployPreview = ".t--current-deployed-preview-btn";
   _widgetInCanvas = (widgetType: string) => `.t--draggable-${widgetType}`;
   _widgetInDeployed = (widgetType: string) => `.t--widget-${widgetType}`;
   _widgetInputSelector = (widgetType: string) =>
@@ -64,6 +67,7 @@ export class CommonLocators {
   _textAreainputWidgetv2InDeployed =
     this._widgetInDeployed("inputwidgetv2") + " textarea";
   _imageWidget = ".t--draggable-imagewidget";
+  _imageWidgetInDeployed = ".t--widget-imagewidget";
   _backToEditor = ".t--back-to-editor";
   _toastMsg = "div.Toastify__toast";
   _toastContainer = "div.Toastify__toast-container";
@@ -98,10 +102,7 @@ export class CommonLocators {
     "//div[text()='" +
     entityNameinLeftSidebar +
     "']/ancestor::div[contains(@class, 't--entity-item')]/following-sibling::div//div[contains(@class, 't--entity-property')]//code";
-  _entityNameEditing = (entityNameinLeftSidebar: string) =>
-    "//span[text()='" +
-    entityNameinLeftSidebar +
-    "']/parent::div[contains(@class, 't--entity-name editing')]/input";
+  _entityNameEditing = ".t--entity-name.editing input";
   _jsToggle = (controlToToggle: string) =>
     `.t--property-control-${controlToToggle} .t--js-toggle, [data-guided-tour-iid='${controlToToggle}']`;
   _buttonByText = (btnVisibleText: string) =>
@@ -204,6 +205,7 @@ export class CommonLocators {
   _jsonToggle = (fieldName: string) =>
     `//p[text()='${fieldName}']/parent::div//following-sibling::div//input[@type='checkbox']`;
   _deployedPage = `.t--page-switch-tab`;
+  _navigationMenuItem = "[data-testid='t--pages-switcher']";
   _hints = "ul.CodeMirror-hints li";
   _hints_apis = "ul.CodeMirror-hints li.Codemirror-commands-apis";
   _tern_doc = ".t--tern-doc";
@@ -279,6 +281,8 @@ export class CommonLocators {
   _svg = "svg";
   _imgWidgetInsideList = `//div[@data-testid='styledImage']//img`;
   _containerWidget = "[type='CONTAINER_WIDGET']";
+  _listV2ItemContainer = (widgetName: string) =>
+    `${this._widgetByName(widgetName)} ${this._containerWidget}`;
   _statboxWidget = "[type='STATBOX_WIDGET']";
   _evaluatedValue = ".t-property-evaluated-value";
   public ds_editor_env_filter = (envName: string) =>
@@ -305,6 +309,7 @@ export class CommonLocators {
   _buttonInDeployedMode = ".bp3-button";
   _treeSelectPlaceholder = ".rc-tree-select-selection-placeholder";
   _treeSelectTitle = ".rc-tree-select-tree-title";
+  _treeSelectSelector = ".rc-tree-select-selector";
   _callbackAddBtn = ".action-callback-add .ads-v2-button";
   _checkboxInDeployedMode = "//label[contains(@class, 'bp3-checkbox')]//input";
   _listText = "//span[text()='Blue']/../..";
@@ -318,11 +323,18 @@ export class CommonLocators {
   _fileUploadAddMore = ".uppy-DashboardContent-addMore";
   _buttonText = ".bp3-button-text";
   _richText_TitleBlock = "[aria-label='Block Paragraph']";
-  _richText_Heading = "[title='Heading 1']";
+  _richText_Heading = "[aria-label='Heading 1']";
   _richText_Label_Text = ".tox-tbtn__select-label";
+  // TinyMCE 7.9.3: data-mce-name is stable; aria-label is "Font {current}" (default "Font Default")
+  _richText_FontFamily = "[data-mce-name='fontfamily']";
+  _richText_FontFamilyOption = (font: string) =>
+    `.tox-collection__item[aria-label="${font}"]`;
+  _richText_ToolbarOverflow =
+    '[aria-label="Reveal or hide additional toolbar items"]';
   _richText_Text_Color = (color: string) =>
     `[aria-label="Text color ${color}"] .tox-split-button__chevron`;
-  _richText_color = (value: string) => `[title="${value}"]`;
+  _richText_color = (value: string) =>
+    `.tox-swatch[aria-label="${value}"], .tox-collection__item[aria-label="${value}"], [data-mce-tooltip="${value}"]`;
   _richText_line = "#tinymce p span";
   _treeSelectedContent = ".rc-tree-select-selection-item-content";
   _switcherIcon = ".switcher-icon";
@@ -334,9 +346,14 @@ export class CommonLocators {
   _exitFullScreen = ".application-demo-new-dashboard-control-exit-fullscreen";
   _menuItem = ".bp3-menu-item";
   _slashCommandHintText = ".slash-command-hint-text";
-  _selectionItem = ".rc-select-selection-item";
   errorPageTitle = ".t--error-page-title";
   errorPageDescription = ".t--error-page-description";
+  _moduleInstanceEntity = (module: string) =>
+    `[data-testid=t--entity-item-${module}1]`;
+  _codeEditor = "[data-testid=code-editor-target]";
+  _selectionItem = ".rc-select-selection-item";
+  _moduleInputEntity = (inputName: string) =>
+    `[data-testid=t--module-instance-input-field-wrapper-${inputName}]`;
   _selectClearButton_testId = "selectbutton.btn.cancel";
   _selectClearButton_dataTestId = `[data-testid="${this._selectClearButton_testId}"]`;
   _saveDatasource = `[data-testid='t--store-as-datasource']`;
@@ -347,11 +364,18 @@ export class CommonLocators {
   _showBoundary = ".show-boundary";
   _entityItem = "[data-testid='t--entity-item-Api1']";
   _rowData = "[data-colindex='0'][data-rowindex='0']";
+  _visualNonIdeaState = ".bp3-non-ideal-state";
+  _mongoDBConnectionInfo = "input[name='APPSMITH_DB_CONNECTION_INFO']";
   _editorTab = ".editor-tab";
   _entityTestId = (entity: string) =>
     `[data-testid="t--entity-item-${entity}"]`;
   _listItemTitle = ".ads-v2-listitem__title";
   _dropdownOption = ".rc-select-item-option-content";
   _dropdownActiveOption = ".rc-select-dropdown .rc-select-item-option-active";
+  _rcVirtualListHolder = ".rc-virtual-list-holder";
   _homeIcon = "[data-testid='t--default-home-icon']";
+  _appsmithLogo = ".t--appsmith-logo";
+  _widget = (widgetName: string) => `.t--widget-${widgetName}`;
+  _settingPaneWrapper = "[role='table']";
+  _tableOverlayConnectData = ".t--cypress-table-overlay-connectdata";
 }

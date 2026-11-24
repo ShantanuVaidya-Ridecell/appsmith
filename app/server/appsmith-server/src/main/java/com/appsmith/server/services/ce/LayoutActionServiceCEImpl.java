@@ -6,17 +6,21 @@ import com.appsmith.external.models.ActionDTO;
 import com.appsmith.external.models.CreatorContextType;
 import com.appsmith.external.models.Datasource;
 import com.appsmith.external.models.PluginType;
+import com.appsmith.external.models.RunBehaviourEnum;
 import com.appsmith.server.acl.AclPermission;
 import com.appsmith.server.constants.FieldName;
 import com.appsmith.server.datasources.base.DatasourceService;
 import com.appsmith.server.domains.Layout;
 import com.appsmith.server.domains.NewAction;
 import com.appsmith.server.domains.NewPage;
+import com.appsmith.server.domains.RunBehaviourAnalyticsMetadata;
 import com.appsmith.server.dtos.ActionMoveDTO;
 import com.appsmith.server.dtos.CreateActionMetaDTO;
 import com.appsmith.server.dtos.PageDTO;
+import com.appsmith.server.enums.RunBehaviourUpdateSource;
 import com.appsmith.server.exceptions.AppsmithError;
 import com.appsmith.server.exceptions.AppsmithException;
+import com.appsmith.server.helpers.RunBehaviourAnalyticsUtils;
 import com.appsmith.server.layouts.UpdateLayoutService;
 import com.appsmith.server.newactions.base.NewActionService;
 import com.appsmith.server.newpages.base.NewPageService;
@@ -34,6 +38,8 @@ import reactor.core.observability.micrometer.Micrometer;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.util.function.Tuple2;
+
+import java.util.List;
 
 import static com.appsmith.external.constants.spans.ActionSpan.GET_ACTION_BY_ID;
 import static com.appsmith.external.constants.spans.ActionSpan.UPDATE_ACTION_BASED_ON_CONTEXT;
@@ -61,6 +67,7 @@ public class LayoutActionServiceCEImpl implements LayoutActionServiceCE {
     private final PagePermission pagePermission;
     private final ActionPermission actionPermission;
     private final ObservationRegistry observationRegistry;
+    private final RunBehaviourAnalyticsUtils runBehaviourAnalyticsUtils;
 
     /**
      * Called by Action controller to create Action
@@ -145,8 +152,9 @@ public class LayoutActionServiceCEImpl implements LayoutActionServiceCE {
         final String destinationPageId = actionMoveDTO.getDestinationPageId();
         action.setPageId(destinationPageId);
 
-        Mono<NewPage> destinationPageMono = newPageService
-                .findById(destinationPageId, pagePermission.getActionCreatePermission())
+        Mono<NewPage> destinationPageMono = pagePermission
+                .getActionCreatePermission()
+                .flatMap(permission -> newPageService.findById(destinationPageId, permission))
                 .switchIfEmpty(Mono.error(
                         new AppsmithException(AppsmithError.ACL_NO_RESOURCE_FOUND, FieldName.PAGE, destinationPageId)));
 
@@ -186,10 +194,10 @@ public class LayoutActionServiceCEImpl implements LayoutActionServiceCE {
                                             .collect(toSet());
                                 })
                                 // fetch the unpublished destination page
-                                .then(newPageService.findPageById(
-                                        actionMoveDTO.getDestinationPageId(),
-                                        pagePermission.getActionCreatePermission(),
-                                        false))
+                                .then(pagePermission
+                                        .getActionCreatePermission()
+                                        .flatMap(permission -> newPageService.findPageById(
+                                                actionMoveDTO.getDestinationPageId(), permission, false)))
                                 .flatMap(page -> {
                                     if (page.getLayouts() == null) {
                                         return Mono.empty();
@@ -286,6 +294,7 @@ public class LayoutActionServiceCEImpl implements LayoutActionServiceCE {
         }
     }
 
+    @Deprecated
     @Override
     public Mono<ActionDTO> setExecuteOnLoad(String id, Boolean isExecuteOnLoad) {
         return newActionService
@@ -308,6 +317,42 @@ public class LayoutActionServiceCEImpl implements LayoutActionServiceCE {
                 });
     }
 
+    @Override
+    public Mono<ActionDTO> setRunBehaviour(String id, RunBehaviourEnum behaviour) {
+        return newActionService
+                .findById(id, actionPermission.getEditPermission())
+                .switchIfEmpty(Mono.error(new AppsmithException(AppsmithError.NO_RESOURCE_FOUND, FieldName.ACTION, id)))
+                .flatMap(newAction -> {
+                    ActionDTO action = newAction.getUnpublishedAction();
+
+                    RunBehaviourEnum oldRunBehaviour = action.getRunBehaviour();
+
+                    action.setUserSetOnLoad(true);
+                    action.setRunBehaviour(behaviour);
+
+                    newAction.setUnpublishedAction(action);
+
+                    return newActionService
+                            .save(newAction)
+                            .flatMap(savedAction -> updateLayoutService
+                                    .updateLayoutByContextTypeAndContextId(
+                                            action.getContextType(), action.getContextId())
+                                    .name(UPDATE_PAGE_LAYOUT_BY_PAGE_ID)
+                                    .tap(Micrometer.observation(observationRegistry))
+                                    .thenReturn(newActionService.generateActionByViewMode(savedAction, false)))
+                            .flatMap(updatedAction -> runBehaviourAnalyticsUtils
+                                    .sendRunBehaviourChangedAnalytics(RunBehaviourAnalyticsMetadata.builder()
+                                            .actionDTO(updatedAction)
+                                            .oldRunBehaviour(oldRunBehaviour)
+                                            .creatorContextType(action.getContextType())
+                                            .wasChangedBy(RunBehaviourUpdateSource.USER)
+                                            .isActionPartOfModuleInstance(!isRegularAction(updatedAction))
+                                            .build())
+                                    .onErrorResume(e -> Mono.empty())
+                                    .thenReturn(updatedAction));
+                });
+    }
+
     /**
      * - Delete action.
      * - Update page layout since a deleted action cannot be marked as on page load.
@@ -315,6 +360,9 @@ public class LayoutActionServiceCEImpl implements LayoutActionServiceCE {
     public Mono<ActionDTO> deleteUnpublishedAction(String id) {
         return newActionService
                 .deleteUnpublishedAction(id)
+                .flatMap(actionDTO -> newActionService
+                        .postProcessDeletedActions(List.of(actionDTO))
+                        .thenReturn(actionDTO))
                 .flatMap(actionDTO -> Mono.zip(
                         Mono.just(actionDTO), updateLayoutService.updatePageLayoutsByPageId(actionDTO.getPageId())))
                 .name(UPDATE_PAGE_LAYOUT_BY_PAGE_ID)
@@ -339,11 +387,11 @@ public class LayoutActionServiceCEImpl implements LayoutActionServiceCE {
             return Mono.error(new AppsmithException(AppsmithError.INVALID_PARAMETER, FieldName.PAGE_ID));
         }
 
-        AclPermission aclPermission =
-                isJsAction ? pagePermission.getReadPermission() : pagePermission.getActionCreatePermission();
+        Mono<AclPermission> aclPermissionMono =
+                isJsAction ? Mono.just(pagePermission.getReadPermission()) : pagePermission.getActionCreatePermission();
 
-        return newPageService
-                .findById(actionDTO.getPageId(), aclPermission)
+        return aclPermissionMono
+                .flatMap(permission -> newPageService.findById(actionDTO.getPageId(), permission))
                 .switchIfEmpty(Mono.error(
                         new AppsmithException(AppsmithError.NO_RESOURCE_FOUND, FieldName.PAGE, actionDTO.getPageId())))
                 .flatMap(newPage -> {
@@ -354,7 +402,14 @@ public class LayoutActionServiceCEImpl implements LayoutActionServiceCE {
                     createActionMetaDTO.setIsJsAction(isJsAction);
                     createActionMetaDTO.setNewPage(newPage);
                     createActionMetaDTO.setEventContext(eventContext);
-                    return createAction(actionDTO, createActionMetaDTO);
+
+                    // Block user-driven query creation on deprecated-plugin datasources. Internal flows (clone,
+                    // fork, import) call createAction(actionDTO, meta) directly and are intentionally not guarded.
+                    Mono<Void> deprecationCheckMono = Boolean.TRUE.equals(isJsAction)
+                            ? Mono.empty()
+                            : datasourceService.validateNewQueryCreationAllowed(actionDTO.getDatasource());
+
+                    return deprecationCheckMono.then(Mono.defer(() -> createAction(actionDTO, createActionMetaDTO)));
                 });
     }
 
@@ -379,7 +434,7 @@ public class LayoutActionServiceCEImpl implements LayoutActionServiceCE {
                     // New actions will never be set to auto-magical execution, unless it is triggered via a
                     // page or application clone event.
                     if (!AppsmithEventContextType.CLONE_PAGE.equals(eventContext.getAppsmithEventContextType())) {
-                        actionDTO.setExecuteOnLoad(false);
+                        actionDTO.setRunBehaviour(RunBehaviourEnum.MANUAL);
                     }
 
                     newAction.setUnpublishedAction(actionDTO);
@@ -418,6 +473,11 @@ public class LayoutActionServiceCEImpl implements LayoutActionServiceCE {
                 });
     }
 
+    // Regular action here means action created as part of application editor
+    protected boolean isRegularAction(ActionDTO actionDTO) {
+        return false;
+    }
+
     protected Mono<NewAction> validateAndGenerateActionDomainBasedOnContext(
             ActionDTO action, CreateActionMetaDTO actionMetaDTO) {
         Boolean isJsAction = actionMetaDTO.getIsJsAction();
@@ -427,13 +487,13 @@ public class LayoutActionServiceCEImpl implements LayoutActionServiceCE {
         }
         // If the action is a JS action, then we don't need to validate the page. Fetch the page with read.
         // Else fetch the page with create action permission to ensure that the user has the right to create an action
-        AclPermission aclPermission =
-                isJsAction ? pagePermission.getReadPermission() : pagePermission.getActionCreatePermission();
+        Mono<AclPermission> aclPermissionMono =
+                isJsAction ? Mono.just(pagePermission.getReadPermission()) : pagePermission.getActionCreatePermission();
 
         Mono<NewPage> pageMono = newPage != null
                 ? Mono.just(newPage)
-                : newPageService
-                        .findById(action.getPageId(), aclPermission)
+                : aclPermissionMono
+                        .flatMap(permission -> newPageService.findById(action.getPageId(), permission))
                         .name(GET_PAGE_BY_ID)
                         .tap(Micrometer.observation(observationRegistry))
                         .switchIfEmpty(Mono.error(new AppsmithException(

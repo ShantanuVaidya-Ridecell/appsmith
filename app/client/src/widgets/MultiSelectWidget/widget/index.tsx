@@ -10,14 +10,14 @@ import { Alignment } from "@blueprintjs/core";
 import type {
   AutocompletionDefinitions,
   WidgetCallout,
-} from "WidgetProvider/constants";
+} from "WidgetProvider/types";
 import { MinimumPopupWidthInPercentage } from "WidgetProvider/constants";
 import { LabelPosition } from "components/constants";
 import { Layers } from "constants/Layers";
 import { WIDGET_TAGS, layoutConfigurations } from "constants/WidgetConstants";
 import { FILL_WIDGET_MIN_WIDTH } from "constants/minWidthConstants";
 import type { SetterConfig, Stylesheet } from "entities/AppTheming";
-import { EvaluationSubstitutionType } from "entities/DataTree/dataTreeFactory";
+import { EvaluationSubstitutionType } from "constants/EvaluationConstants";
 import { ResponsiveBehavior } from "layoutSystems/common/utils/constants";
 import { buildDeprecationWidgetMessage } from "pages/Editor/utils";
 import type { DraftValueType } from "rc-select/lib/Select";
@@ -563,6 +563,7 @@ class MultiSelectWidget extends BaseWidget<
         dropdownStyle={{
           zIndex: Layers.dropdownModalWidget,
         }}
+        isRequired={this.props.isRequired}
         isValid={this.props.isValid}
         labelAlignment={this.props.labelAlignment}
         labelPosition={this.props.labelPosition}

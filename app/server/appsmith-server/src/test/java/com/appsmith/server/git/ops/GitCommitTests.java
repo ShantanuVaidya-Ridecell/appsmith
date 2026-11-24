@@ -20,7 +20,7 @@ import com.appsmith.server.helpers.CommonGitFileUtils;
 import com.appsmith.server.services.ApplicationPageService;
 import com.appsmith.server.services.UserService;
 import com.appsmith.server.services.WorkspaceService;
-import org.apache.commons.lang.StringUtils;
+import org.apache.commons.lang3.StringUtils;
 import org.eclipse.jgit.api.errors.EmptyCommitException;
 import org.eclipse.jgit.errors.RepositoryNotFoundException;
 import org.junit.jupiter.api.Test;
@@ -129,7 +129,7 @@ public class GitCommitTests {
         Mockito.doReturn(Mono.just(true)).when(fsGitHandler).checkoutToBranch(any(Path.class), Mockito.anyString());
         Mockito.doReturn(Mono.just("success"))
                 .when(fsGitHandler)
-                .pushApplication(any(Path.class), any(), any(), any(), any());
+                .pushArtifact(any(Path.class), any(), any(), any(), any());
         Mockito.doReturn(Mono.just(true)).when(commonGitFileUtils).checkIfDirectoryIsEmpty(any(Path.class));
         Mockito.doReturn(Mono.just(Paths.get("textPath")))
                 .when(commonGitFileUtils)

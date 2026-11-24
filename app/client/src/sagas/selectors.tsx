@@ -1,10 +1,10 @@
-import type { AppState } from "ee/reducers";
+import type { DefaultRootState } from "react-redux";
 import { createSelector } from "reselect";
 import memoize from "proxy-memoize";
 import type {
   CanvasWidgetsReduxState,
   FlattenedWidgetProps,
-} from "reducers/entityReducers/canvasWidgetsReducer";
+} from "ee/reducers/entityReducers/canvasWidgetsReducer";
 import type { WidgetProps } from "widgets/BaseWidget";
 import _, { defaults, omit } from "lodash";
 import type { WidgetType } from "constants/WidgetConstants";
@@ -13,11 +13,12 @@ import type { ActionData } from "ee/reducers/entityReducers/actionsReducer";
 import type { Page } from "entities/Page";
 import { getActions, getPlugins } from "ee/selectors/entitiesSelector";
 import type { Plugin } from "entities/Plugin";
-import type { DragDetails } from "reducers/uiReducers/dragResizeReducer";
 import type { DataTreeForActionCreator } from "components/editorComponents/ActionCreator/types";
 import type { MetaWidgetsReduxState } from "reducers/entityReducers/metaWidgetsReducer";
 
-export const getWidgets = (state: AppState): CanvasWidgetsReduxState => {
+export const getWidgets = (
+  state: DefaultRootState,
+): CanvasWidgetsReduxState => {
   return state.entities.canvasWidgets;
 };
 
@@ -38,7 +39,9 @@ export const getWidgetsForEval = createSelector(getWidgets, (widgets) => {
   return widgetForEval;
 });
 
-export const getMetaWidgets = (state: AppState): MetaWidgetsReduxState => {
+export const getMetaWidgets = (
+  state: DefaultRootState,
+): MetaWidgetsReduxState => {
   return state.entities.metaWidgets;
 };
 
@@ -48,13 +51,13 @@ export const getCanvasAndMetaWidgets = createSelector(
   (canvasWidget, metaWidget) => defaults({}, canvasWidget, metaWidget),
 );
 
-export const getWidgetsMeta = (state: AppState) => state.entities.meta;
+export const getWidgetsMeta = (state: DefaultRootState) => state.entities.meta;
 
-export const getIsMobileBreakPoint = (state: AppState) =>
+export const getIsMobileBreakPoint = (state: DefaultRootState) =>
   state.ui.mainCanvas.isMobile;
 
 export const getWidgetMetaProps = createSelector(
-  [getWidgetsMeta, (_state: AppState, widget: WidgetProps) => widget],
+  [getWidgetsMeta, (_state: DefaultRootState, widget: WidgetProps) => widget],
   (metaState, widget: WidgetProps) => {
     return metaState[widget.metaWidgetId || widget.widgetId];
   },
@@ -69,15 +72,29 @@ export const getWidgetByID = (widgetId: string) => {
   );
 };
 
-export const getWidget = (state: AppState, widgetId: string): WidgetProps => {
+export const getWidget = (
+  state: DefaultRootState,
+  widgetId: string,
+): WidgetProps => {
   return state.entities.canvasWidgets[widgetId];
 };
 
-export const getWidgetIdsByType = (state: AppState, type: WidgetType) => {
-  return Object.values(state.entities.canvasWidgets)
-    .filter((widget: FlattenedWidgetProps) => widget.type === type)
-    .map((widget: FlattenedWidgetProps) => widget.widgetId);
-};
+export const getWidgetIdsByType = createSelector(
+  getWidgets,
+  getMetaWidgets,
+  (_state: DefaultRootState, widgetType: WidgetType) => widgetType,
+  (canvasWidgets, metaWidgets, widgetType) => {
+    const canvasWidgetIds = Object.values(canvasWidgets)
+      .filter((widget: FlattenedWidgetProps) => widget.type === widgetType)
+      .map((widget: FlattenedWidgetProps) => widget.widgetId);
+
+    const metaWidgetIds = Object.values(metaWidgets)
+      .filter((widget: FlattenedWidgetProps) => widget.type === widgetType)
+      .map((widget: FlattenedWidgetProps) => widget.widgetId);
+
+    return [...canvasWidgetIds, ...metaWidgetIds];
+  },
+);
 
 export const getAllDetachedWidgetIds = memoize(
   (canvasWidgets: CanvasWidgetsReduxState) => {
@@ -87,7 +104,7 @@ export const getAllDetachedWidgetIds = memoize(
   },
 );
 
-export const getWidgetOptionsTree = memoize((state: AppState) =>
+export const getWidgetOptionsTree = memoize((state: DefaultRootState) =>
   Object.values(state.entities.canvasWidgets)
     .filter((w) => w.type !== "CANVAS_WIDGET" && w.type !== "BUTTON_WIDGET")
     .map((w) => {
@@ -100,26 +117,28 @@ export const getWidgetOptionsTree = memoize((state: AppState) =>
     }),
 );
 
-export const getDataTreeForActionCreator = memoize((state: AppState) => {
-  const dataTree: DataTreeForActionCreator = {};
+export const getDataTreeForActionCreator = memoize(
+  (state: DefaultRootState) => {
+    const dataTree: DataTreeForActionCreator = {};
 
-  Object.keys(state.evaluations.tree).forEach((key) => {
-    // TODO: Fix this the next time the file is edited
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const value: any = state.evaluations.tree[key];
+    Object.keys(state.evaluations.tree).forEach((key) => {
+      // TODO: Fix this the next time the file is edited
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const value: any = state.evaluations.tree[key];
 
-    dataTree[key] = {
-      meta: value?.meta || null,
-      ENTITY_TYPE: value?.ENTITY_TYPE || null,
-      type: value?.type || null,
-    };
-  });
+      dataTree[key] = {
+        meta: value?.meta || null,
+        ENTITY_TYPE: value?.ENTITY_TYPE || null,
+        type: value?.type || null,
+      };
+    });
 
-  return dataTree;
-});
+    return dataTree;
+  },
+);
 
 export const getEditorConfigs = (
-  state: AppState,
+  state: DefaultRootState,
 ): { applicationId: string; pageId: string; layoutId: string } | undefined => {
   const pageId = state.entities.pageList.currentPageId;
   const layoutId = state.ui.editor.currentLayoutId;
@@ -130,10 +149,10 @@ export const getEditorConfigs = (
   return { pageId, layoutId, applicationId };
 };
 
-export const getDefaultPageId = (state: AppState): string =>
+export const getDefaultPageId = (state: DefaultRootState): string =>
   state.entities.pageList.defaultPageId;
 
-export const getDefaultBasePageId = (state: AppState): string =>
+export const getDefaultBasePageId = (state: DefaultRootState): string =>
   state.entities.pageList.defaultBasePageId;
 
 export const getExistingWidgetNames = createSelector(
@@ -143,7 +162,7 @@ export const getExistingWidgetNames = createSelector(
   },
 );
 
-export const currentPageId = (state: AppState) => {
+export const currentPageId = (state: DefaultRootState) => {
   return state.entities.pageList.currentPageId;
 };
 
@@ -159,24 +178,12 @@ export const getExistingActionNames = createSelector(
   },
 );
 
-export const getPluginIdToImageLocation = createSelector(
-  getPlugins,
-  (plugins) =>
-    // TODO: Fix this the next time the file is edited
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    plugins.reduce((acc: any, p: Plugin) => {
-      acc[p.id] = p.iconLocation;
-
-      return acc;
-    }, {}),
-);
-
 /**
  * returns a objects of existing page name in data tree
  *
  * @param state
  */
-export const getExistingPageNames = (state: AppState) => {
+export const getExistingPageNames = (state: DefaultRootState) => {
   // TODO: Fix this the next time the file is edited
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const map: Record<string, any> = {};
@@ -188,19 +195,28 @@ export const getExistingPageNames = (state: AppState) => {
   return map;
 };
 
-export const getWidgetByName = (
-  state: AppState,
-  widgetName: string,
-): FlattenedWidgetProps | undefined => {
-  const widgets = state.entities.canvasWidgets;
+export const getWidgetByName = createSelector(
+  getWidgets,
+  getMetaWidgets,
+  (state: DefaultRootState, widgetName: string) => widgetName,
+  (widgets, metaWidgets, widgetName) => {
+    for (const widget of Object.values(widgets)) {
+      if (widget.widgetName === widgetName) {
+        return widget;
+      }
+    }
 
-  return _.find(
-    Object.values(widgets),
-    (widget) => widget.widgetName === widgetName,
-  );
-};
+    for (const widget of Object.values(metaWidgets)) {
+      if (widget.widgetName === widgetName) {
+        return widget;
+      }
+    }
 
-export const getAllPageIdentities = (state: AppState) => {
+    return null;
+  },
+);
+
+export const getAllPageIdentities = (state: DefaultRootState) => {
   return state.entities.pageList.pages.map((page) => ({
     pageId: page.pageId,
     basePageId: page.basePageId,
@@ -208,7 +224,7 @@ export const getAllPageIdentities = (state: AppState) => {
 };
 
 export const getPluginIdOfPackageName = (
-  state: AppState,
+  state: DefaultRootState,
   name: string,
 ): string | undefined => {
   const plugins = state.entities.plugins.list;
@@ -219,32 +235,32 @@ export const getPluginIdOfPackageName = (
   return undefined;
 };
 
-export const getDragDetails = (state: AppState) => {
+export const getDragDetails = (state: DefaultRootState) => {
   return state.ui.widgetDragResize.dragDetails;
 };
 
-export const getIsNewWidgetBeingDragged = (state: AppState) => {
+export const getIsNewWidgetBeingDragged = (state: DefaultRootState) => {
   const { isDragging } = state.ui.widgetDragResize;
 
   if (!isDragging) return false;
 
-  const dragDetails: DragDetails = getDragDetails(state);
+  const dragDetails = getDragDetails(state);
   const { dragGroupActualParent: dragParent, newWidget } = dragDetails;
 
   return !!newWidget && !dragParent;
 };
 
 export const isCurrentCanvasDragging = createSelector(
-  (state: AppState) => state.ui.widgetDragResize.isDragging,
+  (state: DefaultRootState) => state.ui.widgetDragResize.isDragging,
   getDragDetails,
-  (state: AppState, canvasId: string) => canvasId,
-  (isDragging: boolean, dragDetails: DragDetails, canvasId: string) => {
+  (state: DefaultRootState, canvasId: string) => canvasId,
+  (isDragging: boolean, dragDetails, canvasId: string) => {
     return dragDetails?.draggedOn === canvasId && isDragging;
   },
 );
 
 export const getSelectedWidget = (
-  state: AppState,
+  state: DefaultRootState,
 ): FlattenedWidgetProps | undefined => {
   const selectedWidgetId = state.ui.widgetDragResize.lastSelectedWidget;
 
@@ -253,7 +269,7 @@ export const getSelectedWidget = (
   return state.entities.canvasWidgets[selectedWidgetId];
 };
 
-export const getFocusedWidget = (state: AppState) => {
+export const getFocusedWidget = (state: DefaultRootState) => {
   const focusedWidgetId = state.ui.widgetDragResize.focusedWidget;
 
   if (!focusedWidgetId) return;

@@ -2,7 +2,7 @@ import { get, isPlainObject } from "lodash";
 import log from "loglevel";
 
 import { EVALUATION_PATH, EVAL_VALUE_PATH } from "utils/DynamicBindingUtils";
-import { EvaluationSubstitutionType } from "entities/DataTree/dataTreeFactory";
+import { EvaluationSubstitutionType } from "constants/EvaluationConstants";
 import type { ValidationResponse } from "constants/WidgetValidation";
 import { ValidationTypes } from "constants/WidgetValidation";
 import type { WidgetProps } from "widgets/BaseWidget";
@@ -343,6 +343,18 @@ export const PropertyPaneContentConfig = [
     sectionName: "Item selection",
     children: [
       {
+        propertyName: "disableSelection",
+        label: "Disable selection",
+        helpText:
+          "Stops items from being selected on click and hides the pointer cursor. Clicks on child widgets still update triggeredItem.",
+        controlType: "SWITCH",
+        isJSConvertible: true,
+        isBindProperty: true,
+        isTriggerProperty: false,
+        defaultValue: false,
+        validation: { type: ValidationTypes.BOOLEAN },
+      },
+      {
         propertyName: "defaultSelectedItem",
         helpText: "Selects Item by default by using a valid data identifier",
         label: "Default selected item",
@@ -392,7 +404,9 @@ export const PropertyPaneContentConfig = [
             currentIndex: 0,
           };
         },
-        dependencies: ["listData"],
+        hidden: (props: ListWidgetProps<WidgetProps>) =>
+          props.disableSelection === true,
+        dependencies: ["listData", "disableSelection"],
       },
     ],
   },

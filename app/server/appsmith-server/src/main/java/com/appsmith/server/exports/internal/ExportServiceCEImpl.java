@@ -186,8 +186,13 @@ public class ExportServiceCEImpl implements ExportServiceCE {
                             .sendEvent(AnalyticsEvents.UNIT_EXECUTION_TIME.getEventName(), user.getUsername(), data)
                             .thenReturn(artifactExchangeJson);
                 })
-                .flatMap(unused -> sendExportArtifactAnalyticsEvent(
-                        artifactBasedExportService, exportingMetaDTO.getArtifactId(), AnalyticsEvents.EXPORT))
+                .flatMap(unused -> {
+                    if (!shouldSendExportAnalyticsEvent(artifactType)) {
+                        return Mono.empty();
+                    }
+                    return sendExportArtifactAnalyticsEvent(
+                            artifactBasedExportService, exportingMetaDTO.getArtifactId(), AnalyticsEvents.EXPORT);
+                })
                 .thenReturn(artifactExchangeJson);
     }
 
@@ -226,11 +231,16 @@ public class ExportServiceCEImpl implements ExportServiceCE {
                 artifactBasedExportService.generateArtifactComponentDependentExportables(
                         exportingMetaDTO, mappedResourcesDTO, exportableArtifactMono, artifactExchangeJson);
 
+        Flux<Void> artifactComponentInterDependentExportedEntities =
+                artifactBasedExportService.updateArtifactComponentDependentExportables(
+                        exportingMetaDTO, mappedResourcesDTO, exportableArtifactMono, artifactExchangeJson);
+
         // The idea with both these methods is that any amount of overriding should take care of whether they want to
         // zip the additional exportables along with these or sequence them, or combine them using any other logic
         return Flux.merge(artifactAgnosticExportedEntities)
                 .thenMany(Flux.merge(artifactSpecificExportedEntities))
                 .thenMany(Flux.merge(artifactComponentDependentExportedEntities))
+                .thenMany(Flux.defer(() -> artifactComponentInterDependentExportedEntities))
                 .then();
     }
 
@@ -306,6 +316,15 @@ public class ExportServiceCEImpl implements ExportServiceCE {
     }
 
     /**
+     * Applications record {@code application.exported} only for a JSON download. EE overrides this
+     * so Git serialization, snapshots, and template publishing do not use that event. Other artifact
+     * types keep the existing export event.
+     */
+    protected boolean shouldSendExportAnalyticsEvent(ArtifactType artifactType) {
+        return true;
+    }
+
+    /**
      * To send analytics event for import and export of application
      *
      * @param artifactBasedExportService : A exportService which is an implementation of contextBasedExportService
@@ -313,7 +332,7 @@ public class ExportServiceCEImpl implements ExportServiceCE {
      * @param event : Analytics Event
      * @return a subclass of  which is imported or exported
      */
-    private Mono<? extends Artifact> sendExportArtifactAnalyticsEvent(
+    protected Mono<? extends Artifact> sendExportArtifactAnalyticsEvent(
             ArtifactBasedExportService<?, ?> artifactBasedExportService,
             String exportableArtifactId,
             AnalyticsEvents event) {

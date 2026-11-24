@@ -35,9 +35,23 @@ app/client/yalc.lock
 .idea
 .fleet/*
 app/client/.fleet/*
+.lens
 
 # Observability related local storage
 utils/observability/tempo-data/*
 
 # Ignore the mongo data backup directory for Mongo to PG migrations
 mongo-data**
+
+# ignore local mongodb data/binary artifacts developers create during local testing
+mongodb*
+!deploy/helm/**/mongodb*
+
+# ignore the task file as it will be different for different project implementations.
+TASKS.md
+
+# Local artifacts from driving a browser against a dev instance (Playwright MCP
+# writes snapshots/console logs here, and screenshots land in the repo root).
+.playwright-mcp/
+card-widget-height-verified.png
+card-bind-flow-dp.png

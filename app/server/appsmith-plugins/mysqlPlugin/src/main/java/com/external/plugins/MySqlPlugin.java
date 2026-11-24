@@ -1,5 +1,6 @@
 package com.external.plugins;
 
+import com.appsmith.external.configurations.connectionpool.ConnectionPoolConfig;
 import com.appsmith.external.datatypes.AppsmithType;
 import com.appsmith.external.dtos.ExecuteActionDTO;
 import com.appsmith.external.exceptions.pluginExceptions.AppsmithPluginError;
@@ -34,6 +35,7 @@ import com.external.plugins.exceptions.MySQLPluginError;
 import com.external.utils.MySqlDatasourceUtils;
 import com.external.utils.MySqlErrorUtils;
 import com.external.utils.QueryUtils;
+import io.micrometer.observation.ObservationRegistry;
 import io.r2dbc.pool.ConnectionPool;
 import io.r2dbc.pool.PoolMetrics;
 import io.r2dbc.spi.Connection;
@@ -47,11 +49,12 @@ import io.r2dbc.spi.RowMetadata;
 import io.r2dbc.spi.Statement;
 import io.r2dbc.spi.ValidationDepth;
 import lombok.extern.slf4j.Slf4j;
-import org.apache.commons.lang.ObjectUtils;
+import org.apache.commons.lang3.ObjectUtils;
 import org.mariadb.r2dbc.message.server.ColumnDefinitionPacket;
 import org.pf4j.Extension;
 import org.pf4j.PluginWrapper;
 import org.springframework.util.StringUtils;
+import reactor.core.observability.micrometer.Micrometer;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Scheduler;
@@ -71,6 +74,8 @@ import java.util.concurrent.TimeoutException;
 import java.util.stream.IntStream;
 
 import static com.appsmith.external.constants.ActionConstants.ACTION_CONFIGURATION_BODY;
+import static com.appsmith.external.constants.spans.ce.ActionSpanCE.CREATE_AND_EXECUTE_QUERY_FROM_CONNECTION;
+import static com.appsmith.external.constants.spans.ce.ActionSpanCE.PLUGIN_EXECUTE_COMMON;
 import static com.appsmith.external.helpers.PluginUtils.MATCH_QUOTED_WORDS_REGEX;
 import static com.appsmith.external.helpers.PluginUtils.getIdenticalColumns;
 import static com.appsmith.external.helpers.PluginUtils.getPSParamLabel;
@@ -161,6 +166,14 @@ public class MySqlPlugin extends BasePlugin {
 
         private static final int PREPARED_STATEMENT_INDEX = 0;
         private final Scheduler scheduler = Schedulers.boundedElastic();
+        private final ConnectionPoolConfig connectionPoolConfig;
+
+        private final ObservationRegistry observationRegistry;
+
+        public MySqlPluginExecutor(ConnectionPoolConfig connectionPoolConfig, ObservationRegistry observationRegistry) {
+            this.connectionPoolConfig = connectionPoolConfig;
+            this.observationRegistry = observationRegistry;
+        }
 
         /**
          * Instead of using the default executeParametrized provided by pluginExecutor, this implementation affords an opportunity
@@ -226,7 +239,10 @@ public class MySqlPlugin extends BasePlugin {
             // In case of non prepared statement, simply do binding replacement and execute
             if (FALSE.equals(isPreparedStatement)) {
                 prepareConfigurationsForExecution(executeActionDTO, actionConfiguration, datasourceConfiguration);
-                return executeCommon(connectionContext, actionConfiguration, FALSE, null, null, requestData);
+                return executeCommon(connectionContext, actionConfiguration, FALSE, null, null, requestData)
+                        .tag("plugin", this.getClass().getName())
+                        .name(PLUGIN_EXECUTE_COMMON)
+                        .tap(Micrometer.observation(observationRegistry));
             }
 
             // This has to be executed as prepared statement
@@ -237,7 +253,15 @@ public class MySqlPlugin extends BasePlugin {
             // Set the query with bindings extracted and replaced with '?' back in config
             actionConfiguration.setBody(updatedQuery);
             return executeCommon(
-                    connectionContext, actionConfiguration, TRUE, mustacheKeysInOrder, executeActionDTO, requestData);
+                            connectionContext,
+                            actionConfiguration,
+                            TRUE,
+                            mustacheKeysInOrder,
+                            executeActionDTO,
+                            requestData)
+                    .tag("plugin", this.getClass().getName())
+                    .name(PLUGIN_EXECUTE_COMMON)
+                    .tap(Micrometer.observation(observationRegistry));
         }
 
         @Override
@@ -335,13 +359,18 @@ public class MySqlPlugin extends BasePlugin {
                                         .flatMapMany(isValid -> {
                                             if (isValid) {
                                                 return createAndExecuteQueryFromConnection(
-                                                        finalQuery,
-                                                        connection,
-                                                        preparedStatement,
-                                                        mustacheValuesInOrder,
-                                                        executeActionDTO,
-                                                        requestData,
-                                                        psParams);
+                                                                finalQuery,
+                                                                connection,
+                                                                preparedStatement,
+                                                                mustacheValuesInOrder,
+                                                                executeActionDTO,
+                                                                requestData,
+                                                                psParams)
+                                                        .tag(
+                                                                "plugin",
+                                                                this.getClass().getName())
+                                                        .name(CREATE_AND_EXECUTE_QUERY_FROM_CONNECTION)
+                                                        .tap(Micrometer.observation(observationRegistry));
                                             }
                                             return Flux.error(new StaleConnectionException(
                                                     CONNECTION_VALIDITY_CHECK_FAILED_ERROR_MSG));
@@ -479,7 +508,13 @@ public class MySqlPlugin extends BasePlugin {
                 Map<String, Object> requestData,
                 Map psParams) {
 
-            Statement connectionStatement = connection.createStatement(query);
+            // The MariaDB R2DBC driver uses server-side preparation for CALL even when
+            // useServerPrepStmts is false. The server cannot prepare a CALL followed by
+            // another statement, so use the driver's parameterized text protocol.
+            // Its CALL detection skips leading SQL comments, which must take the same path here.
+            String statementQuery =
+                    TRUE.equals(preparedStatement) && startsWithCall(query) ? "/*text*/ " + query : query;
+            Statement connectionStatement = connection.createStatement(statementQuery);
             if (FALSE.equals(preparedStatement) || mustacheValuesInOrder == null || mustacheValuesInOrder.isEmpty()) {
                 return Flux.from(connectionStatement.execute());
             }
@@ -505,6 +540,31 @@ public class MySqlPlugin extends BasePlugin {
             }
 
             return Flux.from(connectionStatement.execute());
+        }
+
+        private boolean startsWithCall(String query) {
+            int index = 0;
+            while (index < query.length()) {
+                if (Character.isWhitespace(query.charAt(index))) {
+                    index++;
+                } else if (query.startsWith("/*", index)) {
+                    int commentEnd = query.indexOf("*/", index + 2);
+                    if (commentEnd < 0) {
+                        return false;
+                    }
+                    index = commentEnd + 2;
+                } else if (query.charAt(index) == '#') {
+                    while (index < query.length() && query.charAt(index) != '\n' && query.charAt(index) != '\r') {
+                        index++;
+                    }
+                } else {
+                    break;
+                }
+            }
+
+            return query.regionMatches(true, index, "CALL", 0, 4)
+                    && index + 4 < query.length()
+                    && Character.isWhitespace(query.charAt(index + 4));
         }
 
         @Override
@@ -663,18 +723,54 @@ public class MySqlPlugin extends BasePlugin {
         public Mono<ConnectionContext<ConnectionPool>> datasourceCreate(
                 DatasourceConfiguration datasourceConfiguration) {
             log.debug(Thread.currentThread().getName() + ": datasourceCreate() called for MySQL plugin.");
-            return Mono.just(datasourceConfiguration).flatMap(ignore -> {
-                ConnectionContext<ConnectionPool> connectionContext;
-                try {
-                    connectionContext = getConnectionContext(
-                            datasourceConfiguration, CONNECTION_METHOD_INDEX, MYSQL_DEFAULT_PORT, ConnectionPool.class);
-                    ConnectionPool pool = getNewConnectionPool(datasourceConfiguration, connectionContext);
-                    connectionContext.setConnection(pool);
-                    return Mono.just(connectionContext);
-                } catch (AppsmithPluginException e) {
-                    return Mono.error(e);
-                }
-            });
+            // The config lookup runs first so that getConnectionContext - which opens the SSH tunnel (TCP connect,
+            // key auth, local bind) when the connection method is SSH - is the last, blocking step, on the plugin
+            // scheduler. No reactive step sits between opening the tunnel and delivering it, so a config error can
+            // no longer strand an open tunnel; a cancellation that discards the emitted context closes it.
+            return connectionPoolConfig
+                    .getMaxConnectionPoolSize()
+                    .flatMap(maxPoolSize -> Mono.fromCallable(() -> {
+                                ConnectionContext<ConnectionPool> connectionContext = getConnectionContext(
+                                        datasourceConfiguration,
+                                        CONNECTION_METHOD_INDEX,
+                                        MYSQL_DEFAULT_PORT,
+                                        ConnectionPool.class);
+                                try {
+                                    ConnectionPool pool = getNewConnectionPool(
+                                            datasourceConfiguration, connectionContext, maxPoolSize);
+                                    connectionContext.setConnection(pool);
+                                } catch (RuntimeException e) {
+                                    // The tunnel is already open but no context has been emitted yet, so the
+                                    // doOnDiscard below cannot see it - close it here before propagating.
+                                    closeSshTunnel(connectionContext);
+                                    throw e;
+                                }
+                                return connectionContext;
+                            })
+                            .subscribeOn(scheduler))
+                    .doOnDiscard(ConnectionContext.class, context -> closeSshTunnel(context));
+        }
+
+        /**
+         * Closes the SSH tunnel held by the given context, if any: forwarder socket, SSH client, forwarder thread.
+         */
+        private static void closeSshTunnel(ConnectionContext<?> connectionContext) {
+            SSHTunnelContext sshTunnelContext = connectionContext.getSshTunnelContext();
+            if (sshTunnelContext == null) {
+                return;
+            }
+            try {
+                /**
+                 * IMO, order of these operations is important here (not sure), this particular order
+                 * seems safe. e.g. if the thread is stopped first then there may be some issues with
+                 * closing the server socket or disconnecting client.
+                 */
+                sshTunnelContext.getServerSocket().close();
+                sshTunnelContext.getSshClient().disconnect();
+                sshTunnelContext.getThread().interrupt(); // Gracefully interrupt the thread
+            } catch (IOException e) {
+                log.error("Failed to destroy SSH tunnel context: " + e.getMessage());
+            }
         }
 
         @Override
@@ -682,21 +778,7 @@ public class MySqlPlugin extends BasePlugin {
             log.debug(Thread.currentThread().getName() + ": datasourceDestroy() called for MySQL plugin.");
             Mono.just(connectionContext)
                     .flatMap(ignore -> {
-                        SSHTunnelContext sshTunnelContext = connectionContext.getSshTunnelContext();
-                        if (sshTunnelContext != null) {
-                            try {
-                                /**
-                                 * IMO, order of these operations is important here (not sure), this particular order
-                                 * seems safe. e.g. if the thread is stopped first then there may be some issues with
-                                 * closing the server socket or disconnecting client.
-                                 */
-                                sshTunnelContext.getServerSocket().close();
-                                sshTunnelContext.getSshClient().disconnect();
-                                sshTunnelContext.getThread().interrupt(); // Gracefully interrupt the thread
-                            } catch (IOException e) {
-                                log.error("Failed to destroy SSH tunnel context: " + e.getMessage());
-                            }
-                        }
+                        closeSshTunnel(connectionContext);
                         return Mono.empty();
                     })
                     .subscribeOn(scheduler)

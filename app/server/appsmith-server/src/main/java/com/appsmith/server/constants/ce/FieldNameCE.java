@@ -4,9 +4,6 @@ public class FieldNameCE {
     public static final String EMAIL = "email";
     public static final String PASSWORD = "password";
 
-    @Deprecated
-    public static final String ORGANIZATION_ID = "organizationId";
-
     public static final String WORKSPACE_ID = "workspaceId";
     public static final String DATASOURCE_ID = "datasourceId";
     public static final String DELETED = "deleted";
@@ -23,6 +20,7 @@ public class FieldNameCE {
     public static final String NAME = "name";
     public static final String PAGE_ID = "pageId";
     public static final String LAYOUT_ID = "layoutId";
+    public static final String EXPECTED_REVISION = "expectedRevision";
     public static final String APPLICATION_ID = "applicationId";
     public static final String SOURCE_APPLICATION_ID = "sourceApplicationId";
     public static final String PLUGIN_ID = "pluginId";
@@ -74,6 +72,7 @@ public class FieldNameCE {
     public static final String ACTIONS = "actions";
     public static final String ASSET = "asset";
     public static final String APPLICATION = "application";
+    public static final String ARTIFACT = "artifact";
     public static final String SOURCE_APPLICATION = "sourceApplication";
     public static final String COMMENT = "comment";
     public static final String COMMENT_THREAD = "commentThread";
@@ -143,6 +142,12 @@ public class FieldNameCE {
     public static final String DEFAULT_PERMISSION_GROUPS = "defaultPermissionGroups";
     public static final String PUBLIC_PERMISSION_GROUP = "publicPermissionGroup";
     public static final String EVENT_DATA = "eventData";
+    public static final String PARTIAL_RESOURCE_COUNTS = "partialResourceCounts";
+    public static final String ACTION_COUNT = "actionCount";
+    public static final String ACTION_COLLECTION_COUNT = "actionCollectionCount";
+    public static final String DATASOURCE_COUNT = "datasourceCount";
+    public static final String JS_LIB_COUNT = "jsLibCount";
+    public static final String HAS_WIDGETS = "hasWidgets";
     public static final String CLOUD_HOSTED_EXTRA_PROPS = "cloudHostedExtraProps";
     public static final String MODE_OF_LOGIN = "modeOfLogin";
     public static final String FORM_LOGIN = "FormLogin";
@@ -163,7 +168,21 @@ public class FieldNameCE {
 
     // this key will present in the analytics as a diff b/w server and user invoked flows
     public static final String IS_DATASOURCE_UPDATE_USER_INVOKED_KEY = "isDatasourceUpdateUserInvoked";
+    public static final String CONNECTION_CONFIGURATION_CHANGED = "connectionConfigurationChanged";
+    public static final String CREDENTIAL_SOURCE = "credentialSource";
+    public static final String CHANGED_CONNECTION_SETTING_GROUPS = "changedConnectionSettingGroups";
+    public static final String CONNECTION_TEST_RESULT = "connectionTestResult";
+    public static final String CONNECTION_TEST_RESULT_SUCCEEDED = "succeeded";
+    public static final String CONNECTION_TEST_RESULT_FAILED = "failed";
+    public static final String CONNECTION_TEST_RESULT_CREDENTIALS_REQUIRED = "credentials_required";
     public static final String UPDATED_INSTANCE_SETTINGS = "updatedInstanceSettings";
+    /**
+     * The internal marker the loopback MCP Node service stamps on every /api/v1 request it makes on behalf of an
+     * mcp_ token. Its value must constant-time-equal APPSMITH_MCP_INTERNAL_SECRET for the mcp_ bearer to
+     * authenticate. Caddy strips any inbound copy of this header on ingress, so an external client cannot forge it.
+     */
+    public static final String INTERNAL_MARKER = "X-Appsmith-Mcp-Internal";
+
     public static final String ACTION_EXECUTION_QUERY = "actionExecutionQuery";
     public static final String HEADER_ENVIRONMENT_ID = "X-Appsmith-EnvironmentId";
     public static final String ENVIRONMENT_ID = "environmentId";
@@ -185,7 +204,7 @@ public class FieldNameCE {
     public static final String ENVIRONMENT = "environment";
     public static final String UNUSED_ENVIRONMENT_ID = "unused_env";
 
-    public static final String TENANT = "tenant";
+    public static final String ORGANIZATION = "organization";
 
     public static final String SUFFIX_USER_MANAGEMENT_ROLE = " User Management";
 
@@ -199,6 +218,7 @@ public class FieldNameCE {
 
     public static final String REMOTE_PLUGINS = "remotePlugins";
     public static final String INSTANCE_ID = "instanceId";
+    public static final String TENANT_ID = "tenantId";
     public static final String IP_ADDRESS = "ipAddress";
     public static final String VERSION = "version";
     public static final String PUBLISHED = "published";
@@ -206,4 +226,10 @@ public class FieldNameCE {
     public static final String ARTIFACT_CONTEXT = "artifactContext";
     public static final String ARTIFACT_ID = "artifactId";
     public static final String BODY = "body";
+    public static final String ORGANIZATION_ID = "organizationId";
+    public static final String NONE = "none";
+    public static final String ORGANIZATION_ADMINISTRATOR_ROLE = "Organization Administrator Role";
+    public static final String INSTANCE_VARIABLES = "instanceVariables";
+
+    public static final String ACTION_CONFIGURATION_RUN_BEHAVIOUR = "runBehaviour";
 }

@@ -1,4 +1,4 @@
-import type { AppState } from "ee/reducers";
+import type { DefaultRootState } from "react-redux";
 import type { ReduxAction } from "actions/ReduxActionTypes";
 import {
   ReduxActionErrorTypes,
@@ -57,10 +57,7 @@ import type {
   UpdateWidgetNameResponse,
 } from "api/PageApi";
 import PageApi from "api/PageApi";
-import type {
-  CanvasWidgetsReduxState,
-  FlattenedWidgetProps,
-} from "reducers/entityReducers/canvasWidgetsReducer";
+import type { CanvasWidgetsReduxState } from "ee/reducers/entityReducers/canvasWidgetsReducer";
 import { all, call, put, select, take } from "redux-saga/effects";
 import history from "utils/history";
 import { isNameValid } from "utils/helpers";
@@ -88,8 +85,8 @@ import {
   fetchActionsForPageError,
   fetchActionsForPageSuccess,
   fetchActionsForView,
-  setActionsToExecuteOnPageLoad,
-  setJSActionsToExecuteOnPageLoad,
+  setActionsRunBehaviour,
+  setJSActionsRunBehaviour,
 } from "actions/pluginActionActions";
 import type { UrlDataState } from "reducers/entityReducers/appReducer";
 import { APP_MODE } from "entities/App";
@@ -97,7 +94,6 @@ import { clearEvalCache } from "../../sagas/EvaluationsSaga";
 import { getQueryParams } from "utils/URLUtils";
 import log from "loglevel";
 import { migrateIncorrectDynamicBindingPathLists } from "utils/migrations/IncorrectDynamicBindingPathLists";
-import * as Sentry from "@sentry/react";
 import { ERROR_CODES } from "ee/constants/ApiConstants";
 import AnalyticsUtil from "ee/utils/AnalyticsUtil";
 import DEFAULT_TEMPLATE from "templates/default";
@@ -127,9 +123,9 @@ import { getPageList } from "ee/selectors/entitiesSelector";
 import { setPreviewModeAction } from "actions/editorActions";
 import { SelectionRequestType } from "sagas/WidgetSelectUtils";
 import { toast } from "@appsmith/ads";
-import type { MainCanvasReduxState } from "reducers/uiReducers/mainCanvasReducer";
+import type { MainCanvasReduxState } from "ee/reducers/uiReducers/mainCanvasReducer";
 import { UserCancelledActionExecutionError } from "sagas/ActionExecution/errorUtils";
-import { getInstanceId } from "ee/selectors/tenantSelectors";
+import { getInstanceId } from "ee/selectors/organizationSelectors";
 import { MAIN_CONTAINER_WIDGET_ID } from "constants/WidgetConstants";
 import type { WidgetProps } from "widgets/BaseWidget";
 import { nestDSL, flattenDSL, LATEST_DSL_VERSION } from "@shared/dsl";
@@ -139,7 +135,7 @@ import { isGACEnabled } from "ee/utils/planHelpers";
 import { getHasManagePagePermission } from "ee/utils/BusinessFeatures/permissionPageHelpers";
 import { getLayoutSystemType } from "selectors/layoutSystemSelectors";
 import { getLayoutSystemDSLTransformer } from "layoutSystems/common/utils/LayoutSystemDSLTransformer";
-import type { DSLWidget } from "WidgetProvider/constants";
+import type { DSLWidget } from "WidgetProvider/types";
 import type { FeatureFlags } from "ee/entities/FeatureFlag";
 import { getCurrentWorkspaceId } from "ee/selectors/selectedWorkspaceSelectors";
 import { ActionExecutionContext } from "entities/Action";
@@ -152,6 +148,21 @@ import {
   selectCombinedPreviewMode,
   selectGitApplicationCurrentBranch,
 } from "selectors/gitModSelectors";
+import { appsmithTelemetry } from "instrumentation";
+import {
+  getLayoutSavePayload,
+  generateUIModuleInstanceSaga,
+} from "ee/sagas/helpers";
+import { apiFailureResponseInterceptor } from "api/interceptors/response";
+import type { AxiosError } from "axios";
+import { handleFetchApplicationError } from "./ApplicationSagas";
+import { getCurrentUser } from "actions/authActions";
+import { getIsFirstPageLoad } from "selectors/evaluationSelectors";
+
+export interface HandleWidgetNameUpdatePayload {
+  newName: string;
+  widgetName: string;
+}
 
 export const checkIfMigrationIsNeeded = (
   fetchPageResponse?: FetchPageResponse,
@@ -165,7 +176,7 @@ export const checkIfMigrationIsNeeded = (
 
 export const WidgetTypes = WidgetFactory.widgetTypes;
 
-export const getWidgetName = (state: AppState, widgetId: string) =>
+export const getWidgetName = (state: DefaultRootState, widgetId: string) =>
   state.entities.canvasWidgets[widgetId];
 
 //Method to load the default page if current page is not found
@@ -264,6 +275,8 @@ export function* handleFetchedPage({
     yield put(fetchSnapshotDetailsAction());
     // set current page
     yield put(updateCurrentPage(pageId, pageSlug, pagePermissions));
+    // Generate UI module instances when page DSL is loaded
+    yield call(generateUIModuleInstanceSaga);
     // dispatch fetch page success
     yield put(fetchPageSuccess());
 
@@ -358,8 +371,14 @@ export function* postFetchedPublishedPage(
       response.data.userPermissions,
     ),
   );
-  // Clear any existing caches
-  yield call(clearEvalCache);
+  const isFirstLoad: boolean = yield select(getIsFirstPageLoad);
+
+  // Only the first page load we defer the clearing of caches
+  if (!isFirstLoad) {
+    // Clear any existing caches
+    yield call(clearEvalCache);
+  }
+
   // Set url params
   yield call(setDataUrl);
 
@@ -400,11 +419,13 @@ export function* fetchPublishedPageResourcesSaga(
   action: ReduxAction<FetchPublishedPageResourcesPayload>,
 ) {
   try {
-    const { basePageId, pageId } = action.payload;
+    const { basePageId, branch: branchName, pageId } = action.payload;
 
-    const params = { defaultPageId: basePageId };
     const initConsolidatedApiResponse: ApiResponse<InitConsolidatedApi> =
-      yield ConsolidatedPageLoadApi.getConsolidatedPageLoadDataView(params);
+      yield ConsolidatedPageLoadApi.getConsolidatedPageLoadDataView({
+        defaultPageId: basePageId,
+        branchName,
+      });
 
     const isValidResponse: boolean = yield validateResponse(
       initConsolidatedApiResponse,
@@ -416,13 +437,35 @@ export function* fetchPublishedPageResourcesSaga(
       // We need to recall consolidated view API in order to fetch actions when page is switched
       // As in the first call only actions of the current page are fetched
       // In future, we can reuse this saga to fetch other resources of the page like actionCollections etc
-      const { publishedActions } = response;
+      const { pageWithMigratedDsl, publishedActions, userProfile } = response;
 
-      yield call(
-        postFetchedPublishedPage,
-        response.pageWithMigratedDsl,
-        pageId,
-      );
+      // Update the current user in the redux store. If the session has expired between page switch, the user profile will be updated
+      yield put(getCurrentUser(userProfile));
+
+      // If the pageWithMigratedDsl has an error, we need to intercept the error and return
+      // This makes sure that the user is navigated to the login page if page is not found
+      if (pageWithMigratedDsl?.responseMeta?.error) {
+        const { responseMeta } = pageWithMigratedDsl;
+        const { status } = responseMeta;
+
+        // apiFailureResponseInterceptor throws an error if the response is not valid
+        // this error needs to be caught and handled by handleFetchApplicationError
+        yield apiFailureResponseInterceptor({
+          response: {
+            data: {
+              responseMeta,
+            },
+            status,
+          },
+        } as AxiosError<ApiResponse>);
+      }
+
+      yield call(postFetchedPublishedPage, pageWithMigratedDsl, pageId);
+      // In view mode, the fetchPublishedPageResourcesSaga is called only
+      // when page is switched. So, we need to generate UI module instances.
+      // Whereas, setupPublishedPageSaga gets called on first time app load in view mode.
+      // This is differently done for some reason when compared to edit mode.
+      yield call(generateUIModuleInstanceSaga);
 
       // NOTE: fetchActionsForView is used here to update publishedActions in redux store and not to fetch actions again
       yield put(fetchActionsForView({ applicationId: "", publishedActions }));
@@ -432,6 +475,8 @@ export function* fetchPublishedPageResourcesSaga(
       });
     }
   } catch (error) {
+    // Handle the error thrown by apiFailureResponseInterceptor
+    yield call(handleFetchApplicationError, error);
     yield put({
       type: ReduxActionErrorTypes.FETCH_PUBLISHED_PAGE_RESOURCES_ERROR,
       payload: {
@@ -472,7 +517,8 @@ export function* savePageSaga(action: ReduxAction<{ isRetry?: boolean }>) {
 
   if (!editorConfigs) return;
 
-  const savePageRequest: SavePageRequest = getLayoutSavePayload(
+  const savePageRequest: SavePageRequest = yield call(
+    getLayoutSavePayload,
     widgets,
     editorConfigs,
   );
@@ -529,7 +575,7 @@ export function* savePageSaga(action: ReduxAction<{ isRetry?: boolean }>) {
         );
 
         if (actions && actions.length) {
-          yield put(setActionsToExecuteOnPageLoad(actions));
+          yield put(setActionsRunBehaviour(actions));
         }
 
         const jsActions = actionUpdates.filter((d) =>
@@ -537,7 +583,7 @@ export function* savePageSaga(action: ReduxAction<{ isRetry?: boolean }>) {
         );
 
         if (jsActions && jsActions.length) {
-          yield put(setJSActionsToExecuteOnPageLoad(jsActions));
+          yield put(setJSActionsRunBehaviour(jsActions));
         }
       }
 
@@ -568,7 +614,12 @@ export function* savePageSaga(action: ReduxAction<{ isRetry?: boolean }>) {
       const { message } = incorrectBindingError;
 
       if (isRetry) {
-        Sentry.captureException(new Error("Failed to correct binding paths"));
+        appsmithTelemetry.captureException(
+          new Error("Failed to correct binding paths"),
+          {
+            errorName: "PageSagas_BindingPathCorrection",
+          },
+        );
         yield put({
           type: ReduxActionErrorTypes.FAILED_CORRECTING_BINDING_PATHS,
           payload: {
@@ -619,22 +670,6 @@ export function* saveAllPagesSaga(pageLayouts: PageLayoutsRequest[]) {
   } catch (error) {
     throw error;
   }
-}
-
-export function getLayoutSavePayload(
-  widgets: {
-    [widgetId: string]: FlattenedWidgetProps;
-  },
-  // TODO: Fix this the next time the file is edited
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  editorConfigs: any,
-) {
-  const nestedDSL = nestDSL(widgets, Object.keys(widgets)[0]);
-
-  return {
-    ...editorConfigs,
-    dsl: nestedDSL,
-  };
 }
 
 export function* saveLayoutSaga(action: ReduxAction<{ isRetry?: boolean }>) {
@@ -924,13 +959,23 @@ export function* clonePageSaga(
       }
 
       yield put(selectWidgetInitAction(SelectionRequestType.Empty));
-      yield put(
-        fetchAllPageEntityCompletion([
-          executePageLoadActions(ActionExecutionContext.CLONE_PAGE),
-        ]),
-      );
 
-      // TODO: Update URL params here.
+      // Note: We intentionally do NOT dispatch executePageLoadActions here.
+      //
+      // state.ui.editor.pageActions (the slice executePageLoadActionsSaga reads via
+      // getLayoutOnLoadActions) is only updated by INIT_CANVAS_LAYOUT, which fires
+      // for the cloned page later, from handleFetchedPage during the post-clone
+      // navigation. Dispatching it here would race against the source page's
+      // pageActions slice and execute the WRONG page's onPageLoad actions
+      // (the source page's, not the cloned page's). The downstream side effect was
+      // that the cloned page's bound widgets (e.g. a Table reading {{Query1.data}})
+      // would observe a transient empty data tree slot from the cancelled source
+      // saga and remain stuck in a loading state until a manual browser refresh.
+      //
+      // The post-navigation handleFetchedPage path (PageSagas.tsx -> if (!isFirstLoad))
+      // already triggers executePageLoadActions() against the freshly-loaded cloned
+      // page state, so removing this dispatch keeps the legitimate onPageLoad run
+      // and eliminates the racy duplicate.
 
       if (!clonePageAction.payload.blockNavigation) {
         history.push(
@@ -950,6 +995,96 @@ export function* clonePageSaga(
   }
 }
 
+export class WidgetNameUpdateExtension {
+  // Singleton instance
+  private static instance = new WidgetNameUpdateExtension();
+
+  // The extension function storage
+  private extensionFunction:
+    | ((params: HandleWidgetNameUpdatePayload) => Generator)
+    | null = null;
+
+  // Private constructor
+  private constructor() {}
+
+  // Get the instance
+  static getInstance() {
+    return this.instance;
+  }
+
+  // Set the extension function
+  setExtension(fn: (params: HandleWidgetNameUpdatePayload) => Generator) {
+    this.extensionFunction = fn;
+  }
+
+  // Get the extension function
+  getExtension() {
+    return this.extensionFunction;
+  }
+}
+
+export function* updateWidgetNameAPISaga(
+  requestParams: UpdateWidgetNameRequest,
+) {
+  const response: UpdateWidgetNameResponse = yield call(
+    PageApi.updateWidgetName,
+    requestParams,
+  );
+
+  const isValidResponse: boolean = yield validateResponse(response);
+
+  return { response, isValidResponse };
+}
+
+export function* handleWidgetNameUpdateDefault(
+  params: HandleWidgetNameUpdatePayload,
+) {
+  const { newName, widgetName } = params;
+
+  const layoutId: string | undefined = yield select(getCurrentLayoutId);
+  const pageId: string | undefined = yield select(getCurrentPageId);
+
+  const request: UpdateWidgetNameRequest = {
+    newName: newName,
+    oldName: widgetName,
+    pageId,
+    // @ts-expect-error: layoutId can be undefined
+    layoutId,
+  };
+  const { isValidResponse, response } = yield call(
+    updateWidgetNameAPISaga,
+    request,
+  );
+
+  if (isValidResponse) {
+    // @ts-expect-error: pageId can be undefined
+    yield updateCanvasWithDSL(response.data, pageId, layoutId);
+    yield put(updateWidgetNameSuccess());
+    // Add this to the page DSLs for entity explorer
+    yield put({
+      type: ReduxActionTypes.FETCH_PAGE_DSL_SUCCESS,
+      payload: {
+        pageId: pageId,
+        dsl: response.data.dsl,
+        layoutId,
+      },
+    });
+    checkAndLogErrorsIfCyclicDependency(
+      (response.data as PageLayout).layoutOnLoadActionErrors,
+    );
+  }
+}
+
+export function* handleWidgetNameUpdate(params: HandleWidgetNameUpdatePayload) {
+  const extension = WidgetNameUpdateExtension.getInstance().getExtension();
+
+  if (extension) {
+    yield call(extension, params);
+  } else {
+    yield call(handleWidgetNameUpdateDefault, params);
+  }
+}
+
 /**
  * this saga do two things
  *
@@ -963,8 +1098,6 @@ export function* updateWidgetNameSaga(
 ) {
   try {
     const { widgetName } = yield select(getWidgetName, action.payload.id);
-    const layoutId: string | undefined = yield select(getCurrentLayoutId);
-    const pageId: string | undefined = yield select(getCurrentPageId);
     const getUsedNames: Record<string, true> = yield select(
       getUsedActionNames,
       "",
@@ -979,7 +1112,7 @@ export function* updateWidgetNameSaga(
         widgetId: string;
         label: string;
       }
-    > = yield select((state: AppState) => {
+    > = yield select((state: DefaultRootState) => {
       // Check if this widget exists in the canvas widgets
       if (state.entities.canvasWidgets.hasOwnProperty(action.payload.id)) {
         // If it does assign it to a variable
@@ -1054,37 +1187,10 @@ export function* updateWidgetNameSaga(
       // check if name is not conflicting with any
       // existing entity/api/queries/reserved words
       if (isNameValid(action.payload.newName, getUsedNames)) {
-        const request: UpdateWidgetNameRequest = {
+        yield call(handleWidgetNameUpdate, {
           newName: action.payload.newName,
-          oldName: widgetName,
-          // @ts-expect-error: pageId can be undefined
-          pageId,
-          // @ts-expect-error: layoutId can be undefined
-          layoutId,
-        };
-        const response: UpdateWidgetNameResponse = yield call(
-          PageApi.updateWidgetName,
-          request,
-        );
-        const isValidResponse: boolean = yield validateResponse(response);
-
-        if (isValidResponse) {
-          // @ts-expect-error: pageId can be undefined
-          yield updateCanvasWithDSL(response.data, pageId, layoutId);
-          yield put(updateWidgetNameSuccess());
-          // Add this to the page DSLs for entity explorer
-          yield put({
-            type: ReduxActionTypes.FETCH_PAGE_DSL_SUCCESS,
-            payload: {
-              pageId: pageId,
-              dsl: response.data.dsl,
-              layoutId,
-            },
-          });
-          checkAndLogErrorsIfCyclicDependency(
-            (response.data as PageLayout).layoutOnLoadActionErrors,
-          );
-        }
+          widgetName,
+        });
       } else {
         yield put({
           type: ReduxActionErrorTypes.UPDATE_WIDGET_NAME_ERROR,
@@ -1214,7 +1320,7 @@ export function* populatePageDSLsSaga(action?: {
   const { pagesWithMigratedDsl } = action?.payload || {};
 
   try {
-    const pageIds: string[] = yield select((state: AppState) =>
+    const pageIds: string[] = yield select((state: DefaultRootState) =>
       state.entities.pageList.pages.map((page: Page) => page.pageId),
     );
     const pageDSLs: unknown = yield all(
@@ -1462,6 +1568,92 @@ export function* setupPublishedPageSaga(
     yield put({
       type: ReduxActionErrorTypes.SETUP_PUBLISHED_PAGE_ERROR,
       payload: { error },
+    });
+  }
+}
+
+export function* persistPageSlugSaga(
+  action: ReduxAction<{ pageId: string; slug: string }>,
+) {
+  try {
+    const request = {
+      branchedPageId: action.payload.pageId,
+      uniquePageSlug: action.payload.slug,
+    };
+
+    const response: ApiResponse = yield call(PageApi.persistPageSlug, request);
+
+    const isValidResponse: boolean = yield validateResponse(response);
+
+    if (isValidResponse) {
+      yield put({
+        type: ReduxActionTypes.PERSIST_PAGE_SLUG_SUCCESS,
+        payload: {
+          pageId: action.payload.pageId,
+          slug: action.payload.slug,
+        },
+      });
+    }
+  } catch (error) {
+    yield put({
+      type: ReduxActionTypes.PERSIST_PAGE_SLUG_ERROR,
+      payload: {
+        error,
+        pageId: action.payload.pageId,
+        slug: action.payload.slug,
+      },
+    });
+  }
+}
+
+interface ValidatePageSlugResponse {
+  uniquePageSlug: string;
+  isUniqueSlugAvailable: boolean;
+}
+
+export function* validatePageSlugSaga(
+  action: ReduxAction<{ pageId: string; slug: string }>,
+) {
+  try {
+    const { pageId, slug } = action.payload;
+
+    const response: ApiResponse<ValidatePageSlugResponse> = yield call(
+      PageApi.validatePageSlug,
+      pageId,
+      slug,
+    );
+
+    const isValidResponse: boolean = yield validateResponse(response);
+
+    if (isValidResponse) {
+      const { isUniqueSlugAvailable } = response.data;
+
+      if (isUniqueSlugAvailable) {
+        yield put({
+          type: ReduxActionTypes.VALIDATE_PAGE_SLUG_SUCCESS,
+          payload: {
+            slug,
+            isValid: true,
+          },
+        });
+      } else {
+        yield put({
+          type: ReduxActionTypes.VALIDATE_PAGE_SLUG_ERROR,
+          payload: {
+            slug,
+            isValid: false,
+          },
+        });
+      }
+    }
+  } catch (error) {
+    yield put({
+      type: ReduxActionTypes.VALIDATE_PAGE_SLUG_ERROR,
+      payload: {
+        error,
+        slug: action.payload.slug,
+        isValid: false,
+      },
     });
   }
 }

@@ -5,10 +5,20 @@ on:
   workflow_dispatch:
   workflow_call:
     inputs:
+      branch:
+        description: "Branch to checkout when pr is 0 (must match client/server/rts builds)"
+        required: false
+        type: string
+        default: ""
       pr:
         description: "This is the PR number in case the workflow is being called in a pull request"
         required: false
         type: number
+      checkout-ref:
+        description: "Immutable commit SHA to checkout for an approved external PR"
+        required: false
+        type: string
+        default: ""
 
 jobs:
   build-docker:
@@ -26,15 +36,27 @@ jobs:
     steps:
       # Check out merge commit
       - name: Fork based /ok-to-test checkout
-        if: inputs.pr != 0
+        if: inputs.checkout-ref == '' && inputs.pr != 0
         uses: actions/checkout@v4
         with:
           ref: "refs/pull/${{ inputs.pr }}/merge"
 
       # Checkout the code in the current branch in case the workflow is called because of a branch push event
       - name: Checkout the head commit of the branch
-        if: inputs.pr == 0
+        if: inputs.checkout-ref == '' && inputs.pr == 0 && inputs.branch == ''
         uses: actions/checkout@v4
+
+      - name: Checkout the specified branch
+        if: inputs.checkout-ref == '' && inputs.pr == 0 && inputs.branch != ''
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.branch }}
+
+      - name: Checkout the approved immutable commit
+        if: inputs.checkout-ref != ''
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.checkout-ref }}
 
       - name: Download the client build artifact
         if: steps.run_result.outputs.run_result != 'success'
@@ -56,6 +78,19 @@ jobs:
           name: server-build
           path: app/server/dist/
 
+      - name: Download the MCP build artifact
+        if: steps.run_result.outputs.run_result != 'success'
+        uses: actions/download-artifact@v4
+        with:
+          name: mcp-dist
+          path: app/client/packages/mcp/dist
+
+      - name: Un-tar the MCP folder
+        run: |
+          tar -xvf app/client/packages/mcp/dist/mcp-dist.tar -C app/client/packages/mcp/
+          echo "Cleaning up the MCP tar files"
+          rm app/client/packages/mcp/dist/mcp-dist.tar
+
       - name: Download the rts build artifact
         if: steps.run_result.outputs.run_result != 'success'
         uses: actions/download-artifact@v4
@@ -70,58 +105,42 @@ jobs:
           rm app/client/packages/rts/dist/rts-dist.tar
 
       - name: Generate info.json
+        id: info_json
         run: |
-          if [[ -f scripts/generate_info_json.sh ]]; then
-            scripts/generate_info_json.sh
-          fi
-      
+          scripts/generate_info_json.sh
+
       - name: Place server artifacts-es
         env:
           EDITION: ${{ vars.EDITION }}
         run: |
           scripts/prepare_server_artifacts.sh
 
-      - name: Set base image tag
-        id: set_base_tag
-        run: |
-          if [[ "${{ inputs.pr }}" != 0 || "${{ github.ref_name }}" != master ]]; then
-            base_tag=release
-          else
-            base_tag=nightly
-          fi
-          echo "base_tag=$base_tag" >> $GITHUB_OUTPUT
-
-
       # We don't use Depot Docker builds because it's faster for local Docker images to be built locally.
       # It's slower and more expensive to build these Docker images on Depot and download it back to the CI node.
       - name: Build docker image
         if: steps.run_result.outputs.run_result != 'success'
         working-directory: "."
+        env:
+          BASE_IMAGE: ${{ vars.DOCKER_HUB_ORGANIZATION }}/base-${{ vars.EDITION }}:release
         run: |
           set -o xtrace
           declare -a args
-          base_tag=${{ steps.set_base_tag.outputs.base_tag }}
-          if [[ base_tag != 'nightly' ]]; then
-            args+=(--build-arg "APPSMITH_CLOUD_SERVICES_BASE_URL=https://release-cs.appsmith.com")
-          fi
-          args+=(--build-arg "BASE=${{ vars.DOCKER_HUB_ORGANIZATION }}/base-${{ vars.EDITION }}:$base_tag")
+          args+=(--build-arg "BASE=$BASE_IMAGE")
+          args+=(--label "org.opencontainers.image.revision=${{ steps.info_json.outputs.commitSha }}")
+          args+=(--label "org.opencontainers.image.source=${{ steps.info_json.outputs.repo }}")
+          args+=(--label "org.opencontainers.image.version=${{ steps.info_json.outputs.version }}")
           docker build -t cicontainer "${args[@]}" .
 
-      # Saving the docker image to tar file
-      - name: Save Docker image to tar file
+      # Push the SUT image to GHCR so test jobs can pull it with layer-level
+      # parallelism instead of restoring a single-blob tarball from the Actions
+      # cache. Old run-<id> tags are pruned by ghcr-citest-retention.yml.
+      - name: Push docker image to GHCR
+        env:
+          GHCR_IMAGE: ghcr.io/${{ github.repository }}-citest:run-${{ github.run_id }}
         run: |
-          docker image ls --all --no-trunc --format '{{.Repository}},{{.ID}}' \
-            | grep -v cicontainer \
-            | cut -d, -f2 \
-            | xargs -r docker rmi || true
-          docker save cicontainer -o cicontainer.tar
-          gzip cicontainer.tar
-
-      - name: Cache docker image
-        uses: actions/cache/save@v4
-        with:
-          path: cicontainer.tar.gz
-          key: docker-image-${{github.run_id}}
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          docker tag cicontainer "$GHCR_IMAGE"
+          docker push "$GHCR_IMAGE"
 
       - name: Save the status of the run
         run: echo "run_result=success" >> $GITHUB_OUTPUT > ~/run_result

@@ -1,4 +1,3 @@
-/* eslint-disable @typescript-eslint/no-non-null-assertion */
 import { all, call, fork, put, select, take } from "redux-saga/effects";
 import {
   change,
@@ -35,6 +34,7 @@ import {
   getDatasources,
   getDatasourcesGroupedByPluginCategory,
   getDatasourcesUsedInApplicationByActions,
+  getHiddenPluginIds,
   getEditorConfig,
   getEntityExplorerDatasources,
   getGenerateCRUDEnabledPluginMap,
@@ -53,6 +53,7 @@ import {
   changeDatasource,
   createDatasourceSuccess,
   createTempDatasourceFromForm,
+  deleteTempDSFromDraft,
   fetchDatasourceStructure,
   removeTempDatasource,
   resetDefaultKeyValPairFlag,
@@ -62,8 +63,8 @@ import {
   updateDatasourceSuccess,
 } from "actions/datasourceActions";
 import type { ApiResponse } from "api/ApiResponses";
-import type { CreateDatasourceConfig } from "api/DatasourcesApi";
-import DatasourcesApi from "api/DatasourcesApi";
+import type { CreateDatasourceConfig } from "ee/api/DatasourcesApi";
+import DatasourcesApi from "ee/api/DatasourcesApi";
 import type {
   Datasource,
   DatasourceStorage,
@@ -88,7 +89,8 @@ import {
 } from "ee/constants/forms";
 import type { ActionDataState } from "ee/reducers/entityReducers/actionsReducer";
 import { setIdeEditorViewMode } from "../../actions/ideActions";
-import { EditorViewMode } from "ee/entities/IDE/constants";
+import { EditorViewMode } from "IDE/Interfaces/EditorTypes";
+import { getIsAnvilEnabledInCurrentApplication } from "../../layoutSystems/anvil/integrations/selectors";
 import { createActionRequestSaga } from "../../sagas/ActionSagas";
 import { validateResponse } from "../../sagas/ErrorSagas";
 import AnalyticsUtil from "ee/utils/AnalyticsUtil";
@@ -136,7 +138,7 @@ import {
 } from "utils/helpers";
 import { updateReplayEntity } from "actions/pageActions";
 import OAuthApi from "api/OAuthApi";
-import type { AppState } from "ee/reducers";
+import type { DefaultRootState } from "react-redux";
 import {
   getApplicationByIdFromWorkspaces,
   getCurrentApplication,
@@ -184,6 +186,7 @@ import type { ActionParentEntityTypeInterface } from "ee/entities/Engine/actionH
 import { getCurrentModuleId } from "ee/selectors/modulesSelector";
 import type { ApplicationPayload } from "entities/Application";
 import { openGeneratePageModalWithSelectedDS } from "../../utils/GeneratePageUtils";
+import { createDatasourceAPIPayloadFromAction } from "ee/sagas/helpers";
 
 export function* fetchDatasourcesSaga(
   action: ReduxAction<
@@ -379,8 +382,14 @@ export function* addMockDbToDatasources(actionPayload: addMockDb) {
  * 2. If it is the only item, navigate to the add url
  * 3. If there are other items, navigate to an item close to the current one
  * **/
-function* handleDatasourceDeleteRedirect(deletedDatasourceId: string) {
-  const allDatasources: Datasource[] = yield select(getDatasources);
+export function* handleDatasourceDeleteRedirect(deletedDatasourceId: string) {
+  // Redirect only to datasources the user can see in the list, so skip those
+  // of hidden plugins (see isHiddenPlugin). This reads getDatasources and
+  // filters here, because EE's copy of this file also uses getDatasources.
+  const hiddenPluginIds: Set<string> = yield select(getHiddenPluginIds);
+  const allDatasources: Datasource[] = (
+    (yield select(getDatasources)) as Datasource[]
+  ).filter((datasource) => !hiddenPluginIds.has(datasource.pluginId));
 
   const currentSelectedEntity = identifyEntityFromPath(
     window.location.pathname,
@@ -420,7 +429,9 @@ function* handleDatasourceDeleteRedirect(deletedDatasourceId: string) {
     }
   }
 
-  const groupDatasources = groupedDatasources[deletedGroup];
+  // A hidden datasource (see isHiddenPlugin) is in no group, so the group can
+  // be missing.
+  const groupDatasources = groupedDatasources[deletedGroup] ?? [];
   const remainingGroupDatasources = groupDatasources.filter(
     (d) => d.id !== deletedDatasourceId,
   );
@@ -447,7 +458,7 @@ export function* deleteDatasourceSaga(
     const isValidResponse: boolean = yield validateResponse(response);
 
     if (isValidResponse) {
-      const currentUrl = `${window.location.pathname}`;
+      const currentUrl = window.location.pathname;
 
       yield call(handleDatasourceDeleteRedirect, id);
       yield call(FocusRetention.handleRemoveFocusHistory, currentUrl);
@@ -543,6 +554,9 @@ export function* updateDatasourceSaga(
       getPluginPackageFromDatasourceId,
       datasourcePayload?.id,
     );
+    const isAnvilEnabled: boolean = yield select(
+      getIsAnvilEnabledInCurrentApplication,
+    );
 
     // when clicking save button, it should be changed as configured
     set(datasourceStoragePayload, `isConfigured`, true);
@@ -603,7 +617,7 @@ export function* updateDatasourceSaga(
       const responseData: Datasource = response.data;
       const plugin: Plugin = yield select(getPlugin, responseData?.pluginId);
       const formName: string = getFormName(plugin);
-      const state: AppState = yield select();
+      const state: DefaultRootState = yield select();
       const isFormValid = isValid(formName)(state);
       const formData: GetFormData = yield select(getFormData, formName);
       const formDiffPaths: string[] = getFormDiffPaths(
@@ -672,7 +686,14 @@ export function* updateDatasourceSaga(
       // or update initial values as the next form open will be from the reconnect modal itself
       if (!datasourcePayload.isInsideReconnectModal) {
         // Don't redirect to view mode if the plugin is google sheets
-        if (pluginPackageName !== PluginPackageName.GOOGLE_SHEETS) {
+        // Also don't redirect to view mode if anvil is enabled and plugin is APPSMITH_AI
+        if (
+          pluginPackageName !== PluginPackageName.GOOGLE_SHEETS &&
+          !(
+            isAnvilEnabled &&
+            pluginPackageName === PluginPackageName.APPSMITH_AGENT
+          )
+        ) {
           yield put(
             setDatasourceViewMode({
               datasourceId: response.data.id,
@@ -898,7 +919,6 @@ export function* testDatasourceSaga(actionPayload: ReduxAction<Datasource>) {
     workspaceId = yield select(getWorkspaceIdForImport);
   }
 
-  const { initialValues } = yield select(getFormData, DATASOURCE_DB_FORM);
   const datasource = shouldBeDefined<Datasource>(
     yield select(getDatasource, actionPayload.payload.id),
     `Datasource not found for id - ${actionPayload.payload.id}`,
@@ -916,14 +936,9 @@ export function* testDatasourceSaga(actionPayload: ReduxAction<Datasource>) {
   let payloadWithoutDatasourceId: DatasourceStorage =
     payload.datasourceStorages[currentEnvironment];
 
-  const initialDSStorage = initialValues.datasourceStorages[currentEnvironment];
-
   // when datasource is not yet saved by user, datasource id is temporary
   // for temporary datasource, we do not need to pass datasource id in test api call
-  if (
-    !equal(initialDSStorage, payloadWithoutDatasourceId) ||
-    payloadWithoutDatasourceId?.datasourceId === TEMP_DATASOURCE_ID
-  ) {
+  if (payloadWithoutDatasourceId?.datasourceId === TEMP_DATASOURCE_ID) {
     // we have to do this so that the original object is not mutated
     payloadWithoutDatasourceId = {
       ...payloadWithoutDatasourceId,
@@ -1156,6 +1171,8 @@ export function* createOrUpdateDataSourceWithAction(
     type: ReduxActionTypes.CREATE_ACTION_REQUEST,
   });
 
+  yield take(ReduxActionTypes.CREATE_ACTION_SUCCESS);
+
   yield put(setIdeEditorViewMode(EditorViewMode.SplitScreen));
 
   const actions: ActionDataState = yield select(getActions);
@@ -1179,9 +1196,8 @@ export function* createDatasourceFromFormSaga(
       checkAndGetPluginFormConfigsSaga,
       actionPayload.payload.pluginId,
     );
-    // TODO: Fix this the next time the file is edited
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const formConfig: Record<string, any>[] = yield select(
+
+    const formConfig: ReturnType<typeof getPluginForm> = yield select(
       getPluginForm,
       actionPayload.payload.pluginId,
     );
@@ -1189,35 +1205,16 @@ export function* createDatasourceFromFormSaga(
       getCurrentEditingEnvironmentId,
     );
 
-    const initialValues: unknown = yield call(
+    const initialValues: ReturnType<typeof getConfigInitialValues> = yield call(
       getConfigInitialValues,
       formConfig,
     );
-    let datasourceStoragePayload =
-      actionPayload.payload.datasourceStorages[currentEnvironment];
 
-    datasourceStoragePayload = merge(initialValues, datasourceStoragePayload);
-
-    // in the datasourcestorages, we only need one key, the currentEnvironment
-    // we need to remove any other keys present
-    const datasourceStorages = {
-      [currentEnvironment]: datasourceStoragePayload,
-    };
-
-    const payload = omit(
-      {
-        ...actionPayload.payload,
-        datasourceStorages,
-      },
-      ["id", "new", "type", "datasourceConfiguration"],
-    );
-
-    if (payload.datasourceStorages)
-      datasourceStoragePayload.isConfigured = true;
-
-    // remove datasourceId from payload if it is equal to TEMP_DATASOURCE_ID
-    if (datasourceStoragePayload.datasourceId === TEMP_DATASOURCE_ID)
-      datasourceStoragePayload.datasourceId = "";
+    const payload = createDatasourceAPIPayloadFromAction({
+      actionPayload: actionPayload.payload,
+      currentEnvId: currentEnvironment,
+      initialValues,
+    });
 
     const response: ApiResponse<Datasource> =
       yield DatasourcesApi.createDatasource({
@@ -1232,7 +1229,7 @@ export function* createDatasourceFromFormSaga(
     if (isValidResponse) {
       const plugin: Plugin = yield select(getPlugin, response?.data?.pluginId);
       const formName: string = getFormName(plugin);
-      const state: AppState = yield select();
+      const state: DefaultRootState = yield select();
       const isFormValid = isValid(formName)(state);
       const formData: GetFormData = yield select(getFormData, formName);
       const formDiffPaths: string[] = getFormDiffPaths(
@@ -1250,14 +1247,11 @@ export function* createDatasourceFromFormSaga(
         isFormValid: isFormValid,
         editedFields: formDiffPaths,
         connectionMethod: getConnectionMethod(
-          datasourceStoragePayload,
+          payload.datasourceStorages?.[currentEnvironment] as DatasourceStorage,
           plugin?.packageName,
         ),
       });
-      yield put({
-        type: ReduxActionTypes.UPDATE_DATASOURCE_REFS,
-        payload: response.data,
-      });
+
       yield put(
         createDatasourceSuccess(
           response.data,
@@ -1297,12 +1291,7 @@ export function* createDatasourceFromFormSaga(
         yield put(actionPayload.onSuccess);
       }
 
-      yield put({
-        type: ReduxActionTypes.DELETE_DATASOURCE_DRAFT,
-        payload: {
-          id: TEMP_DATASOURCE_ID,
-        },
-      });
+      yield put(deleteTempDSFromDraft());
 
       // for all datasources, except for REST and GraphQL, need to delete temp datasource data
       // as soon as possible, for REST and GraphQL it is getting deleted in APIPaneSagas.ts
@@ -1313,6 +1302,8 @@ export function* createDatasourceFromFormSaga(
       // updating form initial values to latest data, so that next time when form is opened
       // isDirty will use updated initial values data to compare actual values with
       yield put(initialize(DATASOURCE_DB_FORM, response.data));
+
+      return response.data;
     }
   } catch (error) {
     yield put({
@@ -1511,7 +1502,7 @@ export function* storeAsDatasourceSaga() {
 export function* updateDatasourceSuccessSaga(
   action: UpdateDatasourceSuccessAction,
 ) {
-  const state: AppState = yield select();
+  const state: DefaultRootState = yield select();
   const actionRouteInfo = get(state, "ui.datasourcePane.actionRouteInfo");
   const generateCRUDSupportedPlugin: GenerateCRUDEnabledPluginMap =
     yield select(getGenerateCRUDEnabledPluginMap);
@@ -1672,7 +1663,7 @@ export function* fetchDatasourceStructureSaga(
 export function* addAndFetchDatasourceStructureSaga(
   action: ReduxAction<MockDatasource>,
 ) {
-  const plugin: Plugin = yield select((state: AppState) =>
+  const plugin: Plugin = yield select((state: DefaultRootState) =>
     getPluginByPackageName(state, action.payload.packageName),
   );
 
@@ -1988,7 +1979,7 @@ export function* fetchGsheetSpreadhsheets(
         initialValue: string;
       },
     ];
-  }[] = yield select((state: AppState) =>
+  }[] = yield select((state: DefaultRootState) =>
     getEditorConfig(state, action.payload.pluginId),
   );
 
@@ -2013,7 +2004,7 @@ export function* fetchGsheetSpreadhsheets(
         throw new Error("Unable to fetch plugin form config");
       }
 
-      googleSheetEditorConfig = yield select((state: AppState) =>
+      googleSheetEditorConfig = yield select((state: DefaultRootState) =>
         getEditorConfig(state, action.payload.pluginId),
       );
     }

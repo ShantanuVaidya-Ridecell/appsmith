@@ -18,6 +18,10 @@ import PackageUpgradeStatus from "ee/components/BottomBar/PackageUpgradeStatus";
 import OldGitQuickActions from "pages/Editor/gitSync/QuickGitActions";
 import { GitQuickActions } from "git";
 import { useGitModEnabled } from "pages/Editor/gitSync/hooks/modHooks";
+import { AIAgentSupportTrigger } from "ee/components/BottomBar/AIAgentSupportTrigger";
+import { RunHistoryTrigger } from "ee/pages/WorkflowIDE/layouts/components/BottomBar/WorkflowRunHistory/RunHistoryTrigger";
+import { getIsAiAgentApp } from "ee/selectors/aiAgentSelectors";
+import { getAppsmithConfigs } from "ee/configs";
 
 function GitActions() {
   const isGitModEnabled = useGitModEnabled();
@@ -33,6 +37,8 @@ export default function BottomBar() {
   const isAnvilEnabled = useSelector(getIsAnvilEnabledInCurrentApplication);
   const isPreviewMode = useSelector(previewModeSelector);
   const isGitEnabled = !isAnvilEnabled && !isPreviewMode;
+  const isAiAgentApp = useSelector(getIsAiAgentApp);
+  const { disableHelpIcon } = getAppsmithConfigs();
 
   const dispatch = useDispatch();
 
@@ -65,8 +71,10 @@ export default function BottomBar() {
               startIcon="upgrade"
             />
           </ManualUpgrades>
+          <AIAgentSupportTrigger />
+          {isAiAgentApp && <RunHistoryTrigger />}
           <DebuggerTrigger />
-          <HelpButton />
+          {!disableHelpIcon && <HelpButton />}
         </Wrapper>
       )}
     </Container>

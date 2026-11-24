@@ -1,5 +1,6 @@
 package com.appsmith.server.solutions;
 
+import com.appsmith.external.enums.FeatureFlagEnum;
 import com.appsmith.external.git.constants.ce.RefType;
 import com.appsmith.external.models.ActionConfiguration;
 import com.appsmith.external.models.ActionDTO;
@@ -13,6 +14,7 @@ import com.appsmith.external.models.DatasourceStructure.Key;
 import com.appsmith.external.models.DatasourceStructure.Table;
 import com.appsmith.external.models.DatasourceStructure.TableType;
 import com.appsmith.external.models.Property;
+import com.appsmith.external.models.RunBehaviourEnum;
 import com.appsmith.external.plugins.PluginExecutor;
 import com.appsmith.server.applications.base.ApplicationService;
 import com.appsmith.server.constants.FieldName;
@@ -39,16 +41,19 @@ import com.appsmith.server.newpages.base.NewPageService;
 import com.appsmith.server.repositories.PluginRepository;
 import com.appsmith.server.services.ApplicationPageService;
 import com.appsmith.server.services.DatasourceStructureService;
+import com.appsmith.server.services.FeatureFlagService;
 import com.appsmith.server.services.WorkspaceService;
 import lombok.extern.slf4j.Slf4j;
-import org.apache.commons.lang.StringUtils;
+import org.apache.commons.lang3.StringUtils;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.boot.test.mock.mockito.SpyBean;
 import org.springframework.security.test.context.support.WithUserDetails;
 import org.springframework.test.annotation.DirtiesContext;
 import reactor.core.publisher.Mono;
@@ -66,12 +71,18 @@ import static com.appsmith.server.constants.ArtifactType.APPLICATION;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.spy;
 
 @Slf4j
 @SpringBootTest
 @DirtiesContext
 public class CreateDBTablePageSolutionTests {
+
+    private static final String INVALID_GENERATED_PAGE_NAME_MESSAGE = AppsmithError.GENERIC_BAD_REQUEST.getMessage(
+            "The page name is taken from the table or sheet name, and that name is not a valid page name. "
+                    + "A page name cannot be blank, cannot contain \\ / : < > \" | ? * or control characters, cannot start or end with a dot, cannot be longer than 255 characters, and cannot be a reserved device name such as CON or NUL."
+                    + " Rename the table or sheet and try again.");
 
     // Regex to break string in separate words
     static final String specialCharactersRegex = "[^a-zA-Z0-9,;(){}*_]+";
@@ -137,6 +148,9 @@ public class CreateDBTablePageSolutionTests {
     NewPageService newPageService;
 
     @Autowired
+    PagePermission pagePermission;
+
+    @Autowired
     WorkspaceService workspaceService;
 
     @Autowired
@@ -174,6 +188,9 @@ public class CreateDBTablePageSolutionTests {
     private PluginExecutor spyMockPluginExecutor = spy(new MockPluginExecutor());
 
     private final CRUDPageResourceDTO resource = new CRUDPageResourceDTO();
+
+    @SpyBean
+    private FeatureFlagService featureFlagService;
 
     @BeforeEach
     public void setup() {
@@ -241,8 +258,9 @@ public class CreateDBTablePageSolutionTests {
 
     @AfterEach
     public void cleanup() {
-        List<Application> deletedApplications = applicationService
-                .findByWorkspaceId(testWorkspace.getId(), applicationPermission.getDeletePermission())
+        List<Application> deletedApplications = applicationPermission
+                .getDeletePermission()
+                .flatMapMany(permission -> applicationService.findByWorkspaceId(testWorkspace.getId(), permission))
                 .flatMap(remainingApplication -> applicationPageService.deleteApplication(remainingApplication.getId()))
                 .collectList()
                 .block();
@@ -308,6 +326,35 @@ public class CreateDBTablePageSolutionTests {
                                 .getMessage()
                                 .equals(AppsmithError.INVALID_PARAMETER.getMessage("tableName and datasourceId")))
                 .verify();
+    }
+
+    @Test
+    @WithUserDetails(value = "api_user")
+    @DisplayName("GHSA-x4j8-9c4j-73r7")
+    void should_rejectRequestAndCreateNoPage_when_tableNameIsNotValidPageName() {
+        // Given
+        resource.setApplicationId(testApp.getId());
+        resource.setTableName("Parent/Child");
+        int pageCountBefore = pageCountOf(testApp.getId());
+
+        // When
+        Mono<CRUDPageResponseDTO> resultMono = solution.createPageFromDBTable(null, resource, testDefaultEnvironmentId);
+
+        // Then
+        StepVerifier.create(resultMono)
+                .expectErrorSatisfies(error -> assertThat(error)
+                        .isInstanceOf(AppsmithException.class)
+                        .hasMessage(INVALID_GENERATED_PAGE_NAME_MESSAGE))
+                .verify();
+        assertThat(pageCountOf(testApp.getId())).isEqualTo(pageCountBefore);
+    }
+
+    private int pageCountOf(String applicationId) {
+        return newPageService
+                .findByApplicationId(applicationId, pagePermission.getEditPermission(), false)
+                .collectList()
+                .block()
+                .size();
     }
 
     @Test
@@ -443,6 +490,37 @@ public class CreateDBTablePageSolutionTests {
                                             .getValue())
                                     .isEqualTo(Boolean.TRUE);
                         }
+                    }
+                })
+                .verifyComplete();
+    }
+
+    @Test
+    @WithUserDetails(value = "api_user")
+    public void createPageWithDynamicBindingPathListForPostgresqlDS() {
+        resource.setApplicationId(testApp.getId());
+        PageDTO newPage = new PageDTO();
+        newPage.setApplicationId(testApp.getId());
+        newPage.setName("crud-admin-page-dynamic-binding-list");
+
+        Mono<PageDTO> resultMono = applicationPageService
+                .createPage(newPage)
+                .flatMap(savedPage ->
+                        solution.createPageFromDBTable(savedPage.getId(), resource, testDefaultEnvironmentId))
+                .map(crudPageResponseDTO -> crudPageResponseDTO.getPage());
+
+        StepVerifier.create(resultMono.zipWhen(pageDTO -> getActions(pageDTO.getId())))
+                .assertNext(tuple -> {
+                    PageDTO page = tuple.getT1();
+                    List<NewAction> actions = tuple.getT2();
+                    assertThat(page.getName()).isEqualTo(newPage.getName());
+                    assertThat(actions).hasSize(4);
+                    for (NewAction action : actions) {
+                        ActionDTO unpublishedAction = action.getUnpublishedAction();
+                        assertThat(unpublishedAction.getDynamicBindingPathList())
+                                .isNotNull();
+                        assertThat(unpublishedAction.getDynamicBindingPathList())
+                                .isNotEmpty();
                     }
                 })
                 .verifyComplete();
@@ -678,16 +756,142 @@ public class CreateDBTablePageSolutionTests {
                         assertThat(actionBody).isEqualTo(templateActionBody);
 
                         if (SELECT_QUERY.equals(action.getUnpublishedAction().getName())) {
-                            assertThat(action.getUnpublishedAction().getExecuteOnLoad())
-                                    .isTrue();
+                            assertThat(action.getUnpublishedAction().getRunBehaviour())
+                                    .isEqualTo(RunBehaviourEnum.ON_PAGE_LOAD);
                         } else {
-                            assertThat(action.getUnpublishedAction().getExecuteOnLoad())
-                                    .isFalse();
+                            assertThat(action.getUnpublishedAction().getRunBehaviour())
+                                    .isEqualTo(RunBehaviourEnum.MANUAL);
                         }
                     }
                     assertThat(crudPageResponseDTO.getSuccessMessage()).containsIgnoringCase(pluginName);
                     assertThat(crudPageResponseDTO.getSuccessMessage()).containsIgnoringCase("TABLE");
                     assertThat(crudPageResponseDTO.getSuccessImageUrl()).isNotNull();
+                })
+                .verifyComplete();
+    }
+
+    @Test
+    @WithUserDetails(value = "api_user")
+    public void createPageWithValidPageIdForMySqlDS_FeatureFlagEnabled() {
+        doReturn(Mono.just(true)).when(featureFlagService).check(FeatureFlagEnum.release_reactive_actions_enabled);
+
+        resource.setApplicationId(testApp.getId());
+        PageDTO newPage = new PageDTO();
+        newPage.setApplicationId(testApp.getId());
+        newPage.setName("crud-admin-page-mysql-ff-enabled");
+        StringBuilder pluginName = new StringBuilder();
+
+        Mono<Datasource> datasourceMono = pluginRepository.findByName("MySQL").flatMap(plugin -> {
+            pluginName.append(plugin.getName());
+            Datasource datasource = new Datasource();
+            datasource.setPluginId(plugin.getId());
+            datasource.setWorkspaceId(testWorkspace.getId());
+            datasource.setName("MySql-CRUD-Page-Table-DS-FF-Enabled");
+
+            HashMap<String, DatasourceStorageDTO> storages = new HashMap<>();
+            storages.put(
+                    testDefaultEnvironmentId,
+                    new DatasourceStorageDTO(null, testDefaultEnvironmentId, datasourceConfiguration));
+            datasource.setDatasourceStorages(storages);
+
+            return datasourceService.create(datasource).flatMap(datasource1 -> {
+                DatasourceStorageStructure datasourceStorageStructure = new DatasourceStorageStructure();
+                datasourceStorageStructure.setDatasourceId(datasource1.getId());
+                datasourceStorageStructure.setEnvironmentId(testDefaultEnvironmentId);
+                datasourceStorageStructure.setStructure(structure);
+
+                return datasourceStructureService
+                        .save(datasourceStorageStructure)
+                        .thenReturn(datasource1);
+            });
+        });
+
+        Mono<CRUDPageResponseDTO> resultMono = datasourceMono
+                .flatMap(datasource1 -> {
+                    resource.setDatasourceId(datasource1.getId());
+                    return applicationPageService.createPage(newPage);
+                })
+                .flatMap(savedPage ->
+                        solution.createPageFromDBTable(savedPage.getId(), resource, testDefaultEnvironmentId));
+
+        StepVerifier.create(resultMono.zipWhen(crudPageResponseDTO ->
+                        getActions(crudPageResponseDTO.getPage().getId())))
+                .assertNext(tuple -> {
+                    CRUDPageResponseDTO crudPageResponseDTO = tuple.getT1();
+                    List<NewAction> actions = tuple.getT2();
+                    for (NewAction action : actions) {
+                        String name = action.getUnpublishedAction().getName();
+                        if (SELECT_QUERY.equals(name) || FIND_QUERY.equals(name) || LIST_QUERY.equals(name)) {
+                            assertThat(action.getUnpublishedAction().getRunBehaviour())
+                                    .isEqualTo(RunBehaviourEnum.AUTOMATIC);
+                        } else {
+                            assertThat(action.getUnpublishedAction().getRunBehaviour())
+                                    .isEqualTo(RunBehaviourEnum.MANUAL);
+                        }
+                    }
+                })
+                .verifyComplete();
+    }
+
+    @Test
+    @WithUserDetails(value = "api_user")
+    public void createPageWithValidPageIdForMySqlDS_FeatureFlagDisabled() {
+        doReturn(Mono.just(false)).when(featureFlagService).check(FeatureFlagEnum.release_reactive_actions_enabled);
+
+        resource.setApplicationId(testApp.getId());
+        PageDTO newPage = new PageDTO();
+        newPage.setApplicationId(testApp.getId());
+        newPage.setName("crud-admin-page-mysql-ff-disabled");
+        StringBuilder pluginName = new StringBuilder();
+
+        Mono<Datasource> datasourceMono = pluginRepository.findByName("MySQL").flatMap(plugin -> {
+            pluginName.append(plugin.getName());
+            Datasource datasource = new Datasource();
+            datasource.setPluginId(plugin.getId());
+            datasource.setWorkspaceId(testWorkspace.getId());
+            datasource.setName("MySql-CRUD-Page-Table-DS-FF-Disabled");
+
+            HashMap<String, DatasourceStorageDTO> storages = new HashMap<>();
+            storages.put(
+                    testDefaultEnvironmentId,
+                    new DatasourceStorageDTO(null, testDefaultEnvironmentId, datasourceConfiguration));
+            datasource.setDatasourceStorages(storages);
+
+            return datasourceService.create(datasource).flatMap(datasource1 -> {
+                DatasourceStorageStructure datasourceStorageStructure = new DatasourceStorageStructure();
+                datasourceStorageStructure.setDatasourceId(datasource1.getId());
+                datasourceStorageStructure.setEnvironmentId(testDefaultEnvironmentId);
+                datasourceStorageStructure.setStructure(structure);
+
+                return datasourceStructureService
+                        .save(datasourceStorageStructure)
+                        .thenReturn(datasource1);
+            });
+        });
+
+        Mono<CRUDPageResponseDTO> resultMono = datasourceMono
+                .flatMap(datasource1 -> {
+                    resource.setDatasourceId(datasource1.getId());
+                    return applicationPageService.createPage(newPage);
+                })
+                .flatMap(savedPage ->
+                        solution.createPageFromDBTable(savedPage.getId(), resource, testDefaultEnvironmentId));
+
+        StepVerifier.create(resultMono.zipWhen(crudPageResponseDTO ->
+                        getActions(crudPageResponseDTO.getPage().getId())))
+                .assertNext(tuple -> {
+                    CRUDPageResponseDTO crudPageResponseDTO = tuple.getT1();
+                    List<NewAction> actions = tuple.getT2();
+                    for (NewAction action : actions) {
+                        String name = action.getUnpublishedAction().getName();
+                        if (SELECT_QUERY.equals(name) || FIND_QUERY.equals(name) || LIST_QUERY.equals(name)) {
+                            assertThat(action.getUnpublishedAction().getRunBehaviour())
+                                    .isEqualTo(RunBehaviourEnum.ON_PAGE_LOAD);
+                        } else {
+                            assertThat(action.getUnpublishedAction().getRunBehaviour())
+                                    .isEqualTo(RunBehaviourEnum.MANUAL);
+                        }
+                    }
                 })
                 .verifyComplete();
     }
@@ -758,11 +962,11 @@ public class CreateDBTablePageSolutionTests {
                         assertThat(actionBody).isEqualTo(templateActionBody);
 
                         if (SELECT_QUERY.equals(action.getUnpublishedAction().getName())) {
-                            assertThat(action.getUnpublishedAction().getExecuteOnLoad())
-                                    .isTrue();
+                            assertThat(action.getUnpublishedAction().getRunBehaviour())
+                                    .isEqualTo(RunBehaviourEnum.ON_PAGE_LOAD);
                         } else {
-                            assertThat(action.getUnpublishedAction().getExecuteOnLoad())
-                                    .isFalse();
+                            assertThat(action.getUnpublishedAction().getRunBehaviour())
+                                    .isEqualTo(RunBehaviourEnum.MANUAL);
                         }
                     }
                 })
@@ -816,9 +1020,9 @@ public class CreateDBTablePageSolutionTests {
                     assertThat(actionBody).isEqualTo(templateActionBody);
 
                     if (SELECT_QUERY.equals(action.getUnpublishedAction().getName())) {
-                        assertThat(action.getUnpublishedAction().getExecuteOnLoad()).isTrue();
+                        assertThat(action.getUnpublishedAction().getRunbehaviour()()).isTrue();
                     } else {
-                        assertThat(action.getUnpublishedAction().getExecuteOnLoad()).isFalse();
+                        assertThat(action.getUnpublishedAction().getRunbehaviour()()).isFalse();
                     }
                 }
             })
@@ -886,11 +1090,11 @@ public class CreateDBTablePageSolutionTests {
                                 .replaceAll(specialCharactersRegex, "");
                         assertThat(actionBody).isEqualTo(templateActionBody);
                         if (SELECT_QUERY.equals(action.getUnpublishedAction().getName())) {
-                            assertThat(action.getUnpublishedAction().getExecuteOnLoad())
-                                    .isTrue();
+                            assertThat(action.getUnpublishedAction().getRunBehaviour())
+                                    .isEqualTo(RunBehaviourEnum.ON_PAGE_LOAD);
                         } else {
-                            assertThat(action.getUnpublishedAction().getExecuteOnLoad())
-                                    .isFalse();
+                            assertThat(action.getUnpublishedAction().getRunBehaviour())
+                                    .isEqualTo(RunBehaviourEnum.MANUAL);
                         }
                     }
                 })
@@ -1053,11 +1257,11 @@ public class CreateDBTablePageSolutionTests {
                         ActionConfiguration actionConfiguration =
                                 action.getUnpublishedAction().getActionConfiguration();
                         if (SELECT_QUERY.equals(action.getUnpublishedAction().getName())) {
-                            assertThat(action.getUnpublishedAction().getExecuteOnLoad())
-                                    .isTrue();
+                            assertThat(action.getUnpublishedAction().getRunBehaviour())
+                                    .isEqualTo(RunBehaviourEnum.ON_PAGE_LOAD);
                         } else {
-                            assertThat(action.getUnpublishedAction().getExecuteOnLoad())
-                                    .isFalse();
+                            assertThat(action.getUnpublishedAction().getRunBehaviour())
+                                    .isEqualTo(RunBehaviourEnum.MANUAL);
                         }
 
                         List<Property> pluginSpecifiedTemplate = actionConfiguration.getPluginSpecifiedTemplates();
@@ -1133,11 +1337,11 @@ public class CreateDBTablePageSolutionTests {
                         ActionConfiguration actionConfiguration =
                                 action.getUnpublishedAction().getActionConfiguration();
                         if (FIND_QUERY.equals(action.getUnpublishedAction().getName())) {
-                            assertThat(action.getUnpublishedAction().getExecuteOnLoad())
-                                    .isTrue();
+                            assertThat(action.getUnpublishedAction().getRunBehaviour())
+                                    .isEqualTo(RunBehaviourEnum.ON_PAGE_LOAD);
                         } else {
-                            assertThat(action.getUnpublishedAction().getExecuteOnLoad())
-                                    .isFalse();
+                            assertThat(action.getUnpublishedAction().getRunBehaviour())
+                                    .isEqualTo(RunBehaviourEnum.MANUAL);
                         }
 
                         Map<String, Object> formData = actionConfiguration.getFormData();

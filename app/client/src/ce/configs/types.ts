@@ -20,6 +20,10 @@ export interface AppsmithUIConfigs {
     enabled: boolean;
     id: string;
   };
+  betterbugs: {
+    enabled: boolean;
+    apiKey: string;
+  };
   observability: {
     deploymentName: string;
     serviceInstanceId: string;
@@ -45,7 +49,7 @@ export interface AppsmithUIConfigs {
 
   logLevel: LogLevelDesc;
   appVersion: AppVersionData;
-  intercomAppID: string;
+  pylonAppID: string;
   mailEnabled: boolean;
 
   googleRecaptchaSiteKey: {
@@ -54,6 +58,8 @@ export interface AppsmithUIConfigs {
   };
   appsmithSupportEmail: string;
   disableIframeWidgetSandbox: boolean;
+  disableHelpIcon: boolean;
+  defaultHtmlLang: string;
   pricingUrl: string;
   customerPortalUrl: string;
 }

@@ -1,19 +1,27 @@
 import React from "react";
 import SettingsModalView from "./SettingsModalView";
-import useGitPermissions from "git/hooks/useGitPermissions";
 import useSettings from "git/hooks/useSettings";
 import { GitSettingsTab } from "git/constants/enums";
+import { useGitContext } from "../GitContextProvider";
+import isContinuousDeliveryEnabled from "git/helpers/isContinuousDeliveryEnabled";
 
 function SettingsModal() {
-  const { isSettingsModalOpen, settingsModalTab, toggleSettingsModal } =
-    useSettings();
-
+  const { artifactDef } = useGitContext();
   const {
     isConnectPermitted,
+
     isManageAutocommitPermitted,
     isManageDefaultBranchPermitted,
     isManageProtectedBranchesPermitted,
-  } = useGitPermissions();
+  } = useGitContext();
+  const { isSettingsModalOpen, settingsModalTab, toggleSettingsModal } =
+    useSettings();
+
+  const showBranchTab =
+    isManageDefaultBranchPermitted || isManageProtectedBranchesPermitted;
+  const showCDTab = artifactDef
+    ? isContinuousDeliveryEnabled(artifactDef)
+    : false;
 
   return (
     <SettingsModalView
@@ -23,6 +31,8 @@ function SettingsModal() {
       isManageProtectedBranchesPermitted={isManageProtectedBranchesPermitted}
       isSettingsModalOpen={isSettingsModalOpen}
       settingsModalTab={settingsModalTab ?? GitSettingsTab.General}
+      showBranchTab={showBranchTab}
+      showCDTab={showCDTab}
       toggleSettingsModal={toggleSettingsModal}
     />
   );

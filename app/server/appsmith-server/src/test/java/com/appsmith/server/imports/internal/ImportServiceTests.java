@@ -18,6 +18,7 @@ import com.appsmith.external.models.InvisibleActionFields;
 import com.appsmith.external.models.PluginType;
 import com.appsmith.external.models.Policy;
 import com.appsmith.external.models.Property;
+import com.appsmith.external.models.RunBehaviourEnum;
 import com.appsmith.external.models.SSLDetails;
 import com.appsmith.server.actioncollections.base.ActionCollectionService;
 import com.appsmith.server.applications.base.ApplicationService;
@@ -78,10 +79,11 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.gson.Gson;
+import lombok.SneakyThrows;
 import lombok.extern.slf4j.Slf4j;
 import net.minidev.json.JSONArray;
 import net.minidev.json.JSONObject;
-import org.apache.commons.lang.StringUtils;
+import org.apache.commons.lang3.StringUtils;
 import org.jetbrains.annotations.NotNull;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.MethodOrderer;
@@ -93,6 +95,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.boot.test.mock.mockito.SpyBean;
 import org.springframework.core.io.ClassPathResource;
+import org.springframework.core.io.DefaultResourceLoader;
 import org.springframework.core.io.buffer.DataBuffer;
 import org.springframework.core.io.buffer.DataBufferUtils;
 import org.springframework.core.io.buffer.DefaultDataBufferFactory;
@@ -102,14 +105,17 @@ import org.springframework.http.codec.multipart.FilePart;
 import org.springframework.security.test.context.support.WithUserDetails;
 import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.util.LinkedMultiValueMap;
+import org.springframework.util.StreamUtils;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.test.StepVerifier;
 import reactor.util.function.Tuple3;
 import reactor.util.function.Tuple4;
 
+import java.io.InputStream;
 import java.net.URISyntaxException;
 import java.net.URL;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
@@ -122,6 +128,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 import static com.appsmith.external.git.constants.ce.GitConstantsCE.NAME_SEPARATOR;
@@ -489,7 +496,7 @@ public class ImportServiceTests {
                     ActionDTO action = new ActionDTO();
                     action.setName("validAction");
                     action.setPageId(testPage.getId());
-                    action.setExecuteOnLoad(true);
+                    action.setRunBehaviour(RunBehaviourEnum.ON_PAGE_LOAD);
                     ActionConfiguration actionConfiguration = new ActionConfiguration();
                     actionConfiguration.setHttpMethod(HttpMethod.GET);
                     action.setActionConfiguration(actionConfiguration);
@@ -498,7 +505,7 @@ public class ImportServiceTests {
                     ActionDTO action2 = new ActionDTO();
                     action2.setName("validAction2");
                     action2.setPageId(testPage.getId());
-                    action2.setExecuteOnLoad(true);
+                    action2.setRunBehaviour(RunBehaviourEnum.ON_PAGE_LOAD);
                     action2.setUserSetOnLoad(true);
                     ActionConfiguration actionConfiguration2 = new ActionConfiguration();
                     actionConfiguration2.setHttpMethod(HttpMethod.GET);
@@ -734,7 +741,7 @@ public class ImportServiceTests {
                     ActionDTO action = new ActionDTO();
                     action.setName("validAction");
                     action.setPageId(testPage.getId());
-                    action.setExecuteOnLoad(true);
+                    action.setRunBehaviour(RunBehaviourEnum.ON_PAGE_LOAD);
                     ActionConfiguration actionConfiguration = new ActionConfiguration();
                     actionConfiguration.setHttpMethod(HttpMethod.GET);
                     action.setActionConfiguration(actionConfiguration);
@@ -859,10 +866,8 @@ public class ImportServiceTests {
     @Test
     @WithUserDetails(value = "api_user")
     public void importArtifactWithNullWorkspaceIdTest() {
-        FilePart filepart = Mockito.mock(FilePart.class, Mockito.RETURNS_DEEP_STUBS);
-
         Mono<? extends ArtifactImportDTO> resultMono =
-                importService.extractArtifactExchangeJsonAndSaveArtifact(filepart, null, null);
+                importService.extractArtifactExchangeJsonAndSaveArtifact("", null, null);
 
         StepVerifier.create(resultMono)
                 .expectErrorMatches(throwable -> throwable instanceof AppsmithException
@@ -1012,7 +1017,6 @@ public class ImportServiceTests {
                     assertThat(application.getWorkspaceId()).isNotNull();
                     assertThat(application.getPages()).hasSize(2);
                     assertThat(application.getPolicies()).containsAll(Set.of(manageAppPolicy, readAppPolicy));
-                    assertThat(application.getPublishedPages()).hasSize(1);
                     assertThat(application.getModifiedBy()).isEqualTo("api_user");
                     assertThat(application.getUpdatedAt()).isNotNull();
                     assertThat(application.getEditModeThemeId()).isNotNull();
@@ -1230,7 +1234,6 @@ public class ImportServiceTests {
                     assertThat(application.getWorkspaceId()).isNotNull();
                     assertThat(application.getPages()).hasSize(2);
                     assertThat(application.getPolicies()).containsAll(Set.of(manageAppPolicy, readAppPolicy));
-                    assertThat(application.getPublishedPages()).hasSize(1);
                     assertThat(application.getModifiedBy()).isEqualTo("api_user");
                     assertThat(application.getUpdatedAt()).isNotNull();
 
@@ -1380,7 +1383,7 @@ public class ImportServiceTests {
                     ActionDTO action = new ActionDTO();
                     action.setName("validAction");
                     action.setPageId(newPage.getId());
-                    action.setExecuteOnLoad(true);
+                    action.setRunBehaviour(RunBehaviourEnum.ON_PAGE_LOAD);
                     ActionConfiguration actionConfiguration = new ActionConfiguration();
                     actionConfiguration.setHttpMethod(HttpMethod.GET);
                     action.setActionConfiguration(actionConfiguration);
@@ -1503,8 +1506,8 @@ public class ImportServiceTests {
                             actionCollectionService
                                     .findAllByApplicationIdAndViewMode(application.getId(), false, MANAGE_ACTIONS, null)
                                     .collectList(),
-                            applicationService.findById(
-                                    applicationImportDTO.getApplication().getId(), MANAGE_APPLICATIONS));
+                            applicationPageService.publishWithoutPermissionChecks(
+                                    applicationImportDTO.getApplication().getId(), false));
                 }))
                 .assertNext(tuple -> {
                     final Application application = tuple.getT6();
@@ -1524,7 +1527,6 @@ public class ImportServiceTests {
                     assertThat(application.getModifiedBy()).isEqualTo("api_user");
                     assertThat(application.getUpdatedAt()).isNotNull();
                     assertThat(application.getEditModeThemeId()).isNotNull();
-                    assertThat(application.getPublishedModeThemeId()).isNull();
                     assertThat(isPartialImport).isEqualTo(Boolean.TRUE);
                     assertThat(unConfiguredDatasourceList.size()).isNotEqualTo(0);
 
@@ -1617,7 +1619,11 @@ public class ImportServiceTests {
                 .block();
 
         assert importedApplication != null;
-        Mono<List<NewPage>> pageList = Flux.fromIterable(importedApplication.getPages().stream()
+        Application publishedApplication = applicationPageService
+                .publishWithoutPermissionChecks(importedApplication.getId(), true)
+                .block();
+
+        Mono<List<NewPage>> pageList = Flux.fromIterable(publishedApplication.getPages().stream()
                         .map(ApplicationPage::getId)
                         .collect(Collectors.toList()))
                 .flatMap(s -> newPageService.findById(s, MANAGE_PAGES))
@@ -1848,7 +1854,6 @@ public class ImportServiceTests {
                     assertThat(application.getName()).isEqualTo("discard-change-page-added");
                     assertThat(application.getWorkspaceId()).isNotNull();
                     assertThat(application.getPages()).hasSize(3);
-                    assertThat(application.getPublishedPages()).hasSize(1);
                     assertThat(application.getModifiedBy()).isEqualTo("api_user");
                     assertThat(application.getUpdatedAt()).isNotNull();
                     assertThat(application.getEditModeThemeId()).isNotNull();
@@ -1880,10 +1885,10 @@ public class ImportServiceTests {
         // Import the same application again to find if the added page is deleted
         final Mono<Application> resultMonoWithDiscardOperation = resultMonoWithoutDiscardOperation.flatMap(
                 importedApplication -> applicationJsonMono.flatMap(applicationJson -> {
-                    importedApplication.setGitApplicationMetadata(new GitArtifactMetadata());
-                    importedApplication
-                            .getGitApplicationMetadata()
-                            .setDefaultApplicationId(importedApplication.getId());
+                    GitArtifactMetadata gitData = new GitArtifactMetadata();
+                    importedApplication.setGitApplicationMetadata(gitData);
+                    gitData.setDefaultApplicationId(importedApplication.getId());
+                    gitData.setRemoteUrl("https://dummy.url/dummy-user/dummy-app");
                     return applicationService
                             .save(importedApplication)
                             .then(importService.importArtifactInWorkspaceFromGit(
@@ -1904,7 +1909,6 @@ public class ImportServiceTests {
                     final List<PageDTO> pageList = tuple.getT2();
 
                     assertThat(application.getPages()).hasSize(2);
-                    assertThat(application.getPublishedPages()).hasSize(1);
 
                     assertThat(pageList).hasSize(2);
                     for (PageDTO page : pageList) {
@@ -2229,8 +2233,7 @@ public class ImportServiceTests {
                     final List<PageDTO> pageList = tuple.getT2();
 
                     assertThat(application.getPages()).hasSize(2);
-                    assertThat(application.getPublishedPages()).hasSize(1);
-
+                    assertThat(application.getPublishedPages()).isNull();
                     assertThat(pageList).hasSize(2);
                 })
                 .verifyComplete();
@@ -2575,7 +2578,6 @@ public class ImportServiceTests {
                 .assertNext(application -> {
                     assertThat(application.getWorkspaceId()).isNotNull();
                     assertThat(application.getUnpublishedAppLayout()).isNull();
-                    assertThat(application.getPublishedAppLayout()).isNull();
                 })
                 .verifyComplete();
     }
@@ -2689,8 +2691,6 @@ public class ImportServiceTests {
                             .isEqualTo(Application.AppPositioning.Type.AUTO);
                     assertThat(application.getUnpublishedApplicationDetail().getNavigationSetting())
                             .isNull();
-                    assertThat(application.getPublishedApplicationDetail().getNavigationSetting())
-                            .isNull();
                 })
                 .verifyComplete();
     }
@@ -2796,7 +2796,7 @@ public class ImportServiceTests {
                     ActionDTO action = new ActionDTO();
                     action.setName("validAction");
                     action.setPageId(testPage.getId());
-                    action.setExecuteOnLoad(true);
+                    action.setRunBehaviour(RunBehaviourEnum.ON_PAGE_LOAD);
                     ActionConfiguration actionConfiguration = new ActionConfiguration();
                     actionConfiguration.setHttpMethod(HttpMethod.GET);
                     action.setActionConfiguration(actionConfiguration);
@@ -2805,7 +2805,7 @@ public class ImportServiceTests {
                     ActionDTO action2 = new ActionDTO();
                     action2.setName("validAction2");
                     action2.setPageId(testPage.getId());
-                    action2.setExecuteOnLoad(true);
+                    action2.setRunBehaviour(RunBehaviourEnum.ON_PAGE_LOAD);
                     action2.setUserSetOnLoad(true);
                     ActionConfiguration actionConfiguration2 = new ActionConfiguration();
                     actionConfiguration2.setHttpMethod(HttpMethod.GET);
@@ -3206,6 +3206,10 @@ public class ImportServiceTests {
                 .map(importableArtifact -> (Application) importableArtifact)
                 .block();
 
+        application = applicationPageService
+                .publishWithoutPermissionChecks(application.getId(), true)
+                .block();
+
         // Get the unpublished pages and verify the order
         List<ApplicationPage> pageDTOS = application.getPages();
         Mono<NewPage> newPageMono1 = newPageService.findById(pageDTOS.get(0).getId(), MANAGE_PAGES);
@@ -3432,6 +3436,10 @@ public class ImportServiceTests {
                 .map(importableArtifact -> (Application) importableArtifact)
                 .block();
 
+        application = applicationPageService
+                .publishWithoutPermissionChecks(application.getId(), true)
+                .block();
+
         // Get the unpublished pages and verify the order
         application.setViewMode(false);
         List<ApplicationPage> pageDTOS = application.getPages();
@@ -3468,9 +3476,9 @@ public class ImportServiceTests {
                     NewPage newPage1 = objects.getT1();
                     NewPage newPage2 = objects.getT2();
                     NewPage newPage3 = objects.getT3();
-                    assertThat(newPage1.getPublishedPage().getName()).isEqualTo("Page1");
-                    assertThat(newPage2.getPublishedPage().getName()).isEqualTo("testPage1");
-                    assertThat(newPage3.getPublishedPage().getName()).isEqualTo("testPage2");
+                    assertThat(newPage1.getPublishedPage().getName()).isEqualTo("testPage1");
+                    assertThat(newPage2.getPublishedPage().getName()).isEqualTo("testPage2");
+                    assertThat(newPage3.getPublishedPage().getName()).isEqualTo("Page1");
 
                     assertThat(newPage1.getId())
                             .isEqualTo(publishedPageDTOs.get(0).getId());
@@ -4658,7 +4666,8 @@ public class ImportServiceTests {
                     List<NewAction> actionList = tuple.getT3();
                     List<ActionCollection> actionCollectionList = tuple.getT4();
 
-                    assertThat(pageList).hasSize(2);
+                    // One page is still in published section
+                    assertThat(pageList).hasSize(3);
                     assertThat(actionList).hasSize(3);
 
                     List<String> pageNames = pageList.stream()
@@ -4732,7 +4741,6 @@ public class ImportServiceTests {
                     assertThat(application.getName()).isEqualTo("valid_application");
                     assertThat(application.getWorkspaceId()).isNotNull();
                     assertThat(application.getPages()).hasSize(3);
-                    assertThat(application.getPublishedPages()).hasSize(1);
                     assertThat(application.getModifiedBy()).isEqualTo("api_user");
                     assertThat(application.getUpdatedAt()).isNotNull();
                     assertThat(application.getEditModeThemeId()).isNotNull();
@@ -4779,8 +4787,6 @@ public class ImportServiceTests {
                     final List<PageDTO> pageList = tuple.getT2();
 
                     assertThat(application.getPages()).hasSize(2);
-                    assertThat(application.getPublishedPages()).hasSize(1);
-
                     assertThat(pageList).hasSize(2);
 
                     List<String> pageNames = new ArrayList<>();
@@ -4938,14 +4944,16 @@ public class ImportServiceTests {
                             .filter(policy -> !policy.getPermission()
                                     .equals(applicationPermission
                                             .getPageCreatePermission()
+                                            .block()
                                             .getValue()))
                             .collect(Collectors.toUnmodifiableSet()));
                     return applicationRepository.save(application);
                 })
                 .flatMap(application -> {
-                    FilePart filePart = createFilePart("test_assets/ImportExportServiceTest/valid-application.json");
+                    final String validAppJsonContents =
+                            readResource("test_assets/ImportExportServiceTest/valid-application.json");
                     return importService
-                            .extractArtifactExchangeJson(filePart)
+                            .extractArtifactExchangeJson(validAppJsonContents)
                             .map(artifactExchangeJson -> (ApplicationJson) artifactExchangeJson)
                             .flatMap(applicationJson -> importService.mergeArtifactExchangeJsonWithImportableArtifact(
                                     workspaceId, application.getId(), null, applicationJson, null))
@@ -4955,6 +4963,14 @@ public class ImportServiceTests {
         StepVerifier.create(applicationImportDTOMono)
                 .expectError(AppsmithException.class)
                 .verify();
+    }
+
+    @SneakyThrows
+    private String readResource(String filePath) {
+        try (InputStream inputStream =
+                new DefaultResourceLoader().getResource(filePath).getInputStream()) {
+            return StreamUtils.copyToString(inputStream, StandardCharsets.UTF_8);
+        }
     }
 
     @Test
@@ -4975,6 +4991,7 @@ public class ImportServiceTests {
                             .filter(policy -> !policy.getPermission()
                                     .equals(applicationPermission
                                             .getPageCreatePermission()
+                                            .block()
                                             .getValue()))
                             .collect(Collectors.toUnmodifiableSet()));
                     return applicationRepository.save(application);
@@ -5203,6 +5220,101 @@ public class ImportServiceTests {
                 .verifyComplete();
     }
 
+    /**
+     * The import pipeline must sanitise any self-locating ids that arrive in the uploaded JSON
+     * (application/page/layout ids, baseIds, etc.) so a crafted payload cannot overwrite existing
+     * DB rows or smuggle cross-workspace references. This test uses a fixture whose pageList
+     * entries carry tampered ids ("page_conversations"/"page_investors") and name-based
+     * placeholders ("Conversations"/"Investors") inside unpublishedPage / layouts, and verifies
+     * that after import every persisted entity carries a freshly generated ObjectId while the
+     * name-based cross-references are still correctly rewired to those new ids.
+     */
+    @Test
+    @WithUserDetails(value = "api_user")
+    public void importApplication_tamperedPageIdsInJson_importedEntitiesGetFreshIds() {
+        final Pattern objectIdPattern = Pattern.compile("^[a-f0-9]{24}$");
+        final List<String> placeholderIds =
+                List.of("page_conversations", "page_investors", "Conversations", "Investors");
+        final String fixturePath = "com/appsmith/server/imports/internal/fund-raising-crm.json";
+
+        // Parse the fixture once up front so we can assert the pre-conditions that make this test
+        // meaningful: if the fixture ever loses its tampered ids the test fails loudly here instead
+        // of silently passing downstream.
+        ApplicationJson rawApplicationJson = createAppJson(fixturePath).block();
+        assertThat(rawApplicationJson).isNotNull();
+        assertThat(rawApplicationJson.getPageList()).hasSize(2);
+
+        List<String> tamperedPageIds =
+                rawApplicationJson.getPageList().stream().map(NewPage::getId).collect(Collectors.toList());
+        assertThat(tamperedPageIds).containsExactlyInAnyOrder("page_conversations", "page_investors");
+
+        List<String> tamperedBaseIds = rawApplicationJson.getPageList().stream()
+                .map(NewPage::getBaseId)
+                .collect(Collectors.toList());
+        assertThat(tamperedBaseIds).containsExactlyInAnyOrder("page_conversations", "page_investors");
+
+        List<String> unpublishedPagePlaceholderIds = rawApplicationJson.getExportedApplication().getPages().stream()
+                .map(ApplicationPage::getId)
+                .collect(Collectors.toList());
+        assertThat(unpublishedPagePlaceholderIds).containsExactlyInAnyOrder("Conversations", "Investors");
+
+        String newWorkspaceId = createTemplateWorkspace().getId();
+
+        Mono<Application> importMono = createAppJson(fixturePath).flatMap(applicationJson -> importService
+                .importNewArtifactInWorkspaceFromJson(newWorkspaceId, applicationJson)
+                .map(importableArtifact -> (Application) importableArtifact));
+
+        StepVerifier.create(importMono.flatMap(application -> Mono.zip(
+                        Mono.just(application),
+                        newPageService
+                                .findNewPagesByApplicationId(application.getId(), READ_PAGES)
+                                .collectList())))
+                .assertNext(tuple -> {
+                    Application application = tuple.getT1();
+                    List<NewPage> newPageList = tuple.getT2();
+
+                    assertThat(application.getId()).matches(objectIdPattern);
+                    assertThat(application.getWorkspaceId()).isEqualTo(newWorkspaceId);
+
+                    assertThat(application.getPages()).hasSize(2);
+                    application.getPages().forEach(applicationPage -> {
+                        assertThat(applicationPage.getId()).matches(objectIdPattern);
+                        assertThat(applicationPage.getId()).isNotIn(placeholderIds);
+                    });
+
+                    assertThat(newPageList).hasSize(2);
+
+                    List<String> newPageNames = newPageList.stream()
+                            .map(newPage -> newPage.getUnpublishedPage().getName())
+                            .collect(Collectors.toList());
+                    assertThat(newPageNames).containsExactlyInAnyOrder("Conversations", "Investors");
+
+                    List<String> applicationPageIds = application.getPages().stream()
+                            .map(ApplicationPage::getId)
+                            .collect(Collectors.toList());
+
+                    newPageList.forEach(newPage -> {
+                        assertThat(newPage.getId()).matches(objectIdPattern);
+                        assertThat(newPage.getId()).isNotIn(placeholderIds);
+                        assertThat(newPage.getBaseId()).isNotIn(placeholderIds);
+                        if (newPage.getBaseId() != null) {
+                            assertThat(newPage.getBaseId()).matches(objectIdPattern);
+                        }
+                        assertThat(newPage.getApplicationId()).isEqualTo(application.getId());
+                        assertThat(applicationPageIds).contains(newPage.getId());
+
+                        PageDTO unpublishedPageDTO = newPage.getUnpublishedPage();
+                        assertThat(unpublishedPageDTO).isNotNull();
+                        assertThat(unpublishedPageDTO.getLayouts()).isNotEmpty();
+                        unpublishedPageDTO.getLayouts().forEach(layout -> {
+                            assertThat(layout.getId()).matches(objectIdPattern);
+                            assertThat(layout.getId()).isNotIn(placeholderIds);
+                        });
+                    });
+                })
+                .verifyComplete();
+    }
+
     @Test
     @WithUserDetails(value = "api_user")
     public void importApplication_WhenUpdateLayoutFailures_Success() throws URISyntaxException {
@@ -5284,7 +5396,7 @@ public class ImportServiceTests {
                     assertThat(application.getWorkspaceId()).isNotNull();
                     assertThat(application.getPages()).hasSize(1);
                     assertThat(application.getPolicies()).containsAll(Set.of(manageAppPolicy, readAppPolicy));
-                    assertThat(application.getPublishedPages()).hasSize(0);
+                    assertThat(application.getPublishedPages()).isNull();
                     assertThat(application.getModifiedBy()).isEqualTo("api_user");
                     assertThat(application.getUpdatedAt()).isNotNull();
                     assertThat(application.getEditModeThemeId()).isNotNull();

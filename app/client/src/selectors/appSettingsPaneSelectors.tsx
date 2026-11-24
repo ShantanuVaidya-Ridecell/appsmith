@@ -1,9 +1,10 @@
-import { AppSettingsTabs } from "pages/Editor/AppSettingsPane/AppSettings";
-import type { AppState } from "ee/reducers";
+import { AppSettingsTabs } from "pages/AppIDE/components/AppSettings/types";
+import type { DefaultRootState } from "react-redux";
 import type { AppSettingsPaneReduxState } from "reducers/uiReducers/appSettingsPaneReducer";
 import { createSelector } from "reselect";
 
-export const getAppSettingsPane = (state: AppState) => state.ui.appSettingsPane;
+export const getAppSettingsPane = (state: DefaultRootState) =>
+  state.ui.appSettingsPane;
 
 export const getAppSettingsPaneContext = createSelector(
   getAppSettingsPane,

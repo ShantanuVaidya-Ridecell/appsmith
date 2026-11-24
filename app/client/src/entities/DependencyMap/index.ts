@@ -1,6 +1,4 @@
-import { difference } from "lodash";
-import { isChildPropertyPath } from "utils/DynamicBindingUtils";
-import { sort } from "fast-sort";
+import { isChildPropertyPath, getDifferences } from "utils/DynamicBindingUtils";
 
 export type TDependencies = Map<string, Set<string>>;
 export default class DependencyMap {
@@ -84,19 +82,26 @@ export default class DependencyMap {
       if (this.#nodes.has(dependency)) {
         validDependencies.add(dependency);
 
-        if (this.#dependenciesInverse.has(dependency)) {
-          this.#dependenciesInverse.get(dependency)?.add(node);
-        } else {
-          this.#dependenciesInverse.set(dependency, new Set([node]));
+        let inverseSet = this.#dependenciesInverse.get(dependency);
+
+        if (!inverseSet) {
+          inverseSet = new Set();
+          this.#dependenciesInverse.set(dependency, inverseSet);
         }
+
+        inverseSet.add(node);
       } else {
         invalidDependencies.add(dependency);
 
-        if (this.#invalidDependenciesInverse.has(dependency)) {
-          this.#invalidDependenciesInverse.get(dependency)?.add(node);
-        } else {
-          this.#invalidDependenciesInverse.set(dependency, new Set([node]));
+        let inverseInvalidSet =
+          this.#invalidDependenciesInverse.get(dependency);
+
+        if (!inverseInvalidSet) {
+          inverseInvalidSet = new Set();
+          this.#invalidDependenciesInverse.set(dependency, inverseInvalidSet);
         }
+
+        inverseInvalidSet.add(node);
       }
     }
 
@@ -108,9 +113,9 @@ export default class DependencyMap {
     const newNodeDependencies = validDependencies;
 
     // dependencies removed from path
-    const removedNodeDependencies = difference(
-      Array.from(previousNodeDependencies),
-      Array.from(newNodeDependencies),
+    const removedNodeDependencies = getDifferences(
+      previousNodeDependencies,
+      newNodeDependencies,
     );
 
     // Remove node from the inverseDependencies of removed deps
@@ -123,9 +128,9 @@ export default class DependencyMap {
     const newNodeInvalidDependencies = invalidDependencies;
 
     // invalid dependencies removed from path
-    const removedNodeInvalidDependencies = difference(
-      Array.from(previousNodeInvalidDependencies),
-      Array.from(newNodeInvalidDependencies),
+    const removedNodeInvalidDependencies = getDifferences(
+      previousNodeInvalidDependencies,
+      newNodeInvalidDependencies,
     );
 
     // Remove node from the inverseDependencies of removed invalidDeps
@@ -161,6 +166,25 @@ export default class DependencyMap {
   };
 
   /**
+   * Sorts nodes by their depth in descending order (deeper paths first)
+   * @param nodes Record of nodes to sort
+   * @returns Array of node keys sorted by depth
+   */
+  private sortNodesByDepth = (nodes: string[]): string[] => {
+    // Pre-compute depths for all nodes
+    const nodeDepths = nodes.map((node) => ({
+      node,
+      depth: node.split(".").length,
+    }));
+
+    // Sort by pre-computed depths in descending order
+    nodeDepths.sort((a, b) => b.depth - a.depth);
+
+    // Return just the node keys in sorted order
+    return nodeDepths.map((item) => item.node);
+  };
+
+  /**
    * Adds new nodes to the graph. Should be called when a new node is added to the graph.
    * Iterates over the nodes and checks in the invalid dependency map, to see if it was used earlier.
    * If it was used earlier, it is added to the valid dependencies and removed from the invalid dependencies.
@@ -168,15 +192,16 @@ export default class DependencyMap {
    */
 
   addNodes = (nodes: Record<string, true>, strict = true) => {
+    const newUnaddedNodes = Object.keys(nodes).filter(
+      (node) => !this.#nodes.has(node),
+    );
     const nodesToAdd = strict
-      ? Object.keys(nodes)
-      : sort(Object.keys(nodes)).desc((node) => node.split(".").length);
+      ? newUnaddedNodes
+      : this.sortNodesByDepth(newUnaddedNodes);
 
     let didUpdateGraph = false;
 
     for (const newNode of nodesToAdd) {
-      if (this.#nodes.has(newNode)) continue;
-
       // New node introduced to the graph.
       this.#nodes.set(newNode, true);
       // Check the paths that consumed this node before it was introduced.
@@ -210,11 +235,15 @@ export default class DependencyMap {
         this.#invalidDependencies.get(iNode)?.delete(newNode);
         didUpdateGraph = true;
 
-        if (this.#dependenciesInverse.has(newNode)) {
-          this.#dependenciesInverse.get(newNode)?.add(iNode);
-        } else {
-          this.#dependenciesInverse.set(newNode, new Set([iNode]));
+        // Get or create the inverse dependencies set for the new node
+        let inverseSet = this.#dependenciesInverse.get(newNode);
+
+        if (!inverseSet) {
+          inverseSet = new Set();
+          this.#dependenciesInverse.set(newNode, inverseSet);
         }
+
+        inverseSet.add(iNode);
       }
 
       this.#invalidDependenciesInverse.delete(newNode);
@@ -243,11 +272,14 @@ export default class DependencyMap {
 
         if (!this.#nodes.has(iNode)) continue;
 
-        if (this.#invalidDependenciesInverse.has(node)) {
-          this.#invalidDependenciesInverse.get(node)?.add(iNode);
-        } else {
-          this.#invalidDependenciesInverse.set(node, new Set([iNode]));
+        let inverseInvalidSet = this.#invalidDependenciesInverse.get(node);
+
+        if (!inverseInvalidSet) {
+          inverseInvalidSet = new Set();
+          this.#invalidDependenciesInverse.set(node, inverseInvalidSet);
         }
+
+        inverseInvalidSet.add(iNode);
       }
 
       this.#dependenciesInverse.delete(node);

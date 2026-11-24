@@ -5,6 +5,7 @@ import com.appsmith.external.views.Git;
 import com.appsmith.external.views.Views;
 import com.appsmith.server.constants.ArtifactType;
 import com.appsmith.server.domains.Application;
+import com.appsmith.server.domains.Application.StaticUrlSettings;
 import com.appsmith.server.domains.ApplicationDetail;
 import com.appsmith.server.domains.ApplicationPage;
 import com.appsmith.server.domains.GitArtifactMetadata;
@@ -21,6 +22,7 @@ import lombok.ToString;
 import lombok.experimental.FieldNameConstants;
 import org.springframework.data.annotation.Transient;
 import org.springframework.data.mongodb.core.mapping.Document;
+import org.springframework.util.CollectionUtils;
 import org.springframework.util.StringUtils;
 
 import java.io.Serializable;
@@ -89,8 +91,18 @@ public class ApplicationCE extends BaseDomain implements ArtifactCE {
     @JsonView({Views.Public.class, Git.class})
     String icon;
 
+    // Short, optional blurb shown under the application name on workspace cards.
+    // Keep in sync with APP_DESCRIPTION_MAX_LENGTH in the client utils/appDescription.ts.
+    public static final int DESCRIPTION_MAX_LENGTH = 250;
+
+    @JsonView({Views.Public.class, Git.class})
+    String description;
+
     @JsonView(Views.Public.class)
     private String slug;
+
+    @JsonView({Views.Public.class, Views.Export.class, Git.class})
+    StaticUrlSettings staticUrlSettings;
 
     @JsonView({Views.Internal.class, Git.class})
     Application.AppLayout unpublishedAppLayout;
@@ -216,6 +228,7 @@ public class ApplicationCE extends BaseDomain implements ArtifactCE {
         this.clonedFromApplicationId = application.getId();
         this.color = application.getColor();
         this.icon = application.getIcon();
+        this.description = application.getDescription();
         this.unpublishedAppLayout = application.getUnpublishedAppLayout() == null
                 ? null
                 : new Application.AppLayout(application.getUnpublishedAppLayout().type);
@@ -268,13 +281,18 @@ public class ApplicationCE extends BaseDomain implements ArtifactCE {
     }
 
     public void exportApplicationPages(final Map<String, String> pageIdToNameMap) {
-        for (ApplicationPage applicationPage : this.getPages()) {
-            applicationPage.setId(pageIdToNameMap.get(applicationPage.getId() + EDIT));
-            applicationPage.setDefaultPageId(null);
+        if (!CollectionUtils.isEmpty(this.getPages())) {
+            for (ApplicationPage applicationPage : this.getPages()) {
+                applicationPage.setId(pageIdToNameMap.get(applicationPage.getId() + EDIT));
+                applicationPage.setDefaultPageId(null);
+            }
         }
-        for (ApplicationPage applicationPage : this.getPublishedPages()) {
-            applicationPage.setId(pageIdToNameMap.get(applicationPage.getId() + VIEW));
-            applicationPage.setDefaultPageId(null);
+
+        if (!CollectionUtils.isEmpty(this.getPublishedPages())) {
+            for (ApplicationPage applicationPage : this.getPublishedPages()) {
+                applicationPage.setId(pageIdToNameMap.get(applicationPage.getId() + VIEW));
+                applicationPage.setDefaultPageId(null);
+            }
         }
     }
 
@@ -317,6 +335,34 @@ public class ApplicationCE extends BaseDomain implements ArtifactCE {
     @Override
     public void setPublishedThemeId(String themeId) {
         this.setPublishedModeThemeId(themeId);
+    }
+
+    // null  -> absent (the sparse update leaves the persisted value untouched)
+    // ""    -> explicitly cleared
+    // text  -> trimmed value
+    public void setDescription(String description) {
+        this.description = description == null ? null : description.trim();
+    }
+
+    /**
+     * Trims and truncates the description to {@link #DESCRIPTION_MAX_LENGTH}. Used on write paths that must not
+     * fail on an oversized value (import, Git checkout, create, fork, clone). Routing through the setter also trims
+     * values written reflectively by Gson. The cut never splits a surrogate pair, so the stored value stays valid
+     * UTF-16 for any downstream UTF-8 encoding.
+     */
+    public void clampDescriptionToMaxLength() {
+        if (this.description == null) {
+            return;
+        }
+        setDescription(this.description);
+        if (this.description.length() <= DESCRIPTION_MAX_LENGTH) {
+            return;
+        }
+        int cut = DESCRIPTION_MAX_LENGTH;
+        if (Character.isHighSurrogate(this.description.charAt(cut - 1))) {
+            cut--;
+        }
+        this.description = this.description.substring(0, cut);
     }
 
     @Override
@@ -368,7 +414,7 @@ public class ApplicationCE extends BaseDomain implements ArtifactCE {
     }
 
     @Override
-    @JsonView({Views.Internal.class})
+    @JsonView({Views.Public.class})
     public ArtifactType getArtifactType() {
         return ArtifactType.APPLICATION;
     }
@@ -436,6 +482,12 @@ public class ApplicationCE extends BaseDomain implements ArtifactCE {
 
         @JsonView({Views.Public.class, Git.class})
         private Boolean showSignIn;
+
+        @JsonView({Views.Public.class, Git.class})
+        private Boolean showShareApp;
+
+        @JsonView({Views.Public.class, Git.class})
+        private Boolean showAllApps;
     }
 
     /**
@@ -508,6 +560,24 @@ public class ApplicationCE extends BaseDomain implements ArtifactCE {
         }
     }
 
+    /**
+     * StaticUrlSettings stores the static URL configuration for the application
+     */
+    @Data
+    @NoArgsConstructor
+    @AllArgsConstructor
+    @FieldNameConstants
+    public static class StaticUrlSettingsCE implements Serializable {
+
+        @JsonView({Views.Public.class, Views.Export.class, Git.class})
+        private Boolean enabled;
+
+        @JsonView({Views.Public.class, Views.Export.class, Git.class})
+        private String uniqueSlug;
+
+        public static class Fields {}
+    }
+
     public static class Fields extends BaseDomain.Fields {
         public static final String gitApplicationMetadata_gitAuth =
                 dotted(gitApplicationMetadata, GitArtifactMetadata.Fields.gitAuth);
@@ -517,9 +587,15 @@ public class ApplicationCE extends BaseDomain implements ArtifactCE {
                 dotted(gitApplicationMetadata, GitArtifactMetadata.Fields.defaultArtifactId);
         public static final String gitApplicationMetadata_branchName =
                 dotted(gitApplicationMetadata, GitArtifactMetadata.Fields.branchName);
+        public static final String gitApplicationMetadata_refName =
+                dotted(gitApplicationMetadata, GitArtifactMetadata.Fields.refName);
+        public static final String gitApplicationMetadata_refType =
+                dotted(gitApplicationMetadata, GitArtifactMetadata.Fields.refType);
         public static final String gitApplicationMetadata_isRepoPrivate =
                 dotted(gitApplicationMetadata, GitArtifactMetadata.Fields.isRepoPrivate);
         public static final String gitApplicationMetadata_isProtectedBranch =
                 dotted(gitApplicationMetadata, GitArtifactMetadata.Fields.isProtectedBranch);
+        public static final String staticUrlSettings_uniqueSlug =
+                dotted(staticUrlSettings, StaticUrlSettings.Fields.uniqueSlug);
     }
 }

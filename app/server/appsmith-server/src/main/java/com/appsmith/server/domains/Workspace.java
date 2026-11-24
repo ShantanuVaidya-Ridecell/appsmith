@@ -25,8 +25,7 @@ public class Workspace extends BaseDomain {
     @JsonView(Views.Public.class)
     private String domain;
 
-    @NotBlank(message = "Name is mandatory")
-    @JsonView(Views.Public.class)
+    @NotBlank(message = "Name is mandatory") @JsonView(Views.Public.class)
     private String name;
 
     @JsonView(Views.Public.class)
@@ -47,8 +46,13 @@ public class Workspace extends BaseDomain {
     @JsonView(Views.Internal.class)
     private String logoAssetId;
 
+    @Deprecated
+    // TODO: Remove this field once we have migrated the data to use organizationId instead of tenantId
     @JsonView(Views.Public.class)
     private String tenantId;
+
+    @JsonView(Views.Public.class)
+    private String organizationId;
 
     @JsonView(Views.Internal.class)
     private Boolean hasEnvironments;
@@ -66,6 +70,11 @@ public class Workspace extends BaseDomain {
 
     @JsonView(Views.Public.class)
     public String getLogoUrl() {
+        // If there's no logo, return null instead of constructing a URL like "/api/v1/assets/null"
+        // This prevents the frontend from making pointless requests to load a non-existent image
+        if (logoAssetId == null || logoAssetId.isEmpty()) {
+            return null;
+        }
         return Url.ASSET_URL + "/" + logoAssetId;
     }
 

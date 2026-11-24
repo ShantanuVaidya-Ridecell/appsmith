@@ -16,8 +16,9 @@ import {
   ReduxActionTypes,
 } from "ee/constants/ReduxActionConstants";
 import log from "loglevel";
-import * as Sentry from "@sentry/react";
+import { appsmithTelemetry } from "instrumentation";
 import { findLoadingEntities } from "utils/WidgetLoadingStateUtils";
+import { getModuleInstanceActions } from "ee/selectors/modulesSelector";
 
 const actionExecutionRequestActions = [
   ReduxActionTypes.EXECUTE_PLUGIN_ACTION_REQUEST,
@@ -48,7 +49,11 @@ function* setWidgetsLoadingSaga(action: ReduxAction<unknown>) {
     yield take(ReduxActionTypes.SET_EVALUATED_TREE);
   }
 
-  const actions: ActionDataState = yield select(getActions);
+  const entityActions: ActionDataState = yield select(getActions);
+  const moduleInstanceActions: ActionDataState = yield select(
+    getModuleInstanceActions,
+  );
+  const actions = [...entityActions, ...moduleInstanceActions];
   const isLoadingActions: string[] = actions
     .filter((action: ActionData) => action.isLoading)
     .map((action: ActionData) => action.config.name);
@@ -101,7 +106,9 @@ export default function* actionExecutionChangeListeners() {
       yield call(actionExecutionChangeListenerSaga);
     } catch (e) {
       log.error(e);
-      Sentry.captureException(e);
+      appsmithTelemetry.captureException(e, {
+        errorName: "WidgetLoadingError",
+      });
     }
   }
 }

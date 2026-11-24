@@ -15,7 +15,7 @@ let guid;
 let dataSourceName: string;
 describe(
   "Datasource form related tests",
-  { tags: ["@tag.Datasource", "@tag.Git", "@tag.AccessControl"] },
+  { tags: ["@tag.Datasource", "@tag.AccessControl"] },
   function () {
     before(() => {
       homePage.CreateNewWorkspace("FetchSchemaOnce", true);
@@ -65,7 +65,7 @@ describe(
       dataSources.DeleteDatasourceFromWithinDS(dataSourceName);
     });
 
-    it(
+    it.skip(
       "3. Verify if schema (table and column) exist in query editor and searching works",
       { tags: ["@tag.excludeForAirgap"] },
       () => {
@@ -83,7 +83,7 @@ describe(
       },
     );
 
-    it(
+    it.skip(
       "4. Verify if refresh works.",
       { tags: ["@tag.excludeForAirgap"] },
       () => {

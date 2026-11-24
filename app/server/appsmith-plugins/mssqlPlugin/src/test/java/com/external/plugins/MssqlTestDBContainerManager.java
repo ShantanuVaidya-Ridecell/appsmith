@@ -1,13 +1,16 @@
 package com.external.plugins;
 
+import com.appsmith.external.configurations.connectionpool.ConnectionPoolConfig;
 import com.appsmith.external.models.DBAuth;
 import com.appsmith.external.models.DatasourceConfiguration;
 import com.appsmith.external.models.Endpoint;
 import com.appsmith.external.models.SSLDetails;
 import com.external.plugins.utils.MssqlDatasourceUtils;
 import com.zaxxer.hikari.HikariDataSource;
+import io.micrometer.observation.ObservationRegistry;
 import org.testcontainers.containers.MSSQLServerContainer;
 import org.testcontainers.utility.DockerImageName;
+import reactor.core.publisher.Mono;
 
 import java.sql.SQLException;
 import java.sql.Statement;
@@ -18,13 +21,32 @@ import static com.external.plugins.utils.MssqlExecuteUtils.closeConnectionPostEx
 
 public class MssqlTestDBContainerManager {
 
-    static MssqlPlugin.MssqlPluginExecutor mssqlPluginExecutor = new MssqlPlugin.MssqlPluginExecutor();
+    private static class MockConnectionPoolConfig implements ConnectionPoolConfig {
+        @Override
+        public Mono<Integer> getMaxConnectionPoolSize() {
+            return Mono.just(5);
+        }
+
+        @Override
+        public Mono<Integer> getSocketTimeoutSeconds() {
+            return Mono.just(600);
+        }
+    }
+
+    static MssqlPlugin.MssqlPluginExecutor mssqlPluginExecutor =
+            new MssqlPlugin.MssqlPluginExecutor(new MockConnectionPoolConfig(), ObservationRegistry.NOOP);
 
     public static MssqlDatasourceUtils mssqlDatasourceUtils = new MssqlDatasourceUtils();
 
+    // The SQL Server image the tests run on. Override it to test another version, for example
+    // -Dmssql.test.image=mcr.microsoft.com/mssql/server:2019-latest
+    private static final String MSSQL_TEST_IMAGE =
+            System.getProperty("mssql.test.image", "mcr.microsoft.com/mssql/server:2022-latest");
+
     @SuppressWarnings("rawtypes")
     public static MSSQLServerContainer getMssqlDBForTest() {
-        return new MSSQLServerContainer<>(DockerImageName.parse("mcr.microsoft.com/mssql/server:2022-latest"))
+        return new MSSQLServerContainer<>(DockerImageName.parse(MSSQL_TEST_IMAGE)
+                        .asCompatibleSubstituteFor("mcr.microsoft.com/mssql/server"))
                 .acceptLicense()
                 .withExposedPorts(1433)
                 .withPassword("Mssql12;3");

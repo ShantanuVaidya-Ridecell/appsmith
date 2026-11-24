@@ -7,6 +7,7 @@ export enum GitArtifactType {
 export enum GitOpsTab {
   Deploy = "Deploy",
   Merge = "Merge",
+  Release = "Release",
 }
 
 export enum GitSettingsTab {
@@ -36,4 +37,6 @@ export enum GitErrorCodes {
   REPO_NOT_EMPTY = "AE-GIT-4033",
   REPO_LIMIT_REACHED = "AE-GIT-4043",
   PUSH_FAILED_REMOTE_COUNTERPART_IS_AHEAD = "AE-GIT-4048",
+  DUPLICATE_ARTIFACT_OVERRIDE = "AE-GIT-5004",
+  INVALID_DEPLOY_KEY = "AE-GIT-4032",
 }

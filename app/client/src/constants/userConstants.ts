@@ -8,7 +8,7 @@ export interface User {
   username: string;
   name: string;
   gender: Gender;
-  emptyInstance?: boolean;
+  isEmptyInstance?: boolean;
   photoId?: string;
   isSuperUser: boolean;
   role?: string;
@@ -20,6 +20,9 @@ export interface User {
   isAnonymous?: boolean;
   isIntercomConsentGiven?: boolean;
   emailVerified: boolean;
+  // HMAC-SHA256 of the user's email computed server-side using the Pylon identity
+  // secret. Used to enable Pylon chat widget identity verification on boot.
+  emailVerificationHash?: string;
 }
 
 export interface UserApplication {

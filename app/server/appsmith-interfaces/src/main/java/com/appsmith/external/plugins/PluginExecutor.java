@@ -22,12 +22,13 @@ import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 import reactor.util.function.Tuple2;
 
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Properties;
 import java.util.Set;
-import java.util.stream.Collectors;
 
 import static com.appsmith.external.constants.spans.ActionSpan.ACTION_EXECUTION_PLUGIN_EXECUTION;
 import static com.appsmith.external.helpers.PluginUtils.getHintMessageForLocalhostUrl;
@@ -186,6 +187,13 @@ public interface PluginExecutor<C> extends ExtensionPoint, CrudTemplateService {
     }
 
     /**
+     * This function is being called as a hook after saving a datasource.
+     */
+    default Mono<DatasourceStorage> postSaveHook(DatasourceStorage datasourceStorage) {
+        return Mono.just(datasourceStorage);
+    }
+
+    /**
      * This function fetches the structure of the tables/collections in the datasource. It's used to make query creation
      * easier for the user.
      *
@@ -247,19 +255,23 @@ public interface PluginExecutor<C> extends ExtensionPoint, CrudTemplateService {
                 .tap(Micrometer.observation(observationRegistry));
     }
 
-    // TODO: Following methods of executeParameterizedWithFlags, executeParameterizedWithMetricsAndFlags,
-    // triggerWithFlags are
-    // added
-    // to support feature flags in the plugin modules. Current implementation of featureFlagService is only available in
-    // server module
-    // and not available in any of the plugin modules due to dependencies on SessionUserService, TenantService etc.
-    // Hence, these methods are added to support feature flags in the plugin modules.
-    // Ideal solution would be to move featureFlagService and its dependencies to the shared interface module
-    // But this is a bigger change and will be done in future. Current change of passing flags was done to resolve
-    // release blocker
-    // https://github.com/appsmithorg/appsmith/issues/37714
-    // Once thorogh testing of shared drive support is done, we can remove this tech debt of passing feature flags like
-    // this.
+    /**
+     * TODO: Following methods of executeParameterizedWithFlags, executeParameterizedWithMetricsAndFlags,
+     * triggerWithFlags are added
+     * to support feature flags in the plugin modules. Current implementation of featureFlagService is only available in
+     * server module
+     * and not available in any of the plugin modules due to dependencies on SessionUserService, OrganizationService etc.
+     * Hence, these methods are added to support feature flags in the plugin modules.
+     * Ideal solution would be to move featureFlagService and its dependencies to the shared interface module
+     * But this is a bigger change and will be done in future. Current change of passing flags was done to resolve release blocker
+     * https://github.com/appsmithorg/appsmith/issues/37714
+     * Once thorogh testing of shared drive support is done, we can remove this tech debt of passing feature flags like this.
+     */
+
+    /**
+     * If you are overriding this method in plugins, make sure to handle variable substitution and final execution
+     * in the plugin code itself. Variable substitution is handled by {@link #prepareConfigurationsForExecution}
+     */
     default Mono<ActionExecutionResult> executeParameterizedWithFlags(
             C connection,
             ExecuteActionDTO executeActionDTO,
@@ -269,6 +281,23 @@ public interface PluginExecutor<C> extends ExtensionPoint, CrudTemplateService {
         return this.executeParameterized(connection, executeActionDTO, datasourceConfiguration, actionConfiguration);
     }
 
+    /**
+     * Appsmith Server calls this function for execution of the action.
+     * Default implementation which takes the variables that need to be substituted and then calls the plugin execute function
+     * <p>
+     * Plugins requiring their custom implementation of variable substitution should override this function and then are
+     * responsible both for variable substitution and final execution.
+     *
+     * @param connection              : This is the connection that is established to the data source. This connection is according
+     *                                to the parameters in Datasource Configuration
+     * @param executeActionDTO        : This is the data structure sent by the client during execute. This contains the params
+     *                                which would be used for substitution
+     * @param datasourceConfiguration : These are the configurations which have been used to create a Datasource from a Plugin
+     * @param actionConfiguration     : These are the configurations which have been used to create an Action from a Datasource.
+     * @param observationRegistry     : This is used for adding performance metrics to plugin modules
+     * @param featureFlagMap          : This is used for adding feature flagging capabilities to plugin modules.
+     * @return ActionExecutionResult  : This object is returned to the user which contains the result values from the execution.
+     */
     default Mono<ActionExecutionResult> executeParameterizedWithMetricsAndFlags(
             C connection,
             ExecuteActionDTO executeActionDTO,
@@ -276,11 +305,23 @@ public interface PluginExecutor<C> extends ExtensionPoint, CrudTemplateService {
             ActionConfiguration actionConfiguration,
             ObservationRegistry observationRegistry,
             Map<String, Boolean> featureFlagMap) {
+        this.sanitiseNullsInParams(executeActionDTO);
         return this.executeParameterizedWithFlags(
                         connection, executeActionDTO, datasourceConfiguration, actionConfiguration, featureFlagMap)
                 .tag("plugin", this.getClass().getName())
                 .name(ACTION_EXECUTION_PLUGIN_EXECUTION)
                 .tap(Micrometer.observation(observationRegistry));
+    }
+
+    default void sanitiseNullsInParams(ExecuteActionDTO executeActionDTO) {
+        String stringNull = "null";
+        if (executeActionDTO != null && !isEmpty(executeActionDTO.getParams())) {
+            executeActionDTO.getParams().stream().forEach(param -> {
+                if (Objects.isNull(param.getValue())) {
+                    param.setValue(stringNull);
+                }
+            });
+        }
     }
 
     default Mono<TriggerResultDTO> triggerWithFlags(
@@ -289,6 +330,39 @@ public interface PluginExecutor<C> extends ExtensionPoint, CrudTemplateService {
             TriggerRequestDTO request,
             Map<String, Boolean> featureFlagMap) {
         return this.trigger(connection, datasourceConfiguration, request);
+    }
+    /*
+     * Feature flagging implementation is added here as a potential fix to dynamoDB query timeouts problem
+     * This is a temporary fix and will be removed once we get the confirmation from the user that issue is resolved
+     * Even if the issue is not resolved, we will know that fix does not work and hence will be removing the code in any case
+     * https://github.com/appsmithorg/appsmith/issues/39426 Created task here to remove this flag
+     * This implementation ensures that none of the existing plugins have any impact due to feature flagging, hence if else condition
+     * This applies to both datasourceCreate and testDatasource methods added below
+     * */
+    default Mono<C> datasourceCreate(
+            DatasourceConfiguration datasourceConfiguration, Boolean isDynamoDBConnectionTimeToLiveEnabled) {
+        return this.datasourceCreate(datasourceConfiguration);
+    }
+
+    default Mono<DatasourceTestResult> testDatasource(
+            DatasourceConfiguration datasourceConfiguration, Boolean isDynamoDBConnectionTimeToLiveEnabled) {
+        return this.datasourceCreate(datasourceConfiguration, isDynamoDBConnectionTimeToLiveEnabled)
+                .flatMap(connection -> {
+                    return this.testDatasource(connection).doFinally(signal -> this.datasourceDestroy(connection));
+                })
+                .onErrorResume(error -> {
+                    // We always expect to have an error object, but the error object may not be well-formed
+                    final String errorMessage = error.getMessage() == null
+                            ? AppsmithPluginError.PLUGIN_DATASOURCE_TEST_GENERIC_ERROR.getMessage()
+                            : error.getMessage();
+                    if (error instanceof AppsmithPluginException
+                            && StringUtils.hasLength(((AppsmithPluginException) error).getDownstreamErrorMessage())) {
+                        return Mono.just(new DatasourceTestResult(
+                                ((AppsmithPluginException) error).getDownstreamErrorMessage(), errorMessage));
+                    }
+                    return Mono.just(new DatasourceTestResult(errorMessage));
+                })
+                .subscribeOn(Schedulers.boundedElastic());
     }
 
     /**
@@ -316,17 +390,21 @@ public interface PluginExecutor<C> extends ExtensionPoint, CrudTemplateService {
         // Do variable substitution
         // Do this only if params have been provided in the execute command
         if (executeActionDTO != null && !isEmpty(executeActionDTO.getParams())) {
-            Map<String, String> replaceParamsMap = executeActionDTO.getParams().stream()
-                    .collect(Collectors.toMap(
-                            // Trimming here for good measure. If the keys have space on either side,
-                            // Mustache won't be able to find the key.
-                            // We also add a backslash before every double-quote or backslash character
-                            // because we apply the template replacing in a JSON-stringified version of
-                            // these properties, where these two characters are escaped.
-                            p -> p.getKey().trim(), // .replaceAll("[\"\n\\\\]", "\\\\$0"),
-                            Param::getValue,
-                            // In case of a conflict, we pick the older value
-                            (oldValue, newValue) -> oldValue));
+            Map<String, String> replaceParamsMap = new HashMap<>();
+            for (Param p : executeActionDTO.getParams()) {
+                if (p != null && p.getKey() != null) {
+                    String key = p.getKey().trim();
+                    // We also add a backslash before every double-quote or backslash character
+                    // because we apply the template replacing in a JSON-stringified version of
+                    // these properties, where these two characters are escaped.
+                    // The original comment about .replaceAll("["\n\\]", "\\$0") for the key
+                    // is preserved here for context, though not directly applied in this simplified key trim.
+                    String value = p.getValue(); // This will now correctly store null if p.getValue() is null
+
+                    // In case of a conflict, putIfAbsent picks the older value (the one already in the map)
+                    replaceParamsMap.putIfAbsent(key, value);
+                }
+            }
 
             MustacheHelper.renderFieldValues(datasourceConfiguration, replaceParamsMap);
             MustacheHelper.renderFieldValues(actionConfiguration, replaceParamsMap);

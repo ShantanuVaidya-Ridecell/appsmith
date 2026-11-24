@@ -4,7 +4,7 @@ import { EventType } from "constants/AppsmithActionConstants/ActionConstants";
 import { Layers } from "constants/Layers";
 import { ValidationTypes } from "constants/WidgetValidation";
 import type { SetterConfig, Stylesheet } from "entities/AppTheming";
-import { EvaluationSubstitutionType } from "entities/DataTree/dataTreeFactory";
+import { EvaluationSubstitutionType } from "constants/EvaluationConstants";
 import equal from "fast-deep-equal/es6";
 import { isArray, isFinite, isString, xorWith } from "lodash";
 import type { DraftValueType, LabelInValueType } from "rc-select/lib/Select";
@@ -24,7 +24,7 @@ import derivedProperties from "./parseDerivedProperties";
 import type {
   AnvilConfig,
   AutocompletionDefinitions,
-} from "WidgetProvider/constants";
+} from "WidgetProvider/types";
 import {
   defaultValueExpressionPrefix,
   getDefaultValueExpressionSuffix,
@@ -860,6 +860,7 @@ class MultiSelectWidget extends BaseWidget<
         filterText={this.props.filterText}
         isDynamicHeightEnabled={isAutoHeightEnabledForWidget(this.props)}
         isFilterable={this.props.isFilterable}
+        isRequired={this.props.isRequired}
         isValid={!isInvalid}
         labelAlignment={this.props.labelAlignment}
         labelPosition={this.props.labelPosition}
@@ -953,10 +954,12 @@ class MultiSelectWidget extends BaseWidget<
     }
   };
 }
+
 export interface OptionValue {
   label: string;
   value: string;
 }
+
 export interface DropdownOption extends OptionValue {
   disabled?: boolean;
 }

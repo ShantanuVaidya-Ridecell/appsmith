@@ -6,11 +6,12 @@ import com.appsmith.server.applications.base.ApplicationService;
 import com.appsmith.server.configurations.CommonConfig;
 import com.appsmith.server.configurations.WithMockAppsmithUser;
 import com.appsmith.server.constants.FieldName;
+import com.appsmith.server.constants.RateLimitConstants;
 import com.appsmith.server.domains.LoginSource;
+import com.appsmith.server.domains.Organization;
+import com.appsmith.server.domains.OrganizationConfiguration;
 import com.appsmith.server.domains.PasswordResetToken;
 import com.appsmith.server.domains.PermissionGroup;
-import com.appsmith.server.domains.Tenant;
-import com.appsmith.server.domains.TenantConfiguration;
 import com.appsmith.server.domains.User;
 import com.appsmith.server.domains.UserData;
 import com.appsmith.server.domains.UserState;
@@ -23,6 +24,9 @@ import com.appsmith.server.dtos.UserSignupDTO;
 import com.appsmith.server.dtos.UserUpdateDTO;
 import com.appsmith.server.exceptions.AppsmithError;
 import com.appsmith.server.exceptions.AppsmithException;
+import com.appsmith.server.helpers.SecureBaseUrlResolver;
+import com.appsmith.server.instanceconfigs.helpers.InstanceVariablesHelper;
+import com.appsmith.server.ratelimiting.RateLimitService;
 import com.appsmith.server.repositories.EmailVerificationTokenRepository;
 import com.appsmith.server.repositories.PasswordResetTokenRepository;
 import com.appsmith.server.repositories.PermissionGroupRepository;
@@ -35,6 +39,8 @@ import org.apache.hc.core5.http.message.BasicNameValuePair;
 import org.apache.hc.core5.net.WWWFormCodec;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.mockito.Mockito;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -57,6 +63,8 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
+import java.util.UUID;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static com.appsmith.server.acl.AclPermission.MANAGE_USERS;
 import static com.appsmith.server.acl.AclPermission.RESET_PASSWORD_USERS;
@@ -65,7 +73,8 @@ import static com.appsmith.server.constants.Appsmith.DEFAULT_ORIGIN_HEADER;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 
 @Slf4j
 @SpringBootTest
@@ -102,8 +111,28 @@ public class UserServiceTest {
     @MockBean
     EmailVerificationTokenRepository emailVerificationTokenRepository;
 
+    // Spied so forgot-password tests can pin a resolved base URL and verify email dispatch without
+    // actually sending mail. Real behaviour is preserved for every other test in this class.
+    @SpyBean
+    SecureBaseUrlResolver secureBaseUrlResolver;
+
+    @SpyBean
+    EmailService emailService;
+
+    // Mocked so the in-service per-email resend throttle does not reach Redis in these unit tests; the
+    // throttle's real behaviour (limit trigger + non-distinguishability) is covered against a Redis
+    // testcontainer in UserServiceResendEmailVerificationRateLimitTest. Defaults to "within limit".
+    @MockBean
+    RateLimitService rateLimitService;
+
+    // Spied so the resend "verification disabled" test can pin the real gate — email verification is gated
+    // on InstanceVariablesHelper.isEmailVerificationEnabled (the instance-variables config), not the
+    // OrganizationConfiguration. Real behaviour is preserved for every other test.
+    @SpyBean
+    InstanceVariablesHelper instanceVariablesHelper;
+
     @Autowired
-    TenantService tenantService;
+    OrganizationService organizationService;
 
     Mono<User> userMono;
 
@@ -119,6 +148,12 @@ public class UserServiceTest {
     @BeforeEach
     public void setup() {
         userMono = userService.findByEmail("usertest@usertest.com");
+        // Default the resend per-email throttle to "within limit" so it is transparent to tests that are
+        // not specifically exercising it.
+        Mockito.lenient()
+                .when(rateLimitService.tryIncreaseCounter(
+                        Mockito.eq(RateLimitConstants.BUCKET_KEY_FOR_RESEND_EMAIL_VERIFICATION_API), any()))
+                .thenReturn(Mono.just(true));
     }
     // Test the update workspace flow.
     @Test
@@ -187,7 +222,7 @@ public class UserServiceTest {
                     assertThat(user.getId()).isNotNull();
                     assertThat(user.getEmail()).isEqualTo("new-user-email@email.com");
                     assertThat(user.getName()).isNullOrEmpty();
-                    assertThat(user.getTenantId()).isNotNull();
+                    assertThat(user.getOrganizationId()).isNotNull();
 
                     Set<Policy> userPolicies = user.getPolicies();
                     Optional<Policy> optionalManageUserPolicy = userPolicies.stream()
@@ -216,8 +251,6 @@ public class UserServiceTest {
         User newUser = new User();
         newUser.setEmail(sampleEmail);
         newUser.setPassword("new-user-test-password");
-
-        Mono<User> usercreateMono = userService.create(newUser).cache();
 
         Mono<User> userCreateMono = userService.create(newUser).cache();
 
@@ -266,52 +299,145 @@ public class UserServiceTest {
 
     @Test
     @WithMockAppsmithUser
-    public void signUpViaFormLoginIfAlreadyInvited() {
+    public void createNewUser_WhenEmailHasInvisibleUnicode_SavedNormalized() {
+        String dirtyEmail = "\u2060new-invisible-char-user@example.com";
+        String expectedCleanEmail = "new-invisible-char-user@example.com";
+
         User newUser = new User();
-        newUser.setEmail("alreadyInvited@alreadyInvited.com");
-        newUser.setIsEnabled(false);
+        newUser.setEmail(dirtyEmail);
+        newUser.setPassword("test-password-123");
 
-        userRepository.save(newUser).block();
+        Mono<User> userCreateMono = userService.create(newUser);
 
-        User signupUser = new User();
-        signupUser.setEmail(newUser.getEmail());
-        signupUser.setPassword("password");
-        signupUser.setSource(LoginSource.FORM);
-
-        Mono<User> userMono = userService.create(signupUser);
-
-        StepVerifier.create(userMono)
+        StepVerifier.create(userCreateMono)
                 .assertNext(user -> {
-                    assertEquals(newUser.getEmail(), user.getEmail());
-                    assertEquals(LoginSource.FORM, user.getSource());
-                    assertThat(user.getIsEnabled()).isTrue();
+                    assertThat(user).isNotNull();
+                    assertThat(user.getEmail()).isEqualTo(expectedCleanEmail);
                 })
                 .verifyComplete();
     }
 
     @Test
     @WithMockAppsmithUser
-    public void signUpViaGoogleIfAlreadyInvited() {
-        User newUser = new User();
-        newUser.setEmail("alreadyInvited@google-gmail.com");
-        newUser.setIsEnabled(false);
+    public void createNewUser_WhenEmailHasMultipleDirtyChars_SavedFullyNormalized() {
+        String dirtyEmail = "  \u200B\u200CNew-Multi-Dirty@Example\uFEFF.COM  ";
+        String expectedCleanEmail = "new-multi-dirty@example.com";
 
-        userRepository.save(newUser).block();
+        User newUser = new User();
+        newUser.setEmail(dirtyEmail);
+        newUser.setPassword("test-password-123");
+
+        Mono<User> userCreateMono = userService.create(newUser);
+
+        StepVerifier.create(userCreateMono)
+                .assertNext(user -> {
+                    assertThat(user).isNotNull();
+                    assertThat(user.getEmail()).isEqualTo(expectedCleanEmail);
+                })
+                .verifyComplete();
+    }
+
+    @Test
+    @WithMockAppsmithUser
+    public void createNewUser_WhenCleanEmail_SavedUnchanged() {
+        String cleanEmail = "clean-email-unchanged@example.com";
+
+        User newUser = new User();
+        newUser.setEmail(cleanEmail);
+        newUser.setPassword("test-password-123");
+
+        Mono<User> userCreateMono = userService.create(newUser);
+
+        StepVerifier.create(userCreateMono)
+                .assertNext(user -> {
+                    assertThat(user).isNotNull();
+                    assertThat(user.getEmail()).isEqualTo(cleanEmail);
+                })
+                .verifyComplete();
+    }
+
+    @Test
+    @WithMockAppsmithUser
+    public void signUpViaFormLogin_WhenEmailHasInvisibleUnicode_SavedNormalized() {
+        String dirtyEmail = "\u200Bform-signup-dirty@example.com";
+        String expectedCleanEmail = "form-signup-dirty@example.com";
 
         User signupUser = new User();
-        signupUser.setEmail(newUser.getEmail());
-        signupUser.setPassword("password");
+        signupUser.setEmail(dirtyEmail);
+        signupUser.setPassword("test-password-123");
+        signupUser.setSource(LoginSource.FORM);
+
+        Mono<User> userMono = userService.create(signupUser);
+
+        StepVerifier.create(userMono)
+                .assertNext(user -> {
+                    assertThat(user.getEmail()).isEqualTo(expectedCleanEmail);
+                    assertThat(user.getSource()).isEqualTo(LoginSource.FORM);
+                })
+                .verifyComplete();
+    }
+
+    @Test
+    @WithMockAppsmithUser
+    public void signUpViaGoogle_WhenEmailHasInvisibleUnicode_SavedNormalized() {
+        String dirtyEmail = "\u2060google-signup-dirty@example.com";
+        String expectedCleanEmail = "google-signup-dirty@example.com";
+
+        User signupUser = new User();
+        signupUser.setEmail(dirtyEmail);
+        signupUser.setPassword("test-password-123");
         signupUser.setSource(LoginSource.GOOGLE);
 
         Mono<User> userMono = userService.create(signupUser);
 
         StepVerifier.create(userMono)
                 .assertNext(user -> {
-                    assertEquals(newUser.getEmail(), user.getEmail());
-                    assertEquals(LoginSource.GOOGLE, user.getSource());
-                    assertTrue(user.getIsEnabled());
+                    assertThat(user.getEmail()).isEqualTo(expectedCleanEmail);
+                    assertThat(user.getSource()).isEqualTo(LoginSource.GOOGLE);
                 })
                 .verifyComplete();
+    }
+
+    @ParameterizedTest
+    @EnumSource(
+            value = LoginSource.class,
+            names = {"FORM", "GOOGLE"})
+    @WithMockAppsmithUser
+    void should_refuseSignup_when_emailHasAccountThatIsNotActive(LoginSource source) {
+        // Given
+        String organizationId =
+                organizationService.getCurrentUserOrganizationId().block();
+        User pendingUser = new User();
+        pendingUser.setEmail("pending-" + UUID.randomUUID() + "@example.com");
+        pendingUser.setIsEnabled(false);
+        pendingUser.setOrganizationId(organizationId);
+        User savedUser = userRepository.save(pendingUser).block();
+
+        User signupUser = new User();
+        signupUser.setEmail(savedUser.getEmail());
+        signupUser.setPassword("password");
+        signupUser.setSource(source);
+
+        try {
+            // When
+            Mono<User> userMono = userService.create(signupUser);
+
+            // Then
+            StepVerifier.create(userMono)
+                    .expectErrorSatisfies(error -> {
+                        assertThat(error).isInstanceOf(AppsmithException.class);
+                        assertThat(((AppsmithException) error).getError())
+                                .isEqualTo(AppsmithError.USER_ALREADY_EXISTS_SIGNUP);
+                    })
+                    .verify();
+
+            User afterSignup = userRepository.findById(savedUser.getId()).block();
+            assertThat(afterSignup).isNotNull();
+            assertThat(afterSignup.getIsEnabled()).isFalse();
+            assertThat(afterSignup.getPassword()).isNull();
+        } finally {
+            userRepository.deleteById(savedUser.getId()).block();
+        }
     }
 
     @Test
@@ -341,19 +467,23 @@ public class UserServiceTest {
                 })
                 .block();
 
-        // Now Sign Up as the new user
+        // Now try to sign up as the invited user
         User signUpUser = new User();
         signUpUser.setEmail(newUserEmail);
         signUpUser.setPassword("123456");
 
         Mono<User> invitedUserSignUpMono = userService.createUser(signUpUser).map(UserSignupDTO::getUser);
 
+        // Signup does not activate the invited account
         StepVerifier.create(invitedUserSignUpMono)
-                .assertNext(user -> {
-                    assertTrue(user.getIsEnabled());
-                    assertTrue(passwordEncoder.matches("123456", user.getPassword()));
-                })
-                .verifyComplete();
+                .expectErrorMatches(throwable -> throwable instanceof AppsmithException
+                        && AppsmithError.USER_ALREADY_EXISTS_SIGNUP.equals(((AppsmithException) throwable).getError()))
+                .verify();
+
+        User invitedUser =
+                userRepository.findByEmail(newUserEmail.toLowerCase()).block();
+        assertThat(invitedUser.getIsEnabled()).isFalse();
+        assertThat(invitedUser.getPassword()).isNull();
 
         workspaceMono
                 .flatMap(workspace1 -> workspaceService.archiveById(workspace1.getId()))
@@ -432,28 +562,28 @@ public class UserServiceTest {
         StepVerifier.create(userDataMono)
                 .assertNext(userData -> {
                     assertNotNull(userData);
-                    assertThat(userData.isIntercomConsentGiven()).isFalse();
+                    assertThat(userData.getIsIntercomConsentGiven()).isFalse();
                 })
                 .verifyComplete();
 
         UserUpdateDTO updateUser = new UserUpdateDTO();
-        updateUser.setIntercomConsentGiven(true);
+        updateUser.setIsIntercomConsentGiven(true);
         final Mono<UserData> updateToTrueMono =
                 userService.updateCurrentUser(updateUser, null).then(userDataMono);
         StepVerifier.create(updateToTrueMono)
                 .assertNext(userData -> {
                     assertNotNull(userData);
-                    assertThat(userData.isIntercomConsentGiven()).isTrue();
+                    assertThat(userData.getIsIntercomConsentGiven()).isTrue();
                 })
                 .verifyComplete();
 
-        updateUser.setIntercomConsentGiven(false);
+        updateUser.setIsIntercomConsentGiven(false);
         final Mono<UserData> updateToFalseAfterTrueMono =
                 userService.updateCurrentUser(updateUser, null).then(userDataMono);
         StepVerifier.create(updateToFalseAfterTrueMono)
                 .assertNext(userData -> {
                     assertNotNull(userData);
-                    assertThat(userData.isIntercomConsentGiven()).isTrue();
+                    assertThat(userData.getIsIntercomConsentGiven()).isTrue();
                 })
                 .verifyComplete();
     }
@@ -461,7 +591,7 @@ public class UserServiceTest {
     @Test
     @WithUserDetails(value = "api_user")
     public void getIntercomConsentOfUserOnCloudHosting_AlwaysTrue() {
-        Mockito.when(commonConfig.isCloudHosting()).thenReturn(true);
+        Mockito.when(commonConfig.getIsCloudHosting()).thenReturn(true);
 
         Mono<UserProfileDTO> userProfileDTOMono =
                 sessionUserService.getCurrentUser().flatMap(userService::buildUserProfileDTO);
@@ -469,7 +599,7 @@ public class UserServiceTest {
         StepVerifier.create(userProfileDTOMono)
                 .assertNext(userProfileDTO -> {
                     assertNotNull(userProfileDTO);
-                    assertThat(userProfileDTO.isIntercomConsentGiven()).isTrue();
+                    assertThat(userProfileDTO.getIsIntercomConsentGiven()).isTrue();
                     assertEquals(
                             List.of(
                                     UPGRADE_TO_BUSINESS_EDITION_TO_ACCESS_ROLES_AND_GROUPS_FOR_CONDITIONAL_BUSINESS_LOGIC),
@@ -478,6 +608,27 @@ public class UserServiceTest {
                             List.of(
                                     UPGRADE_TO_BUSINESS_EDITION_TO_ACCESS_ROLES_AND_GROUPS_FOR_CONDITIONAL_BUSINESS_LOGIC),
                             userProfileDTO.getRoles());
+                })
+                .verifyComplete();
+    }
+
+    @Test
+    @WithUserDetails(value = "api_user")
+    void should_returnOrganizationId_when_buildingUserProfile() {
+        // Given
+        Mono<String> currentOrganizationIdMono = organizationService.getCurrentUserOrganizationId();
+
+        // When
+        Mono<UserProfileDTO> userProfileDTOMono =
+                sessionUserService.getCurrentUser().flatMap(userService::buildUserProfileDTO);
+
+        // Then
+        StepVerifier.create(Mono.zip(currentOrganizationIdMono, userProfileDTOMono))
+                .assertNext(tuple -> {
+                    String currentOrganizationId = tuple.getT1();
+                    UserProfileDTO userProfileDTO = tuple.getT2();
+                    assertThat(currentOrganizationId).isNotBlank();
+                    assertThat(userProfileDTO.getOrganizationId()).isEqualTo(currentOrganizationId);
                 })
                 .verifyComplete();
     }
@@ -503,22 +654,233 @@ public class UserServiceTest {
                 .verifyComplete();
     }
 
+    /**
+     * Regression for the secondary enumeration oracle (CWE-204, GHSA-fvrq-g89c-fgg6): a known account
+     * driven over its reset limit (4th request within 24h) previously surfaced HTTP 429
+     * (TOO_MANY_REQUESTS), which distinguished it from the HTTP 200 generic success returned for an
+     * unknown email. The over-limit case must now return the same generic success, must NOT send another
+     * reset email, and must NOT persist a fresh (usable) reset token — while the request-count tracking
+     * still keeps the limit in force.
+     */
     @Test
-    public void forgotPasswordTokenGenerate_AfterTrying3TimesIn24Hours_ThrowsException() {
-        String testEmail = "test-email-for-password-reset";
-        PasswordResetToken passwordResetToken = new PasswordResetToken();
-        passwordResetToken.setRequestCount(3);
-        passwordResetToken.setFirstRequestTime(Instant.now());
+    @WithUserDetails(value = "api_user")
+    public void forgotPasswordTokenGenerate_whenKnownAccountOverResetLimit_returnsGenericSuccessWithoutSendingEmail() {
+        String baseUrl = "https://my-instance.example.com";
+        String knownEmail = "api_user";
 
-        // mock the passwordResetTokenRepository to return request count 3 in 24 hours
-        Mockito.when(passwordResetTokenRepository.findByEmail(testEmail)).thenReturn(Mono.just(passwordResetToken));
+        Mockito.doReturn(Mono.just(baseUrl)).when(secureBaseUrlResolver).resolveSecureBaseUrl(baseUrl);
 
-        ResetUserPasswordDTO resetUserPasswordDTO = new ResetUserPasswordDTO();
-        resetUserPasswordDTO.setEmail("test-email-for-password-reset");
+        // Existing token that is already over the limit (3 requests) within the 24h window.
+        PasswordResetToken overLimitToken = new PasswordResetToken();
+        overLimitToken.setEmail(knownEmail);
+        overLimitToken.setRequestCount(3);
+        overLimitToken.setFirstRequestTime(Instant.now());
+        Mockito.when(passwordResetTokenRepository.findByEmailAndOrganizationId(any(), any()))
+                .thenReturn(Mono.just(overLimitToken));
+        Mockito.when(passwordResetTokenRepository.save(any()))
+                .thenAnswer(invocation -> Mono.just(invocation.getArgument(0)));
+        Mockito.doReturn(Mono.just(true)).when(emailService).sendForgotPasswordEmail(any(), any(), any());
 
-        StepVerifier.create(userService.forgotPasswordTokenGenerate(resetUserPasswordDTO))
-                .expectError(AppsmithException.class)
-                .verify();
+        ResetUserPasswordDTO dto = new ResetUserPasswordDTO();
+        dto.setEmail(knownEmail);
+        dto.setBaseUrl(baseUrl);
+
+        // Same generic success as the under-limit and unknown cases — no distinguishable 429.
+        StepVerifier.create(userService.forgotPasswordTokenGenerate(dto))
+                .expectNext(true)
+                .verifyComplete();
+
+        // Anti-spam: over the limit, no new email is sent and no fresh reset token is persisted.
+        Mockito.verify(emailService, Mockito.never()).sendForgotPasswordEmail(any(), any(), any());
+        Mockito.verify(passwordResetTokenRepository, Mockito.never()).save(any());
+    }
+
+    /**
+     * Full anti-enumeration invariant across all three branches: a known email under its reset limit, the
+     * same known email over its limit, and an unknown email must all return the identical generic success
+     * (HTTP 200, {@code {"data": true}}). Only the under-limit case may send an email or persist a token.
+     * NOTE: a timing side-channel can still remain because the under-limit path does more work; equalizing
+     * timing is intentionally out of scope for this fix — identical status + body is the bar being enforced.
+     */
+    @Test
+    @WithUserDetails(value = "api_user")
+    public void forgotPasswordTokenGenerate_underLimit_overLimit_andUnknown_returnIdenticalGenericSuccess() {
+        String baseUrl = "https://my-instance.example.com";
+        String knownEmail = "api_user";
+        String unknownEmail = "no-such-user-" + UUID.randomUUID() + "@example.com";
+
+        Mockito.doReturn(Mono.just(baseUrl)).when(secureBaseUrlResolver).resolveSecureBaseUrl(baseUrl);
+        Mockito.when(passwordResetTokenRepository.save(any()))
+                .thenAnswer(invocation -> Mono.just(invocation.getArgument(0)));
+        Mockito.doReturn(Mono.just(true)).when(emailService).sendForgotPasswordEmail(any(), any(), any());
+
+        ResetUserPasswordDTO knownDto = new ResetUserPasswordDTO();
+        knownDto.setEmail(knownEmail);
+        knownDto.setBaseUrl(baseUrl);
+
+        ResetUserPasswordDTO unknownDto = new ResetUserPasswordDTO();
+        unknownDto.setEmail(unknownEmail);
+        unknownDto.setBaseUrl(baseUrl);
+
+        // 1) Known, under limit: existing token with 1 request in the window -> success + email + save.
+        PasswordResetToken underLimitToken = new PasswordResetToken();
+        underLimitToken.setEmail(knownEmail);
+        underLimitToken.setRequestCount(1);
+        underLimitToken.setFirstRequestTime(Instant.now());
+        Mockito.when(passwordResetTokenRepository.findByEmailAndOrganizationId(any(), any()))
+                .thenReturn(Mono.just(underLimitToken));
+
+        StepVerifier.create(userService.forgotPasswordTokenGenerate(knownDto))
+                .expectNext(true)
+                .verifyComplete();
+        Mockito.verify(emailService, Mockito.times(1)).sendForgotPasswordEmail(eq(knownEmail), any(), eq(baseUrl));
+        Mockito.verify(passwordResetTokenRepository, Mockito.times(1)).save(any());
+
+        // 2) Known, over limit: existing token with 3 requests in the window -> success, no email, no save.
+        Mockito.clearInvocations(emailService, passwordResetTokenRepository);
+        PasswordResetToken overLimitToken = new PasswordResetToken();
+        overLimitToken.setEmail(knownEmail);
+        overLimitToken.setRequestCount(3);
+        overLimitToken.setFirstRequestTime(Instant.now());
+        Mockito.when(passwordResetTokenRepository.findByEmailAndOrganizationId(any(), any()))
+                .thenReturn(Mono.just(overLimitToken));
+
+        StepVerifier.create(userService.forgotPasswordTokenGenerate(knownDto))
+                .expectNext(true)
+                .verifyComplete();
+        Mockito.verify(emailService, Mockito.never()).sendForgotPasswordEmail(any(), any(), any());
+        Mockito.verify(passwordResetTokenRepository, Mockito.never()).save(any());
+
+        // 3) Unknown email: user lookup empty -> success, no email, no token persisted.
+        Mockito.clearInvocations(emailService, passwordResetTokenRepository);
+        StepVerifier.create(userService.forgotPasswordTokenGenerate(unknownDto))
+                .expectNext(true)
+                .verifyComplete();
+        Mockito.verify(emailService, Mockito.never()).sendForgotPasswordEmail(any(), any(), any());
+        Mockito.verify(passwordResetTokenRepository, Mockito.never()).save(any());
+    }
+
+    /**
+     * Anti-enumeration invariant (CWE-204, GHSA-fvrq-g89c-fgg6): the forgot-password flow must return
+     * the exact same generic success (HTTP 200, {@code {"data": true}}) for a non-existent email as it
+     * does for a registered one, so an unauthenticated caller cannot distinguish valid from invalid
+     * accounts. A reset email must be dispatched only for the account that actually exists.
+     */
+    @Test
+    @WithUserDetails(value = "api_user")
+    public void forgotPasswordTokenGenerate_unknownEmail_isIndistinguishableFromKnownEmailAndSendsNoEmail() {
+        String baseUrl = "https://my-instance.example.com";
+        String knownEmail = "api_user";
+        String unknownEmail = "no-such-user-" + UUID.randomUUID() + "@example.com";
+
+        // Pin a resolved base URL so the flow proceeds past the secure base URL resolver to the user lookup.
+        Mockito.doReturn(Mono.just(baseUrl)).when(secureBaseUrlResolver).resolveSecureBaseUrl(baseUrl);
+
+        // No pre-existing reset token; save echoes back the token it is given.
+        Mockito.when(passwordResetTokenRepository.findByEmailAndOrganizationId(any(), any()))
+                .thenReturn(Mono.empty());
+        Mockito.when(passwordResetTokenRepository.save(any()))
+                .thenAnswer(invocation -> Mono.just(invocation.getArgument(0)));
+
+        // Stub email dispatch so the valid path does not attempt to send a real email.
+        Mockito.doReturn(Mono.just(true)).when(emailService).sendForgotPasswordEmail(any(), any(), any());
+
+        ResetUserPasswordDTO knownDto = new ResetUserPasswordDTO();
+        knownDto.setEmail(knownEmail);
+        knownDto.setBaseUrl(baseUrl);
+
+        ResetUserPasswordDTO unknownDto = new ResetUserPasswordDTO();
+        unknownDto.setEmail(unknownEmail);
+        unknownDto.setBaseUrl(baseUrl);
+
+        // Both existent and non-existent emails yield the identical generic success response.
+        StepVerifier.create(userService.forgotPasswordTokenGenerate(knownDto))
+                .expectNext(true)
+                .verifyComplete();
+        StepVerifier.create(userService.forgotPasswordTokenGenerate(unknownDto))
+                .expectNext(true)
+                .verifyComplete();
+
+        // A reset email is sent only for the registered account; none for the unknown one.
+        Mockito.verify(emailService, Mockito.times(1)).sendForgotPasswordEmail(eq(knownEmail), any(), eq(baseUrl));
+        Mockito.verify(emailService, Mockito.never()).sendForgotPasswordEmail(eq(unknownEmail), any(), any());
+    }
+
+    /**
+     * Full counter-sequence regression pinning the per-account reset-limit invariant end to end. Backs the
+     * {@code passwordResetTokenRepository} mock with an in-memory store so the request counter actually
+     * accumulates across calls (the real production behaviour):
+     * <ul>
+     *   <li>requests 1, 2, 3 for a known email each succeed — token saved, email sent;</li>
+     *   <li>the 4th request within the 24h window is over the limit — generic success, NO email, NO new
+     *       token save (and the counter is not mutated, so the block holds);</li>
+     *   <li>a repeated request while still over the limit stays over the limit — same generic success, still
+     *       no email / no save;</li>
+     *   <li>once the 24h window has elapsed the next request is allowed again — the counter resets to 1 and
+     *       an email is sent.</li>
+     * </ul>
+     * Every call returns the identical generic success so the rate limit is never observable to the caller
+     * (CWE-204, GHSA-fvrq-g89c-fgg6).
+     */
+    @Test
+    @WithUserDetails(value = "api_user")
+    public void forgotPasswordTokenGenerate_resetLimitCounterSequence_neverLeaksAndResetsAfterWindow() {
+        String baseUrl = "https://my-instance.example.com";
+        String knownEmail = "api_user";
+
+        Mockito.doReturn(Mono.just(baseUrl)).when(secureBaseUrlResolver).resolveSecureBaseUrl(baseUrl);
+
+        // In-memory store so the reset-token counter persists across calls, like the real repository.
+        final AtomicReference<PasswordResetToken> store = new AtomicReference<>();
+        Mockito.when(passwordResetTokenRepository.findByEmailAndOrganizationId(any(), any()))
+                .thenAnswer(invocation -> store.get() == null ? Mono.empty() : Mono.just(store.get()));
+        Mockito.when(passwordResetTokenRepository.save(any())).thenAnswer(invocation -> {
+            PasswordResetToken saved = invocation.getArgument(0);
+            store.set(saved);
+            return Mono.just(saved);
+        });
+        Mockito.doReturn(Mono.just(true)).when(emailService).sendForgotPasswordEmail(any(), any(), any());
+
+        ResetUserPasswordDTO dto = new ResetUserPasswordDTO();
+        dto.setEmail(knownEmail);
+        dto.setBaseUrl(baseUrl);
+
+        // Requests 1, 2, 3: under the limit — each succeeds, saves the token, and sends an email.
+        for (int i = 1; i <= 3; i++) {
+            StepVerifier.create(userService.forgotPasswordTokenGenerate(dto))
+                    .expectNext(true)
+                    .verifyComplete();
+        }
+        Mockito.verify(emailService, Mockito.times(3)).sendForgotPasswordEmail(eq(knownEmail), any(), eq(baseUrl));
+        Mockito.verify(passwordResetTokenRepository, Mockito.times(3)).save(any());
+        assertEquals(3, store.get().getRequestCount());
+
+        // Request 4 within the window: over the limit — generic success, no email, no new save.
+        Mockito.clearInvocations(emailService, passwordResetTokenRepository);
+        StepVerifier.create(userService.forgotPasswordTokenGenerate(dto))
+                .expectNext(true)
+                .verifyComplete();
+        Mockito.verify(emailService, Mockito.never()).sendForgotPasswordEmail(any(), any(), any());
+        Mockito.verify(passwordResetTokenRepository, Mockito.never()).save(any());
+        assertEquals(3, store.get().getRequestCount()); // counter not mutated while over the limit
+
+        // Request 5 (repeat while still over the limit): stays over the limit — same generic success.
+        Mockito.clearInvocations(emailService, passwordResetTokenRepository);
+        StepVerifier.create(userService.forgotPasswordTokenGenerate(dto))
+                .expectNext(true)
+                .verifyComplete();
+        Mockito.verify(emailService, Mockito.never()).sendForgotPasswordEmail(any(), any(), any());
+        Mockito.verify(passwordResetTokenRepository, Mockito.never()).save(any());
+
+        // Simulate the 24h window elapsing, then the next request is allowed again and the counter resets.
+        store.get().setFirstRequestTime(Instant.now().minusSeconds(25 * 3600));
+        Mockito.clearInvocations(emailService, passwordResetTokenRepository);
+        StepVerifier.create(userService.forgotPasswordTokenGenerate(dto))
+                .expectNext(true)
+                .verifyComplete();
+        Mockito.verify(emailService, Mockito.times(1)).sendForgotPasswordEmail(eq(knownEmail), any(), eq(baseUrl));
+        Mockito.verify(passwordResetTokenRepository, Mockito.times(1)).save(any());
+        assertEquals(1, store.get().getRequestCount()); // counter reset for the new window
     }
 
     @Test
@@ -540,7 +902,8 @@ public class UserServiceTest {
     public void verifyPasswordResetToken_WhenTokenDoesNotExist_ThrowsException() {
         String testEmail = "abc@example.org";
         // mock the passwordResetTokenRepository to return empty
-        Mockito.when(passwordResetTokenRepository.findByEmail(testEmail)).thenReturn(Mono.empty());
+        Mockito.when(passwordResetTokenRepository.findByEmailAndOrganizationId(any(), any()))
+                .thenReturn(Mono.empty());
 
         StepVerifier.create(userService.verifyPasswordResetToken(getEncodedToken(testEmail, "123456789")))
                 .expectErrorMessage(AppsmithError.INVALID_PASSWORD_RESET.getMessage())
@@ -553,7 +916,8 @@ public class UserServiceTest {
         passwordResetToken.setTokenHash(passwordEncoder.encode(token1));
 
         // mock the passwordResetTokenRepository to return empty
-        Mockito.when(passwordResetTokenRepository.findByEmail(testEmail)).thenReturn(Mono.just(passwordResetToken));
+        Mockito.when(passwordResetTokenRepository.findByEmailAndOrganizationId(any(), any()))
+                .thenReturn(Mono.just(passwordResetToken));
 
         StepVerifier.create(userService.verifyPasswordResetToken(getEncodedToken(testEmail, token2)))
                 .expectNext(expectedResult)
@@ -584,7 +948,8 @@ public class UserServiceTest {
 
         // ** check if token is not present in DB ** //
         // mock the passwordResetTokenRepository to return empty
-        Mockito.when(passwordResetTokenRepository.findByEmail(testEmail)).thenReturn(Mono.empty());
+        Mockito.when(passwordResetTokenRepository.findByEmailAndOrganizationId(any(), any()))
+                .thenReturn(Mono.empty());
 
         StepVerifier.create(userService.resetPasswordAfterForgotPassword(token, null))
                 .expectErrorMessage(AppsmithError.INVALID_PASSWORD_RESET.getMessage())
@@ -595,7 +960,8 @@ public class UserServiceTest {
         passwordResetToken.setTokenHash(passwordEncoder.encode("abcdef"));
 
         // mock the passwordResetTokenRepository to return empty
-        Mockito.when(passwordResetTokenRepository.findByEmail(testEmail)).thenReturn(Mono.just(passwordResetToken));
+        Mockito.when(passwordResetTokenRepository.findByEmailAndOrganizationId(any(), any()))
+                .thenReturn(Mono.just(passwordResetToken));
 
         StepVerifier.create(userService.resetPasswordAfterForgotPassword(token, null))
                 .expectErrorMessage(AppsmithError.GENERIC_BAD_REQUEST.getMessage(FieldName.TOKEN))
@@ -611,7 +977,7 @@ public class UserServiceTest {
         StepVerifier.create(userService.buildUserProfileDTO(user))
                 .assertNext(userProfileDTO -> {
                     assertThat(userProfileDTO.getUsername()).isEqualTo("anonymousUser");
-                    assertThat(userProfileDTO.isAnonymous()).isTrue();
+                    assertThat(userProfileDTO.getIsAnonymous()).isTrue();
                 })
                 .verifyComplete();
     }
@@ -658,59 +1024,107 @@ public class UserServiceTest {
         return resendEmailVerificationDTO;
     }
 
+    /**
+     * Anti-enumeration (CWE-204): when instance-level email verification is disabled, the resend endpoint
+     * must return the same generic success (HTTP 200, {@code true}) as the happy path and send no email,
+     * rather than surfacing a distinct EMAIL_VERIFICATION_NOT_ENABLED error that would leak the account's
+     * (and the instance config's) state to an unauthenticated caller.
+     *
+     * <p>The gate under test is the real one — {@link InstanceVariablesHelper#isEmailVerificationEnabled()},
+     * read from the instance-variables config — not {@code OrganizationConfiguration}. It is stubbed to
+     * {@code false} directly so the test pins the actual code path (a fresh, unverified account that reaches
+     * the gate) rather than incidentally relying on the instance default.
+     */
     @Test
-    public void emailVerificationTokenGenerate_WhenInstanceEmailVerificationIsNotEnabled_ThrowsException() {
+    @WithUserDetails("api_user")
+    public void
+            resendEmailVerification_WhenInstanceEmailVerificationIsNotEnabled_ReturnsGenericSuccessWithoutSendingEmail() {
         String testEmail = "test-email-for-verification";
 
-        // create user
+        // A fresh, unverified account so the flow passes the already-verified check and reaches the
+        // instance-level verification gate.
+        Organization organization =
+                organizationService.getCurrentUserOrganization().block();
         User newUser = new User();
         newUser.setEmail(testEmail);
-        Mono<User> userMono = userRepository.save(newUser);
+        newUser.setEmailVerified(Boolean.FALSE);
+        newUser.setOrganizationId(organization.getId());
+        userRepository.save(newUser).block();
 
-        // Setting tenant Config emailVerificationEnabled to FALSE
-        Mono<Tenant> tenantMono = tenantService.getDefaultTenant().flatMap(tenant1 -> {
-            TenantConfiguration tenantConfiguration = tenant1.getTenantConfiguration();
-            tenantConfiguration.setEmailVerificationEnabled(Boolean.FALSE);
-            tenant1.setTenantConfiguration(tenantConfiguration);
-            return tenantService.update(tenant1.getId(), tenant1);
-        });
+        // Pin the real gate to disabled (instance-variables config, not OrganizationConfiguration).
+        Mockito.doReturn(Mono.just(false)).when(instanceVariablesHelper).isEmailVerificationEnabled();
 
-        Mono<Boolean> emailVerificationMono =
-                userService.resendEmailVerification(getResendEmailVerificationDTO(testEmail), null);
+        Mockito.clearInvocations(emailService);
+        StepVerifier.create(userService.resendEmailVerification(getResendEmailVerificationDTO(testEmail), null))
+                .expectNext(true)
+                .verifyComplete();
 
-        Mono<Boolean> resultMono = userMono.then(tenantMono).then(emailVerificationMono);
-
-        StepVerifier.create(resultMono)
-                .expectErrorMessage(AppsmithError.TENANT_EMAIL_VERIFICATION_NOT_ENABLED.getMessage())
-                .verify();
+        Mockito.verify(emailService, Mockito.never()).sendEmailVerificationEmail(any(), any(), any());
     }
 
+    /**
+     * Anti-enumeration (CWE-204): when the account already has a verified email, the resend endpoint must
+     * return the same generic success (HTTP 200, {@code true}) and send no email, rather than a distinct
+     * USER_ALREADY_VERIFIED error that would confirm the address exists and is verified.
+     */
     @Test
-    public void emailVerificationTokenGenerate_WhenUserEmailAlreadyVerified_ThrowsException() {
+    @WithUserDetails("api_user")
+    public void resendEmailVerification_WhenUserEmailAlreadyVerified_ReturnsGenericSuccessWithoutSendingEmail() {
         String testEmail = "test-email-for-verification-user-already-verified";
 
-        // create user
+        // Get current organization first
+        Organization organization =
+                organizationService.getCurrentUserOrganization().block();
+
+        // create user with organization ID
         User newUser = new User();
         newUser.setEmail(testEmail);
         newUser.setEmailVerified(Boolean.TRUE);
-        Mono<User> userMono = userRepository.save(newUser);
+        newUser.setOrganizationId(organization.getId());
+        userRepository.save(newUser).block();
 
-        // Setting tenant Config emailVerificationEnabled to TRUE
-        Mono<Tenant> tenantMono = tenantService.getDefaultTenant().flatMap(tenant1 -> {
-            TenantConfiguration tenantConfiguration = tenant1.getTenantConfiguration();
-            tenantConfiguration.setEmailVerificationEnabled(Boolean.TRUE);
-            tenant1.setTenantConfiguration(tenantConfiguration);
-            return tenantService.update(tenant1.getId(), tenant1);
-        });
+        // Setting Organization Config emailVerificationEnabled to TRUE
 
+        OrganizationConfiguration organizationConfiguration = organization.getOrganizationConfiguration();
+        organizationConfiguration.setEmailVerificationEnabled(Boolean.TRUE);
+        organization.setOrganizationConfiguration(organizationConfiguration);
+        organizationService.update(organization.getId(), organization).block();
+
+        Mockito.clearInvocations(emailService);
         Mono<Boolean> emailVerificationMono =
                 userService.resendEmailVerification(getResendEmailVerificationDTO(testEmail), null);
 
-        Mono<Boolean> resultMono = userMono.then(tenantMono).then(emailVerificationMono);
+        StepVerifier.create(emailVerificationMono).expectNext(true).verifyComplete();
 
-        StepVerifier.create(resultMono)
-                .expectErrorMessage(AppsmithError.USER_ALREADY_VERIFIED.getMessage())
-                .verify();
+        Mockito.verify(emailService, Mockito.never()).sendEmailVerificationEmail(any(), any(), any());
+    }
+
+    /**
+     * Anti-enumeration (CWE-204): a resend request for an address that is not registered must return the
+     * same generic success (HTTP 200, {@code true}) as a known unverified account and send no email, so an
+     * unauthenticated caller cannot distinguish registered from unregistered addresses.
+     */
+    @Test
+    @WithUserDetails("api_user")
+    public void resendEmailVerification_WhenEmailUnknown_ReturnsGenericSuccessWithoutSendingEmail() {
+        String unknownEmail = "no-such-user-" + UUID.randomUUID() + "@example.com";
+
+        // Ensure instance-level verification is enabled so the only reason no email is sent is the unknown
+        // address (i.e. we are exercising the unknown-user branch, not the disabled-verification branch).
+        Organization organization =
+                organizationService.getCurrentUserOrganization().block();
+        OrganizationConfiguration organizationConfiguration = organization.getOrganizationConfiguration();
+        organizationConfiguration.setEmailVerificationEnabled(Boolean.TRUE);
+        organization.setOrganizationConfiguration(organizationConfiguration);
+        organizationService.update(organization.getId(), organization).block();
+
+        Mockito.clearInvocations(emailService);
+        Mono<Boolean> emailVerificationMono =
+                userService.resendEmailVerification(getResendEmailVerificationDTO(unknownEmail), null);
+
+        StepVerifier.create(emailVerificationMono).expectNext(true).verifyComplete();
+
+        Mockito.verify(emailService, Mockito.never()).sendEmailVerificationEmail(any(), any(), any());
     }
 
     @Test

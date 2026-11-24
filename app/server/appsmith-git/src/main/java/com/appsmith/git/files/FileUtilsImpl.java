@@ -1,7 +1,7 @@
 package com.appsmith.git.files;
 
 import com.appsmith.external.git.FileInterface;
-import com.appsmith.external.git.GitExecutor;
+import com.appsmith.external.git.handler.FSGitHandler;
 import com.appsmith.external.git.operations.FileOperations;
 import com.appsmith.external.helpers.ObservationHelper;
 import com.appsmith.git.configurations.GitServiceConfig;
@@ -21,10 +21,10 @@ public class FileUtilsImpl extends FileUtilsCEImpl implements FileInterface {
 
     public FileUtilsImpl(
             GitServiceConfig gitServiceConfig,
-            GitExecutor gitExecutor,
+            FSGitHandler fsGitHandler,
             FileOperations fileOperations,
             ObservationHelper observationHelper,
             ObjectMapper objectMapper) {
-        super(gitServiceConfig, gitExecutor, fileOperations, observationHelper, objectMapper);
+        super(gitServiceConfig, fsGitHandler, fileOperations, observationHelper, objectMapper);
     }
 }

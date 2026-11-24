@@ -18,6 +18,7 @@ import { AuthType, AuthenticationStatus } from "entities/Datasource";
 import {
   CANCEL,
   CONNECT_DATASOURCE_BUTTON_TEXT,
+  CONNECT_DATASOURCE_BUTTON_TEXT_FOR_AGENTS,
   OAUTH_AUTHORIZATION_APPSMITH_ERROR,
   OAUTH_AUTHORIZATION_FAILED,
   SAVE_AND_AUTHORIZE_BUTTON_TEXT,
@@ -44,6 +45,7 @@ import { FEATURE_FLAG } from "ee/entities/FeatureFlag";
 import { getHasManageDatasourcePermission } from "ee/utils/BusinessFeatures/permissionPageHelpers";
 import { resetCurrentPluginIdForCreateNewApp } from "actions/onboardingActions";
 import { useParentEntityDetailsFromParams } from "ee/entities/Engine/actionHelpers";
+import { getIsCreatingAgent } from "ee/selectors/aiAgentSelectors";
 
 interface Props {
   datasource: Datasource;
@@ -198,6 +200,8 @@ function DatasourceAuth({
       isInsideReconnectModal,
     );
 
+  const isCreatingAgent = useSelector(getIsCreatingAgent);
+
   useEffect(() => {
     if (
       authType === AuthType.OAUTH2 &&
@@ -350,7 +354,7 @@ function DatasourceAuth({
 
     AnalyticsUtil.logEvent("DATASOURCE_AUTHORIZE_CLICK", {
       dsName: datasource?.name,
-      orgId: datasource?.workspaceId,
+      workspaceId: datasource?.workspaceId,
       pluginName: pluginName,
       scopeValue: scopeValue,
     });
@@ -450,7 +454,11 @@ function DatasourceAuth({
           onClick={handleOauthDatasourceSave}
           size="md"
         >
-          {createMessage(CONNECT_DATASOURCE_BUTTON_TEXT)}
+          {createMessage(
+            isCreatingAgent
+              ? CONNECT_DATASOURCE_BUTTON_TEXT_FOR_AGENTS
+              : CONNECT_DATASOURCE_BUTTON_TEXT,
+          )}
         </Button>
       ),
     }[buttonType];

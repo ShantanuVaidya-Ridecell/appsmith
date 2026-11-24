@@ -1,24 +1,31 @@
 package com.appsmith.server.configurations;
 
 import com.appsmith.external.exceptions.ErrorDTO;
+import com.appsmith.server.authentication.converters.McpTokenAuthenticationConverter;
 import com.appsmith.server.authentication.handlers.AccessDeniedHandler;
+import com.appsmith.server.authentication.handlers.AuthenticationFailureHandler;
 import com.appsmith.server.authentication.handlers.CustomServerOAuth2AuthorizationRequestResolver;
 import com.appsmith.server.authentication.handlers.LogoutSuccessHandler;
+import com.appsmith.server.authentication.managers.McpTokenAuthenticationManager;
 import com.appsmith.server.authentication.oauth2clientrepositories.CustomOauth2ClientRepositoryManager;
 import com.appsmith.server.constants.FieldName;
 import com.appsmith.server.constants.Url;
 import com.appsmith.server.domains.User;
 import com.appsmith.server.dtos.ResponseDTO;
 import com.appsmith.server.exceptions.AppsmithErrorCode;
-import com.appsmith.server.filters.CSRFFilter;
 import com.appsmith.server.filters.ConditionalFilter;
+import com.appsmith.server.filters.LoginMetricsFilter;
 import com.appsmith.server.filters.LoginRateLimitFilter;
+import com.appsmith.server.filters.McpAllowlistWebFilter;
+import com.appsmith.server.filters.SignupRateLimitFilter;
 import com.appsmith.server.helpers.RedirectHelper;
 import com.appsmith.server.ratelimiting.RateLimitService;
 import com.appsmith.server.services.AnalyticsService;
+import com.appsmith.server.services.McpTokenService;
 import com.appsmith.server.services.UserService;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
@@ -42,6 +49,7 @@ import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.oauth2.client.registration.ReactiveClientRegistrationRepository;
 import org.springframework.security.web.server.SecurityWebFilterChain;
 import org.springframework.security.web.server.ServerAuthenticationEntryPoint;
+import org.springframework.security.web.server.authentication.AuthenticationWebFilter;
 import org.springframework.security.web.server.authentication.ServerAuthenticationEntryPointFailureHandler;
 import org.springframework.security.web.server.authentication.ServerAuthenticationFailureHandler;
 import org.springframework.security.web.server.authentication.ServerAuthenticationSuccessHandler;
@@ -54,11 +62,9 @@ import org.springframework.web.reactive.function.server.ServerResponse;
 import org.springframework.web.server.ServerWebExchange;
 import org.springframework.web.server.WebFilterChain;
 import org.springframework.web.server.adapter.ForwardedHeaderTransformer;
-import org.springframework.web.server.session.CookieWebSessionIdResolver;
 import org.springframework.web.server.session.WebSessionIdResolver;
 import reactor.core.publisher.Mono;
 
-import java.time.Duration;
 import java.util.HashSet;
 import java.util.List;
 
@@ -67,14 +73,13 @@ import static com.appsmith.server.constants.Url.ACTION_URL;
 import static com.appsmith.server.constants.Url.APPLICATION_URL;
 import static com.appsmith.server.constants.Url.ASSET_URL;
 import static com.appsmith.server.constants.Url.CUSTOM_JS_LIB_URL;
+import static com.appsmith.server.constants.Url.ORGANIZATION_URL;
 import static com.appsmith.server.constants.Url.PAGE_URL;
 import static com.appsmith.server.constants.Url.PRODUCT_ALERT;
-import static com.appsmith.server.constants.Url.TENANT_URL;
 import static com.appsmith.server.constants.Url.THEME_URL;
 import static com.appsmith.server.constants.Url.USAGE_PULSE_URL;
 import static com.appsmith.server.constants.Url.USER_URL;
 import static com.appsmith.server.constants.ce.UrlCE.CONSOLIDATED_API_URL;
-import static java.time.temporal.ChronoUnit.DAYS;
 
 @EnableWebFluxSecurity
 @EnableReactiveMethodSecurity
@@ -94,7 +99,7 @@ public class SecurityConfig {
     private ServerAuthenticationSuccessHandler authenticationSuccessHandler;
 
     @Autowired
-    private ServerAuthenticationFailureHandler authenticationFailureHandler;
+    private AuthenticationFailureHandler authenticationFailureHandler;
 
     @Autowired
     private ServerAuthenticationEntryPoint authenticationEntryPoint;
@@ -120,25 +125,87 @@ public class SecurityConfig {
     @Autowired
     private ProjectProperties projectProperties;
 
+    @Autowired
+    private CsrfConfig csrfConfig;
+
+    @Autowired
+    private MeterRegistry meterRegistry;
+
     @Value("${appsmith.internal.password}")
     private String INTERNAL_PASSWORD;
+
+    /**
+     * The two halves of the MCP security control, deliberately returned together.
+     *
+     * <p>The authenticator turns an {@code mcp_} bearer into a full user principal; the allowlist is the ONLY thing
+     * capping which endpoints that principal may then reach. Wiring the authenticator without the allowlist silently
+     * turns every issued MCP token into an unrestricted, long-lived API credential for its owner across all of
+     * {@code /api/v1}. They are one control, so they are produced by one factory — a caller cannot obtain one without
+     * the other. This matters most on the CE→EE sync, where {@code SecurityConfig} is a fully diverged file and a
+     * hand-merge could otherwise keep one filter and drop the other with no compile error and no test failure.
+     */
+    record McpSecurityFilters(AuthenticationWebFilter authentication, McpAllowlistWebFilter allowlist) {}
 
     private static final String INTERNAL = "INTERNAL";
 
     /**
-     * This routerFunction is required to map /public/** endpoints to the src/main/resources/public folder
-     * This is to allow static resources to be served by the server. Couldn't find an easier way to do this,
+     * This routerFunction is required to map /public/** endpoints to the
+     * src/main/resources/public folder
+     * This is to allow static resources to be served by the server. Couldn't find
+     * an easier way to do this,
      * hence using RouterFunctions to implement this feature.
      * <p>
      * Future folks: Please check out links:
      * - <a href="https://www.baeldung.com/spring-webflux-static-content">...</a>
-     * - <a href="https://docs.spring.io/spring/docs/current/spring-framework-reference/web-reactive.html#webflux-config-static-resources">...</a>
+     * - <a href=
+     * "https://docs.spring.io/spring/docs/current/spring-framework-reference/web-reactive.html#webflux-config-static-resources">...</a>
      * - Class ResourceHandlerRegistry
-     * for details. If you figure out a cleaner approach, please modify this function
+     * for details. If you figure out a cleaner approach, please modify this
+     * function
      */
     @Bean
     public RouterFunction<ServerResponse> publicRouter() {
         return RouterFunctions.resources("/public/**", new ClassPathResource("public/"));
+    }
+
+    /**
+     * Builds both MCP security filters. Package-private so {@code SecurityConfigTest} can assert the pairing without
+     * standing up a Spring context, and so an EE chain can wire the identical control with a single call.
+     */
+    McpSecurityFilters buildMcpSecurityFilters(
+            McpTokenService mcpTokenService,
+            McpTokenAuthenticationConverter mcpTokenAuthenticationConverter,
+            ServerAuthenticationFailureHandler failureHandler) {
+        // Construct the MCP auth manager here rather than injecting a bean: as the only ReactiveAuthenticationManager
+        // bean it would be auto-wired as the global default and break form-login.
+        McpTokenAuthenticationManager mcpTokenAuthenticationManager =
+                new McpTokenAuthenticationManager(mcpTokenService, rateLimitService);
+        // Construct here (not a @Component) so it is added ONLY to the security chain: a @Component WebFilter is also
+        // auto-registered globally by WebHttpHandlerBuilder, running it a second time outside the chain. Matches the
+        // peer-filter convention (LoginMetricsFilter / LoginRateLimitFilter).
+        McpAllowlistWebFilter mcpAllowlistWebFilter = new McpAllowlistWebFilter();
+        AuthenticationWebFilter mcpTokenAuthenticationWebFilter =
+                new AuthenticationWebFilter(mcpTokenAuthenticationManager);
+        mcpTokenAuthenticationWebFilter.setServerAuthenticationConverter(mcpTokenAuthenticationConverter);
+        mcpTokenAuthenticationWebFilter.setAuthenticationFailureHandler(failureHandler);
+        // Only engage for requests that actually carry an MCP token. Without this, the filter's default "any
+        // exchange" matcher sits at AUTHENTICATION order alongside the form-login filter and breaks the login flow
+        // (No provider found for UsernamePasswordAuthenticationToken -> 500).
+        mcpTokenAuthenticationWebFilter.setRequiresAuthenticationMatcher(
+                exchange -> isMcpAuthenticationRequest(exchange)
+                        ? ServerWebExchangeMatcher.MatchResult.match()
+                        : ServerWebExchangeMatcher.MatchResult.notMatch());
+
+        return new McpSecurityFilters(mcpTokenAuthenticationWebFilter, mcpAllowlistWebFilter);
+    }
+
+    // Whether the MCP bearer-auth filter should engage for this request. Returns false for non-MCP requests,
+    // leaving the form-login flow untouched. Package-private for unit testing.
+    boolean isMcpAuthenticationRequest(ServerWebExchange exchange) {
+        final String mcpBearerPrefix = "Bearer mcp_";
+        final String authorization = exchange.getRequest().getHeaders().getFirst(HttpHeaders.AUTHORIZATION);
+        return authorization != null
+                && authorization.regionMatches(true, 0, mcpBearerPrefix, 0, mcpBearerPrefix.length());
     }
 
     @Bean
@@ -151,7 +218,15 @@ public class SecurityConfig {
     public SecurityWebFilterChain internalWebFilterChain(ServerHttpSecurity http) {
         return http.securityMatcher(new PathPatternParserServerWebExchangeMatcher("/actuator/**"))
                 .httpBasic(httpBasicSpec -> httpBasicSpec.authenticationManager(authentication -> {
-                    if (INTERNAL_PASSWORD.equals(authentication.getCredentials().toString())) {
+                    // When no internal password is configured (APPSMITH_INTERNAL_PASSWORD is unset,
+                    // defaulting to an empty string), reject every request instead of treating an
+                    // empty supplied password as a match. Otherwise "".equals("") would grant the
+                    // INTERNAL authority to any caller sending empty Basic Auth credentials,
+                    // bypassing authentication on the /actuator/** endpoints (GHSA-xfc5-796c-7hr9).
+                    if (INTERNAL_PASSWORD != null
+                            && !INTERNAL_PASSWORD.isEmpty()
+                            && INTERNAL_PASSWORD.equals(
+                                    authentication.getCredentials().toString())) {
                         return Mono.just(UsernamePasswordAuthenticationToken.authenticated(
                                 authentication.getPrincipal(),
                                 authentication.getCredentials(),
@@ -168,14 +243,29 @@ public class SecurityConfig {
 
     @Bean
     @SuppressWarnings("Convert2MethodRef") // Helps readability.
-    public SecurityWebFilterChain securityWebFilterChain(ServerHttpSecurity http) {
+    public SecurityWebFilterChain securityWebFilterChain(
+            ServerHttpSecurity http,
+            McpTokenService mcpTokenService,
+            McpTokenAuthenticationConverter mcpTokenAuthenticationConverter) {
         ServerAuthenticationEntryPointFailureHandler failureHandler =
                 new ServerAuthenticationEntryPointFailureHandler(authenticationEntryPoint);
 
+        McpSecurityFilters mcpSecurityFilters =
+                buildMcpSecurityFilters(mcpTokenService, mcpTokenAuthenticationConverter, failureHandler);
+
+        csrfConfig.applyTo(http);
+
         return http.addFilterAt(this::sanityCheckFilter, SecurityWebFiltersOrder.FIRST)
-                // The native CSRF solution doesn't work with WebFlux, yet, but only for WebMVC. So we make our own.
-                .csrf(csrfSpec -> csrfSpec.disable())
-                .addFilterAt(new CSRFFilter(objectMapper), SecurityWebFiltersOrder.CSRF)
+                // Add BEFORE the AUTHENTICATION slot (not AT it): placing a second AuthenticationWebFilter at the
+                // same order as form-login breaks its manager wiring (login -> 500). This runs the MCP bearer check
+                // just ahead of form-login and is inert for non-MCP requests (see the matcher above).
+                .addFilterBefore(mcpSecurityFilters.authentication(), SecurityWebFiltersOrder.AUTHENTICATION)
+                // Confine what an MCP-token-authenticated principal may reach on /api/v1 to the allowlist. Runs
+                // just before authorization, after the MCP auth filter has populated the reactive security context,
+                // so a valid mcp_ token hitting a non-allowlisted path/verb gets 403. Kept as a shared filter (not
+                // an authorizeExchange rule) so EE — whose authorizeExchange chain diverges — wires the identical
+                // control.
+                .addFilterBefore(mcpSecurityFilters.allowlist(), SecurityWebFiltersOrder.AUTHORIZATION)
                 // Default security headers configuration from
                 // https://docs.spring.io/spring-security/site/docs/5.0.x/reference/html/headers.html
                 .headers(headerSpec -> headerSpec
@@ -184,16 +274,18 @@ public class SecurityConfig {
                         // Disabled because we use CSP's `frame-ancestors` instead.
                         .frameOptions(options -> options.disable()))
                 .anonymous(anonymousSpec -> anonymousSpec.principal(createAnonymousUser()))
-                // This returns 401 unauthorized for all requests that are not authenticated but authentication is
+                // This returns 401 unauthorized for all requests that are not authenticated but
+                // authentication is
                 // required
-                // The client will redirect to the login page if we return 401 as Http status response
+                // The client will redirect to the login page if we return 401 as Http status
+                // response
                 .exceptionHandling(exceptionHandlingSpec -> exceptionHandlingSpec
                         .authenticationEntryPoint(authenticationEntryPoint)
                         .accessDeniedHandler(accessDeniedHandler))
                 .authorizeExchange(authorizeExchangeSpec -> authorizeExchangeSpec
-                        // The following endpoints are allowed to be accessed without authentication
+                        // The following endpoints are allowed to be accessed without
+                        // authentication
                         .matchers(
-                                ServerWebExchangeMatchers.pathMatchers(HttpMethod.GET, Url.LOGIN_URL),
                                 ServerWebExchangeMatchers.pathMatchers(HttpMethod.GET, Url.HEALTH_CHECK),
                                 ServerWebExchangeMatchers.pathMatchers(HttpMethod.POST, USER_URL),
                                 ServerWebExchangeMatchers.pathMatchers(HttpMethod.POST, USER_URL + "/super"),
@@ -201,11 +293,7 @@ public class SecurityConfig {
                                 ServerWebExchangeMatchers.pathMatchers(
                                         HttpMethod.GET, USER_URL + "/verifyPasswordResetToken"),
                                 ServerWebExchangeMatchers.pathMatchers(HttpMethod.PUT, USER_URL + "/resetPassword"),
-                                ServerWebExchangeMatchers.pathMatchers(HttpMethod.GET, USER_URL + "/invite/verify"),
-                                ServerWebExchangeMatchers.pathMatchers(HttpMethod.PUT, USER_URL + "/invite/confirm"),
                                 ServerWebExchangeMatchers.pathMatchers(HttpMethod.GET, USER_URL + "/me"),
-                                ServerWebExchangeMatchers.pathMatchers(HttpMethod.GET, "/v3/**"),
-                                ServerWebExchangeMatchers.pathMatchers(HttpMethod.GET, USER_URL + "/features"),
                                 ServerWebExchangeMatchers.pathMatchers(HttpMethod.GET, ASSET_URL + "/*"),
                                 ServerWebExchangeMatchers.pathMatchers(HttpMethod.GET, ACTION_URL + "/**"),
                                 ServerWebExchangeMatchers.pathMatchers(HttpMethod.GET, ACTION_COLLECTION_URL + "/view"),
@@ -213,7 +301,7 @@ public class SecurityConfig {
                                 ServerWebExchangeMatchers.pathMatchers(HttpMethod.GET, APPLICATION_URL + "/**"),
                                 ServerWebExchangeMatchers.pathMatchers(HttpMethod.GET, THEME_URL + "/**"),
                                 ServerWebExchangeMatchers.pathMatchers(HttpMethod.POST, ACTION_URL + "/execute"),
-                                ServerWebExchangeMatchers.pathMatchers(HttpMethod.GET, TENANT_URL + "/current"),
+                                ServerWebExchangeMatchers.pathMatchers(HttpMethod.GET, ORGANIZATION_URL + "/current"),
                                 ServerWebExchangeMatchers.pathMatchers(HttpMethod.POST, USAGE_PULSE_URL),
                                 ServerWebExchangeMatchers.pathMatchers(HttpMethod.GET, CUSTOM_JS_LIB_URL + "/*/view"),
                                 ServerWebExchangeMatchers.pathMatchers(
@@ -229,7 +317,13 @@ public class SecurityConfig {
                         .authenticated())
                 // Add Pre Auth rate limit filter before authentication filter
                 .addFilterBefore(
-                        new ConditionalFilter(new LoginRateLimitFilter(rateLimitService), Url.LOGIN_URL),
+                        new ConditionalFilter(new LoginMetricsFilter(meterRegistry), Url.LOGIN_URL),
+                        SecurityWebFiltersOrder.FORM_LOGIN)
+                .addFilterBefore(
+                        new ConditionalFilter(new LoginRateLimitFilter(rateLimitService, meterRegistry), Url.LOGIN_URL),
+                        SecurityWebFiltersOrder.FORM_LOGIN)
+                .addFilterBefore(
+                        new ConditionalFilter(new SignupRateLimitFilter(rateLimitService, meterRegistry), USER_URL),
                         SecurityWebFiltersOrder.FORM_LOGIN)
                 .httpBasic(httpBasicSpec -> httpBasicSpec.authenticationFailureHandler(failureHandler))
                 .formLogin(formLoginSpec -> formLoginSpec
@@ -267,17 +361,12 @@ public class SecurityConfig {
     }
 
     /**
-     * This bean configures the parameters that need to be set when a Cookie is created for a logged in user
+     * This bean configures the parameters that need to be set when a Cookie is
+     * created for a logged in user
      */
     @Bean
     public WebSessionIdResolver webSessionIdResolver() {
-        CookieWebSessionIdResolver resolver = new CookieWebSessionIdResolver();
-        // Setting the max age to 30 days so that the cookie doesn't expire on browser close
-        // If the max age is not set, some browsers will default to deleting the cookies on session close.
-        resolver.setCookieMaxAge(Duration.of(30, DAYS));
-        resolver.addCookieInitializer((builder) -> builder.path("/"));
-        resolver.addCookieInitializer((builder) -> builder.sameSite("Lax"));
-        return resolver;
+        return new CustomCookieWebSessionIdResolver();
     }
 
     private User createAnonymousUser() {
@@ -292,7 +381,8 @@ public class SecurityConfig {
     private Mono<Void> sanityCheckFilter(ServerWebExchange exchange, WebFilterChain chain) {
         final HttpHeaders headers = exchange.getRequest().getHeaders();
 
-        // 1. Check if the content-type is valid at all. Mostly just checks if it contains a `/`.
+        // 1. Check if the content-type is valid at all. Mostly just checks if it
+        // contains a `/`.
         MediaType contentType;
         try {
             contentType = headers.getContentType();
@@ -308,8 +398,9 @@ public class SecurityConfig {
             return writeErrorResponse(exchange, chain, "Unsupported Content-Type");
         }
 
-        // 3. Check Appsmith version, if present. Not making this a mandatory check for now, but reconsider later.
-        final String versionHeaderValue = headers.getFirst("X-Appsmith-Version");
+        // 3. Check Appsmith version, if present. Not making this a mandatory check for
+        // now, but reconsider later.
+        final String versionHeaderValue = headers.getFirst(CsrfConfig.VERSION_HEADER);
         final String serverVersion = projectProperties.getVersion();
         if (versionHeaderValue != null && !serverVersion.equals(versionHeaderValue)) {
             final ErrorDTO error = new ErrorDTO(

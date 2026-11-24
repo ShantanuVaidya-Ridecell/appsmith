@@ -5,7 +5,10 @@ import type {
   ImportApplicationRequest,
   UpdateApplicationPayload,
 } from "ee/api/ApplicationApi";
-import { ReduxActionTypes } from "ee/constants/ReduxActionConstants";
+import {
+  ReduxActionErrorTypes,
+  ReduxActionTypes,
+} from "ee/constants/ReduxActionConstants";
 import type { NavigationSetting, ThemeSetting } from "constants/AppConstants";
 import type { IconNames } from "@appsmith/ads";
 import type { Datasource } from "entities/Datasource";
@@ -76,10 +79,45 @@ export const updateApplication = (
   };
 };
 
+export const persistAppSlug = (slug: string, onSuccess?: () => void) => {
+  return {
+    type: ReduxActionTypes.PERSIST_APP_SLUG,
+    payload: {
+      slug,
+      onSuccess,
+    },
+  };
+};
+
+export const validateAppSlug = (slug: string) => {
+  return {
+    type: ReduxActionTypes.VALIDATE_APP_SLUG,
+    payload: {
+      slug,
+    },
+  };
+};
+
+export const fetchAppSlugSuggestion = (applicationId: string) => {
+  return {
+    type: ReduxActionTypes.FETCH_APP_SLUG_SUGGESTION,
+    payload: {
+      applicationId,
+    },
+  };
+};
+
 export const updateCurrentApplicationIcon = (icon: IconNames) => {
   return {
     type: ReduxActionTypes.CURRENT_APPLICATION_ICON_UPDATE,
     payload: icon,
+  };
+};
+
+export const updateCurrentApplicationDescription = (description: string) => {
+  return {
+    type: ReduxActionTypes.CURRENT_APPLICATION_DESCRIPTION_UPDATE,
+    payload: description,
   };
 };
 
@@ -151,6 +189,36 @@ export const publishApplication = (applicationId: string) => {
     payload: {
       applicationId,
     },
+  };
+};
+
+export const redeployApplication = (applicationId: string) => {
+  return {
+    type: ReduxActionTypes.REDEPLOY_APPLICATION_INIT,
+    payload: {
+      applicationId,
+    },
+  };
+};
+
+export const publishAnvilApplication = (applicationId: string) => {
+  return {
+    type: ReduxActionTypes.PUBLISH_ANVIL_APPLICATION_INIT,
+    payload: {
+      applicationId,
+    },
+  };
+};
+
+export const publishAnvilApplicationSuccess = () => {
+  return {
+    type: ReduxActionTypes.PUBLISH_ANVIL_APPLICATION_SUCCESS,
+  };
+};
+
+export const publishAnvilApplicationError = () => {
+  return {
+    type: ReduxActionErrorTypes.PUBLISH_ANVIL_APPLICATION_ERROR,
   };
 };
 
@@ -265,4 +333,29 @@ export const setIsAppSidebarPinned = (payload: boolean) => ({
 
 export const fetchAllPackages = () => {
   return {};
+};
+
+export const enableStaticUrl = (slug: string, onSuccess?: () => void) => {
+  return {
+    type: ReduxActionTypes.ENABLE_STATIC_URL,
+    payload: {
+      slug,
+      onSuccess,
+    },
+  };
+};
+
+export const disableStaticUrl = (onSuccess?: () => void) => {
+  return {
+    type: ReduxActionTypes.DISABLE_STATIC_URL,
+    payload: {
+      onSuccess,
+    },
+  };
+};
+
+export const resetAppSlugValidation = () => {
+  return {
+    type: ReduxActionTypes.RESET_APP_SLUG_VALIDATION,
+  };
 };

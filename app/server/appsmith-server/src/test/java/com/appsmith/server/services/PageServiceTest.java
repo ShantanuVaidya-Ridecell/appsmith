@@ -7,6 +7,7 @@ import com.appsmith.external.models.Datasource;
 import com.appsmith.external.models.JSValue;
 import com.appsmith.external.models.PluginType;
 import com.appsmith.external.models.Policy;
+import com.appsmith.external.models.RunBehaviourEnum;
 import com.appsmith.external.plugins.PluginExecutor;
 import com.appsmith.server.acl.AclPermission;
 import com.appsmith.server.actioncollections.base.ActionCollectionService;
@@ -50,13 +51,16 @@ import net.minidev.json.parser.JSONParser;
 import net.minidev.json.parser.ParseException;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mockito;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.security.test.context.support.WithUserDetails;
 import org.springframework.test.annotation.DirtiesContext;
+import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 import org.springframework.util.StringUtils;
 import reactor.core.publisher.Mono;
 import reactor.test.StepVerifier;
@@ -102,7 +106,7 @@ public class PageServiceTest {
     @Autowired
     ApplicationService applicationService;
 
-    @Autowired
+    @MockitoSpyBean
     NewPageService newPageService;
 
     @Autowired
@@ -155,8 +159,9 @@ public class PageServiceTest {
 
     @AfterEach
     public void cleanup() {
-        List<Application> deletedApplications = applicationService
-                .findByWorkspaceId(workspaceId, applicationPermission.getDeletePermission())
+        List<Application> deletedApplications = applicationPermission
+                .getDeletePermission()
+                .flatMapMany(permission -> applicationService.findByWorkspaceId(workspaceId, permission))
                 .flatMap(remainingApplication -> applicationPageService.deleteApplication(remainingApplication.getId()))
                 .collectList()
                 .block();
@@ -480,6 +485,37 @@ public class PageServiceTest {
 
     @Test
     @WithUserDetails(value = "api_user")
+    @DisplayName("GHSA-x4j8-9c4j-73r7")
+    void should_rejectRenameAndKeepPageName_when_newNameIsNotValidPageName() {
+        // Given
+        setupTestApplication();
+        PageDTO testPage = new PageDTO();
+        testPage.setName("Page Before Rename");
+        testPage.setApplicationId(application.getId());
+        PageDTO createdPage = applicationPageService.createPage(testPage).block();
+        PageDTO rename = new PageDTO();
+        rename.setName("..");
+
+        // When
+        Mono<PageDTO> result = newPageService.updatePage(createdPage.getId(), rename);
+
+        // Then
+        StepVerifier.create(result)
+                .expectErrorSatisfies(
+                        error -> assertThat(error)
+                                .isInstanceOf(AppsmithException.class)
+                                .hasMessage(
+                                        AppsmithError.GENERIC_BAD_REQUEST.getMessage(
+                                                "The page name is not valid. "
+                                                        + "A page name cannot be blank, cannot contain \\ / : < > \" | ? * or control characters, cannot start or end with a dot, cannot be longer than 255 characters, and cannot be a reserved device name such as CON or NUL.")))
+                .verify();
+        StepVerifier.create(newPageService.findPageById(createdPage.getId(), READ_PAGES, false))
+                .assertNext(page -> assertThat(page.getName()).isEqualTo("Page Before Rename"))
+                .verifyComplete();
+    }
+
+    @Test
+    @WithUserDetails(value = "api_user")
     public void updatePage_WhenCustomSlugSet_CustomSlugIsNotUpdated() {
 
         Mono<Workspace> workspaceResponse = workspaceService.findById(workspaceId, READ_WORKSPACES);
@@ -592,7 +628,7 @@ public class PageServiceTest {
                 pluginRepository.findByPackageName("installed-plugin").block();
         datasource.setPluginId(installed_plugin.getId());
         action.setDatasource(datasource);
-        action.setExecuteOnLoad(true);
+        action.setRunBehaviour(RunBehaviourEnum.ON_PAGE_LOAD);
 
         assert page != null;
         Layout layout = page.getLayouts().get(0);
@@ -735,9 +771,9 @@ public class PageServiceTest {
                     assertThat(actionWithoutCollection.getUnpublishedAction().getName())
                             .isEqualTo("PageAction");
 
-                    // Confirm that executeOnLoad is cloned as well.
-                    assertThat(actionWithoutCollection.getUnpublishedAction().getExecuteOnLoad())
-                            .isTrue();
+                    // Confirm that RunBehaviour Page load is cloned as well.
+                    assertThat(actionWithoutCollection.getUnpublishedAction().getRunBehaviour())
+                            .isEqualTo(RunBehaviourEnum.ON_PAGE_LOAD);
 
                     // Check if collections got copied too
                     List<ActionCollection> collections = tuple.getT3();
@@ -771,6 +807,55 @@ public class PageServiceTest {
                             .isEqualTo(page.getId());
                 })
                 .verifyComplete();
+    }
+
+    @Test
+    @WithUserDetails(value = "api_user")
+    public void clonePage_pageReadsDoNotScaleWithActionCount() {
+        Mockito.when(pluginExecutorHelper.getPluginExecutor(Mockito.any()))
+                .thenReturn(Mono.just(new MockPluginExecutor()));
+
+        setupTestApplication();
+        final String pageId = application.getPages().get(0).getId();
+
+        // Clone the page while it has no actions to learn how many times a clone reads the cloned page on its own.
+        Mockito.clearInvocations(newPageService);
+        final PageDTO clonedWithoutActions =
+                applicationPageService.clonePage(pageId).block();
+        assertThat(clonedWithoutActions).isNotNull();
+        final int readsWithoutActions = countPageReads(clonedWithoutActions.getId());
+
+        Datasource datasource = new Datasource();
+        datasource.setWorkspaceId(workspaceId);
+        datasource.setName("datasource for clone page reads test");
+        Plugin installedPlugin =
+                pluginRepository.findByPackageName("installed-plugin").block();
+        datasource.setPluginId(installedPlugin.getId());
+        for (int i = 0; i < 3; i++) {
+            ActionDTO action = new ActionDTO();
+            action.setName("clonePageAction" + i);
+            action.setActionConfiguration(new ActionConfiguration());
+            action.setDatasource(datasource);
+            action.setPageId(pageId);
+            layoutActionService.createSingleAction(action, Boolean.FALSE).block();
+        }
+
+        Mockito.clearInvocations(newPageService);
+        final PageDTO clonedWithActions =
+                applicationPageService.clonePage(pageId).block();
+        assertThat(clonedWithActions).isNotNull();
+
+        // Creating each cloned action must reuse the page the clone already loaded. A read per action keeps one
+        // full page document, DSL included, live per in-flight action.
+        assertThat(countPageReads(clonedWithActions.getId())).isEqualTo(readsWithoutActions);
+        assertThat(readsWithoutActions).isGreaterThanOrEqualTo(1);
+    }
+
+    private int countPageReads(String pageId) {
+        ArgumentCaptor<String> pageIdCaptor = ArgumentCaptor.forClass(String.class);
+        Mockito.verify(newPageService, Mockito.atLeast(0))
+                .findById(pageIdCaptor.capture(), Mockito.any(AclPermission.class));
+        return (int) pageIdCaptor.getAllValues().stream().filter(pageId::equals).count();
     }
 
     @Test
@@ -939,8 +1024,21 @@ public class PageServiceTest {
                             .contains(managePagePolicy, readPagePolicy, deletePagePolicy, createPageActionsPolicy);
 
                     assertThat(unpublishedPage.getLayouts()).isNotEmpty();
-                    assertThat(unpublishedPage.getLayouts().get(0).getDsl().get("widgetName"))
-                            .isEqualTo("firstWidget");
+                    JSONObject clonedDsl = unpublishedPage.getLayouts().get(0).getDsl();
+                    assertThat(clonedDsl.get("widgetName")).isEqualTo("firstWidget");
+                    // Widget ids must be regenerated on clone so they do not collide with the
+                    // source page at application level.
+                    assertThat(clonedDsl.get("widgetId")).isNotEqualTo("firstWidget");
+                    Object clonedChildren = clonedDsl.get("children");
+                    assertThat(clonedChildren).isInstanceOf(List.class);
+                    // After persisting the cloned page and reading it back, nested DSL nodes
+                    // come back as LinkedHashMap rather than net.minidev.json.JSONObject, so we
+                    // assert against the generic Map contract instead of casting to JSONObject.
+                    Object firstChild = ((List<?>) clonedChildren).get(0);
+                    assertThat(firstChild).isInstanceOf(Map.class);
+                    Map<?, ?> clonedChild = (Map<?, ?>) firstChild;
+                    assertThat(clonedChild.get("widgetName")).isEqualTo("Table1");
+                    assertThat(clonedChild.get("widgetId")).isNotEqualTo("Table1");
                     assertThat(unpublishedPage.getLayouts().get(0).getWidgetNames())
                             .isNotEmpty();
                     assertThat(unpublishedPage.getLayouts().get(0).getMongoEscapedWidgetNames())
@@ -964,7 +1062,7 @@ public class PageServiceTest {
                     assertThat(actionWithoutCollection.getBaseId()).isEqualTo(actionWithoutCollection.getId());
                     assertThat(actionWithoutCollection.getBranchName()).isEqualTo(branchName);
 
-                    // Confirm that executeOnLoad is cloned as well.
+                    // Confirm that RunBehaviour page load is cloned as well.
                     assertThat(actions.stream()
                                     .filter(clonedAction -> "PageAction"
                                             .equals(clonedAction
@@ -973,8 +1071,9 @@ public class PageServiceTest {
                                     .findFirst()
                                     .get()
                                     .getUnpublishedAction()
-                                    .getExecuteOnLoad())
-                            .isTrue();
+                                    .getRunBehaviour())
+                            .isEqualTo(RunBehaviourEnum.ON_PAGE_LOAD);
+                    ;
 
                     // Check if collections got copied too
                     List<ActionCollection> collections = tuple.getT3();

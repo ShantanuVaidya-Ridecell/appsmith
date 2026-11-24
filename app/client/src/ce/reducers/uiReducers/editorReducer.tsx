@@ -9,7 +9,7 @@ import type {
   LayoutOnLoadActionErrors,
   PageAction,
 } from "constants/AppsmithActionConstants/ActionConstants";
-import type { UpdatePageResponse } from "api/PageApi";
+import type { SavePageResponse, UpdatePageResponse } from "api/PageApi";
 import type { UpdateCanvasPayload } from "actions/pageActions";
 
 export const initialState: EditorReduxState = {
@@ -18,6 +18,8 @@ export const initialState: EditorReduxState = {
   loadingStates: {
     publishing: false,
     publishingError: false,
+    redeploying: false,
+    redeployingError: false,
     saving: false,
     savingError: false,
     savingEntity: false,
@@ -31,12 +33,15 @@ export const initialState: EditorReduxState = {
     cloningPageError: false,
     updatingWidgetName: false,
     updateWidgetNameError: false,
+    isSettingUpPage: false,
   },
   isSnipingMode: false,
   snipModeBindTo: undefined,
   isPreviewMode: false,
+  showTabOrderOverlay: false,
   isProtectedMode: true,
   zoomLevel: 1,
+  onLoadActionExecution: false,
 };
 
 export const handlers = {
@@ -115,14 +120,42 @@ export const handlers = {
 
     return { ...state };
   },
+  [ReduxActionTypes.REDEPLOY_APPLICATION_INIT]: (state: EditorReduxState) => {
+    state.loadingStates.redeploying = true;
+    state.loadingStates.redeployingError = false;
+
+    return { ...state };
+  },
+  [ReduxActionErrorTypes.REDEPLOY_APPLICATION_ERROR]: (
+    state: EditorReduxState,
+  ) => {
+    state.loadingStates.redeploying = false;
+    state.loadingStates.redeployingError = true;
+
+    return { ...state };
+  },
+  [ReduxActionTypes.REDEPLOY_APPLICATION_SUCCESS]: (
+    state: EditorReduxState,
+  ) => {
+    state.loadingStates.redeploying = false;
+    state.loadingStates.redeployingError = false;
+
+    return { ...state };
+  },
   [ReduxActionTypes.SAVE_PAGE_INIT]: (state: EditorReduxState) => {
     state.loadingStates.saving = true;
     state.loadingStates.savingError = false;
 
     return { ...state };
   },
-  [ReduxActionTypes.SAVE_PAGE_SUCCESS]: (state: EditorReduxState) => {
+  [ReduxActionTypes.SAVE_PAGE_SUCCESS]: (
+    state: EditorReduxState,
+    action: ReduxAction<SavePageResponse>,
+  ) => {
+    const layoutOnLoadActions = action.payload.data.layoutOnLoadActions;
+
     state.loadingStates.saving = false;
+    state.pageActions = layoutOnLoadActions;
 
     return { ...state };
   },
@@ -239,6 +272,15 @@ export const handlers = {
       isPreviewMode: action.payload,
     };
   },
+  [ReduxActionTypes.SET_SHOW_TAB_ORDER_OVERLAY]: (
+    state: EditorReduxState,
+    action: ReduxAction<boolean>,
+  ) => {
+    return {
+      ...state,
+      showTabOrderOverlay: action.payload,
+    };
+  },
   [ReduxActionTypes.SET_PROTECTED_MODE]: (
     state: EditorReduxState,
     action: ReduxAction<boolean>,
@@ -269,6 +311,40 @@ export const handlers = {
     ...state,
     widgetConfigBuilt: true,
   }),
+
+  [ReduxActionTypes.SETUP_PAGE_INIT]: (state: EditorReduxState) => {
+    return {
+      ...state,
+      loadingStates: {
+        ...state.loadingStates,
+        isSettingUpPage: true,
+      },
+    };
+  },
+  [ReduxActionTypes.SETUP_PAGE_SUCCESS]: (state: EditorReduxState) => {
+    return {
+      ...state,
+      loadingStates: {
+        ...state.loadingStates,
+        isSettingUpPage: false,
+      },
+    };
+  },
+  [ReduxActionErrorTypes.SETUP_PAGE_ERROR]: (state: EditorReduxState) => {
+    return {
+      ...state,
+      loadingStates: { ...state.loadingStates, isSettingUpPage: false },
+    };
+  },
+  [ReduxActionTypes.SET_ONLOAD_ACTION_EXECUTED]: (
+    state: EditorReduxState,
+    action: ReduxAction<boolean>,
+  ) => {
+    return {
+      ...state,
+      onLoadActionExecution: action.payload,
+    };
+  },
 };
 
 const editorReducer = createReducer(initialState, handlers);
@@ -285,9 +361,11 @@ export interface EditorReduxState {
   isSnipingMode: boolean;
   snipModeBindTo?: string;
   isPreviewMode: boolean;
+  showTabOrderOverlay: boolean;
   isProtectedMode: boolean;
   zoomLevel: number;
   layoutOnLoadActionErrors?: LayoutOnLoadActionErrors[];
+  onLoadActionExecution?: boolean;
   loadingStates: {
     saving: boolean;
     savingError: boolean;
@@ -295,6 +373,8 @@ export interface EditorReduxState {
     publishing: boolean;
     published?: string;
     publishingError: boolean;
+    redeploying: boolean;
+    redeployingError: boolean;
     loading: boolean;
     loadingError: boolean;
     isPageSwitching: boolean;
@@ -305,6 +385,7 @@ export interface EditorReduxState {
     cloningPageError: boolean;
     updatingWidgetName: boolean;
     updateWidgetNameError: boolean;
+    isSettingUpPage: boolean;
   };
 }
 

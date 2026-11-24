@@ -3,10 +3,10 @@ import { useSelector } from "react-redux";
 import { isWidgetFocused } from "selectors/widgetSelectors";
 import { getAnvilSpaceDistributionStatus } from "layoutSystems/anvil/integrations/selectors";
 import { selectCombinedPreviewMode } from "selectors/gitModSelectors";
-import type { AppState } from "ee/reducers";
+import type { DefaultRootState } from "react-redux";
 import type React from "react";
-import { useCurrentAppState } from "pages/Editor/IDE/hooks/useCurrentAppState";
-import { EditorState } from "ee/entities/IDE/constants";
+import { useCurrentAppState } from "IDE/hooks/useCurrentAppState";
+import { EditorState } from "IDE/enums";
 
 export const useHoverToFocusWidget = (
   widgetId: string,
@@ -25,11 +25,11 @@ export const useHoverToFocusWidget = (
 
   // This state tells us whether a `ResizableComponent` is resizing
   const isResizing = useSelector(
-    (state: AppState) => state.ui.widgetDragResize.isResizing,
+    (state: DefaultRootState) => state.ui.widgetDragResize.isResizing,
   );
   // This state tells us whether a `DraggableComponent` is dragging
   const isDragging = useSelector(
-    (state: AppState) => state.ui.widgetDragResize.isDragging,
+    (state: DefaultRootState) => state.ui.widgetDragResize.isDragging,
   );
 
   const isResizingOrDragging = isResizing || isDragging;

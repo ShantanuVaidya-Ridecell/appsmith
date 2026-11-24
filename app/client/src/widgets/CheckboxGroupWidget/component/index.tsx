@@ -19,8 +19,8 @@ import LabelWithTooltip, {
   labelLayoutStyles,
   LABEL_CONTAINER_CLASS,
 } from "widgets/components/LabelWithTooltip";
-import type { ThemeProp } from "WidgetProvider/constants";
-import { AlignWidgetTypes } from "WidgetProvider/constants";
+import type { ThemeProp } from "WidgetProvider/types";
+import { AlignWidgetTypes } from "WidgetProvider/types";
 
 export interface InputContainerProps {
   inline?: boolean;
@@ -161,6 +161,7 @@ function CheckboxGroupComponent(props: CheckboxGroupComponentProps) {
     isDisabled,
     isDynamicHeightEnabled,
     isInline,
+    isRequired,
     isSelectAll,
     isValid,
     labelAlignment,
@@ -212,6 +213,7 @@ function CheckboxGroupComponent(props: CheckboxGroupComponentProps) {
           helpText={labelTooltip}
           inline={isInline}
           isDynamicHeightEnabled={isDynamicHeightEnabled}
+          isRequired={isRequired}
           optionCount={optionCount}
           position={labelPosition}
           text={labelText}

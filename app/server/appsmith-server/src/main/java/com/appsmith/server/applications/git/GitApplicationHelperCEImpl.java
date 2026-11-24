@@ -17,6 +17,7 @@ import com.appsmith.server.dtos.ArtifactExchangeJson;
 import com.appsmith.server.dtos.GitAuthDTO;
 import com.appsmith.server.exceptions.AppsmithError;
 import com.appsmith.server.exceptions.AppsmithException;
+import com.appsmith.server.git.SchemaVersionUpdateAudit;
 import com.appsmith.server.helpers.CollectionUtils;
 import com.appsmith.server.helpers.CommonGitFileUtils;
 import com.appsmith.server.helpers.GitPrivateRepoHelper;
@@ -119,6 +120,27 @@ public class GitApplicationHelperCEImpl implements GitArtifactHelperCE<Applicati
     }
 
     @Override
+    public Mono<Application> createNewArtifactForCheckout(Artifact sourceArtifact, String refName, RefType refType) {
+        GitArtifactMetadata sourceBranchGitData = sourceArtifact.getGitArtifactMetadata();
+        sourceBranchGitData.setRefName(refName);
+        sourceBranchGitData.setRefType(refType);
+        sourceBranchGitData.setIsRepoPrivate(null);
+        // Save new artifact in DB and update from the parent branch application
+        sourceBranchGitData.setGitAuth(null);
+        sourceBranchGitData.setLastCommittedAt(Instant.now());
+
+        Application sourceApplication = (Application) sourceArtifact;
+        sourceApplication.setId(null);
+        sourceApplication.setPages(null);
+        sourceApplication.setPublishedPages(null);
+        sourceApplication.setEditModeThemeId(null);
+        sourceApplication.setPublishedModeThemeId(null);
+        sourceApplication.setGitApplicationMetadata(sourceBranchGitData);
+
+        return applicationService.save(sourceApplication);
+    }
+
+    @Override
     public Mono<Application> createNewArtifactForCheckout(Artifact sourceArtifact, String branchName) {
         GitArtifactMetadata sourceBranchGitData = sourceArtifact.getGitArtifactMetadata();
         sourceBranchGitData.setRefName(branchName);
@@ -155,7 +177,7 @@ public class GitApplicationHelperCEImpl implements GitArtifactHelperCE<Applicati
         update.setServerSchemaVersion(jsonSchemaVersions.getServerVersion());
         update.setIsManualUpdate(false);
 
-        return applicationService.update(artifact.getId(), update);
+        return SchemaVersionUpdateAudit.suppress(applicationService.update(artifact.getId(), update));
     }
 
     @Override
@@ -213,7 +235,11 @@ public class GitApplicationHelperCEImpl implements GitArtifactHelperCE<Applicati
         return commonGitFileUtils
                 .initializeReadme(readMePath, originHeader + viewModeUrl, originHeader + editModeUrl)
                 .onErrorMap(throwable -> {
-                    log.error("Error while initialising git repo, {0}", throwable);
+                    log.error(
+                            "Error while initialising git repo, application={}, workspace={}",
+                            artifact.getId(),
+                            artifact.getWorkspaceId(),
+                            throwable);
                     return new AppsmithException(
                             AppsmithError.GIT_FILE_SYSTEM_ERROR,
                             Exceptions.unwrap(throwable).getMessage());
@@ -323,6 +349,6 @@ public class GitApplicationHelperCEImpl implements GitArtifactHelperCE<Applicati
             return Mono.just(application);
         }
 
-        return Mono.just(application);
+        return publishArtifact(artifact, isPublishedManually);
     }
 }

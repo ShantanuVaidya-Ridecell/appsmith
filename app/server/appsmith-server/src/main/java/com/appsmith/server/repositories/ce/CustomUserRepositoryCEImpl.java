@@ -1,39 +1,51 @@
 package com.appsmith.server.repositories.ce;
 
-import com.appsmith.server.acl.AclPermission;
 import com.appsmith.server.constants.FieldName;
+import com.appsmith.server.diagnostics.DiagnosticsValues;
+import com.appsmith.server.domains.LoginSource;
 import com.appsmith.server.domains.User;
 import com.appsmith.server.exceptions.AppsmithError;
 import com.appsmith.server.exceptions.AppsmithException;
 import com.appsmith.server.helpers.ce.bridge.Bridge;
-import com.appsmith.server.helpers.ce.bridge.BridgeQuery;
+import com.appsmith.server.projections.EmailOnly;
 import com.appsmith.server.projections.IdOnly;
 import com.appsmith.server.repositories.BaseAppsmithRepositoryImpl;
 import lombok.extern.slf4j.Slf4j;
+import org.bson.Document;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.data.mongodb.core.FindAndModifyOptions;
+import org.springframework.data.mongodb.core.ReactiveMongoOperations;
+import org.springframework.data.mongodb.core.aggregation.Aggregation;
+import org.springframework.data.mongodb.core.query.Criteria;
+import org.springframework.data.mongodb.core.query.Query;
+import org.springframework.data.mongodb.core.query.Update;
 import org.springframework.data.mongodb.core.query.UpdateDefinition;
+import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
-import java.util.HashSet;
-import java.util.Set;
+import java.time.Instant;
+
+import static com.appsmith.server.helpers.ce.bridge.Bridge.notExists;
 
 @Slf4j
 public class CustomUserRepositoryCEImpl extends BaseAppsmithRepositoryImpl<User> implements CustomUserRepositoryCE {
 
-    @Override
-    public Mono<User> findByEmail(String email, AclPermission aclPermission) {
-        BridgeQuery<User> emailCriteria = Bridge.equal(User.Fields.email, email);
-        return queryBuilder().criteria(emailCriteria).permission(aclPermission).one();
-    }
+    private static final String SUPER_USER_SETUP_COLLECTION = "superUserSetupLock";
+    private static final String SUPER_USER_SETUP_LOCK_ID = "super-user-setup";
+
+    @Autowired
+    private ReactiveMongoOperations reactiveMongoOperations;
 
     @Override
-    public Mono<User> findByEmailAndTenantId(String email, String tenantId) {
+    public Mono<User> findByEmailAndOrganizationId(String email, String organizationId) {
         return queryBuilder()
-                .criteria(Bridge.equal(User.Fields.email, email).equal(User.Fields.tenantId, tenantId))
+                .criteria(Bridge.equal(User.Fields.email, email).equal(User.Fields.organizationId, organizationId))
                 .one();
     }
 
     /**
-     * Fetch minimal information from *a* user document in the database, limit to two documents, filter anonymousUser
+     * Fetch minimal information from *a* user document in the database, limit to two documents, filter system generated
+     * users.
      * If no documents left return true otherwise return false.
      *
      * @return Boolean, indicated where there exists at least one user in the system or not.
@@ -41,7 +53,25 @@ public class CustomUserRepositoryCEImpl extends BaseAppsmithRepositoryImpl<User>
     @Override
     public Mono<Boolean> isUsersEmpty() {
         return queryBuilder()
-                .criteria(Bridge.notIn(User.Fields.email, getSystemGeneratedUserEmails()))
+                .criteria(Bridge.or(
+                        notExists(User.Fields.isSystemGenerated), Bridge.isFalse(User.Fields.isSystemGenerated)))
+                .limit(1)
+                .all(IdOnly.class)
+                .count()
+                .map(count -> count == 0);
+    }
+
+    /**
+     * An account counts as a person's active account unless it is system generated or its enabled flag is false.
+     *
+     * @return true when no person has an active account yet.
+     */
+    @Override
+    public Mono<Boolean> hasNoActivatedUser() {
+        return queryBuilder()
+                .criteria(Bridge.or(Bridge.isNull(User.Fields.isEnabled), Bridge.isTrue(User.Fields.isEnabled)))
+                .criteria(Bridge.or(
+                        Bridge.isNull(User.Fields.isSystemGenerated), Bridge.isFalse(User.Fields.isSystemGenerated)))
                 .limit(1)
                 .all(IdOnly.class)
                 .count()
@@ -49,10 +79,66 @@ public class CustomUserRepositoryCEImpl extends BaseAppsmithRepositoryImpl<User>
     }
 
     @Override
-    public Set<String> getSystemGeneratedUserEmails() {
-        Set<String> systemGeneratedEmails = new HashSet<>();
-        systemGeneratedEmails.add(FieldName.ANONYMOUS_USER);
-        return systemGeneratedEmails;
+    public Mono<Boolean> activatePendingAccount(String id, String encodedPassword, LoginSource source) {
+        return queryBuilder()
+                .byId(id)
+                .criteria(Bridge.isFalse(User.Fields.isEnabled))
+                .updateFirst(Bridge.update()
+                        .set(User.Fields.isEnabled, true)
+                        .set(User.Fields.password, encodedPassword)
+                        .set(User.Fields.source, source)
+                        .set(User.Fields.updatedAt, Instant.now()))
+                .map(updatedCount -> updatedCount == 1);
+    }
+
+    /**
+     * Atomically claims the super user creation slot using MongoDB's findAndModify with upsert.
+     *
+     * This uses a dedicated collection with a fixed _id. The findAndModify operation with upsert=true
+     * is atomic at the document level in MongoDB: only the first request to attempt the upsert will
+     * succeed (returning null, meaning no prior document existed). All subsequent requests will find
+     * the existing document and return it, indicating the slot is already claimed.
+     *
+     * This works on both standalone MongoDB and replica sets — no transaction support required.
+     */
+    @Override
+    public Mono<Boolean> claimSuperUserCreationSlot() {
+        Query query = new Query(Criteria.where("_id").is(SUPER_USER_SETUP_LOCK_ID));
+        Update update = new Update()
+                .setOnInsert("_id", SUPER_USER_SETUP_LOCK_ID)
+                .setOnInsert("status", "CLAIMED")
+                .setOnInsert("claimedAt", Instant.now().toString());
+
+        FindAndModifyOptions options =
+                FindAndModifyOptions.options().upsert(true).returnNew(false);
+
+        return reactiveMongoOperations
+                .findAndModify(query, update, options, Document.class, SUPER_USER_SETUP_COLLECTION)
+                .hasElement()
+                .map(documentExisted -> !documentExisted)
+                .onErrorResume(e -> {
+                    if (e instanceof org.springframework.dao.DuplicateKeyException) {
+                        return Mono.just(false);
+                    }
+                    return Mono.error(e);
+                });
+    }
+
+    @Override
+    public Mono<Void> releaseSuperUserCreationSlot() {
+        Query query = new Query(Criteria.where("_id").is(SUPER_USER_SETUP_LOCK_ID));
+        return reactiveMongoOperations
+                .remove(query, SUPER_USER_SETUP_COLLECTION)
+                .then();
+    }
+
+    @Override
+    public Flux<String> getSystemGeneratedUserEmails(String organizationId) {
+        return queryBuilder()
+                .criteria(Bridge.equal(User.Fields.isSystemGenerated, true)
+                        .equal(User.Fields.organizationId, organizationId))
+                .all(EmailOnly.class)
+                .map(EmailOnly::email);
     }
 
     @Override
@@ -61,5 +147,22 @@ public class CustomUserRepositoryCEImpl extends BaseAppsmithRepositoryImpl<User>
             return Mono.error(new AppsmithException(AppsmithError.INVALID_PARAMETER, FieldName.ID));
         }
         return queryBuilder().byId(id).updateFirst(updateObj);
+    }
+
+    @Override
+    public Mono<Long> countForDiagnostics() {
+        Aggregation aggregation = Aggregation.newAggregation(
+                        Aggregation.match(new Criteria()
+                                .andOperator(
+                                        notDeleted(),
+                                        Criteria.where(User.Fields.isSystemGenerated)
+                                                .ne(true))),
+                        Aggregation.count().as("count"))
+                .withOptions(DiagnosticsValues.AGGREGATION_OPTIONS);
+        return reactiveMongoOperations
+                .aggregate(aggregation, reactiveMongoOperations.getCollectionName(User.class), Document.class)
+                .next()
+                .map(document -> ((Number) document.get("count")).longValue())
+                .defaultIfEmpty(0L);
     }
 }

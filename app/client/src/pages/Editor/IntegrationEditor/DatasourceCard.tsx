@@ -9,7 +9,7 @@ import {
   getCurrentActions,
 } from "ee/selectors/entitiesSelector";
 import styled from "styled-components";
-import type { AppState } from "ee/reducers";
+import type { DefaultRootState } from "react-redux";
 import history from "utils/history";
 import RenderDatasourceInformation from "pages/Editor/DataSourceEditor/DatasourceSection";
 import { getQueryParams } from "utils/URLUtils";
@@ -19,6 +19,7 @@ import { getGenerateCRUDEnabledPluginMap } from "ee/selectors/entitiesSelector";
 import {
   type GenerateCRUDEnabledPluginMap,
   type Plugin,
+  PluginPackageName,
   PluginType,
 } from "entities/Plugin";
 import AnalyticsUtil from "ee/utils/AnalyticsUtil";
@@ -159,7 +160,7 @@ function DatasourceCard(props: DatasourceCardProps) {
   const basePageId = useSelector(getCurrentBasePageId);
 
   const datasourceFormConfigs = useSelector(
-    (state: AppState) => state.entities.plugins.formConfigs,
+    (state: DefaultRootState) => state.entities.plugins.formConfigs,
   );
   const queryActions = useSelector(getCurrentActions);
   const queriesWithThisDatasource = queryActions.filter(
@@ -173,7 +174,8 @@ function DatasourceCard(props: DatasourceCardProps) {
   const pagePermissions = useSelector(getPagePermissions);
 
   const userAppPermissions = useSelector(
-    (state: AppState) => getCurrentApplication(state)?.userPermissions ?? [],
+    (state: DefaultRootState) =>
+      getCurrentApplication(state)?.userPermissions ?? [],
   );
 
   const isFeatureEnabled = useFeatureFlag(FEATURE_FLAG.license_gac_enabled);
@@ -297,9 +299,10 @@ function DatasourceCard(props: DatasourceCardProps) {
     (envSupportedDs ? isEnvironmentConfigured(datasource, currentEnv) : true)
   );
 
-  const showCreateNewActionButton = envSupportedDs
-    ? doesAnyDsConfigExist(datasource)
-    : true;
+  // Appsmith AI is deprecated: creating new queries on its datasources is blocked
+  const showCreateNewActionButton =
+    plugin.packageName !== PluginPackageName.APPSMITH_AI &&
+    (envSupportedDs ? doesAnyDsConfigExist(datasource) : true);
 
   return (
     <Wrapper

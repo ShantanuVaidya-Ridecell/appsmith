@@ -1,13 +1,16 @@
-import { captureException } from "@sentry/react";
 import fetchStatusRequest from "git/requests/fetchStatusRequest";
 import type { FetchStatusResponse } from "git/requests/fetchStatusRequest.types";
 import type { FetchStatusInitPayload } from "git/store/actions/fetchStatusActions";
 import { gitArtifactActions } from "git/store/gitArtifactSlice";
 import { selectGitApiContractsEnabled } from "git/store/selectors/gitFeatureFlagSelectors";
 import type { GitArtifactPayloadAction } from "git/store/types";
-import log from "loglevel";
 import { call, put, select } from "redux-saga/effects";
 import { validateResponse } from "sagas/ErrorSagas";
+import handleApiErrors from "./helpers/handleApiErrors";
+import LOG_TYPE from "entities/AppsmithConsole/logtype";
+import AppsmithConsole from "utils/AppsmithConsole";
+import { ENTITY_TYPE } from "ee/entities/AppsmithConsole/utils";
+import { GitErrorCodes } from "git/constants/enums";
 
 export default function* fetchStatusSaga(
   action: GitArtifactPayloadAction<FetchStatusInitPayload>,
@@ -39,18 +42,24 @@ export default function* fetchStatusSaga(
       );
     }
   } catch (e) {
-    if (response && response.responseMeta.error) {
-      const { error } = response.responseMeta;
+    const error = handleApiErrors(e as Error, response);
 
-      yield put(
-        gitArtifactActions.fetchStatusError({
-          artifactDef,
-          error,
-        }),
-      );
-    } else {
-      log.error(e);
-      captureException(e);
+    if (error?.code === GitErrorCodes.INVALID_DEPLOY_KEY) {
+      AppsmithConsole.error({
+        id: `invalid-deploy-key-${artifactDef.baseArtifactId}`,
+        text: "Git: Invalid Deploy Key",
+        messages: [{ message: new Error(error?.message || "") }],
+        logType: LOG_TYPE.INVALID_GIT_DEPLOY_KEY,
+        source: {
+          type: ENTITY_TYPE.GIT,
+          name: "Global SSH Key",
+          id: artifactDef.baseArtifactId,
+        },
+      });
+    }
+
+    if (error) {
+      yield put(gitArtifactActions.fetchStatusError({ artifactDef, error }));
     }
 
     // ! case: better error handling than passing strings

@@ -109,7 +109,15 @@ if ! ./build.sh > /dev/null; then
   echo RTS build failed >&2
   exit 1
 fi
-pretty_print "RTS build successful. Starting Docker build ..."
+pretty_print "RTS build successful. Starting MCP build ..."
+
+popd
+pushd app/client/packages/mcp/ > /dev/null
+if ! ./build.sh > /dev/null; then
+  echo MCP build failed >&2
+  exit 1
+fi
+pretty_print "MCP build successful. Starting Docker build ..."
 
 popd
 bash "$(dirname "$0")/generate_info_json.sh"
@@ -121,4 +129,4 @@ docker build -t appsmith/appsmith-local-$edition:$tag \
 pretty_print "Docker image build successful. Triggering run now ..."
 
 (docker stop appsmith || true) && (docker rm appsmith || true)
-docker run -d --name appsmith -p 80:80 -v "$PWD/stacks:/appsmith-stacks" appsmith/appsmith-local-$edition:$tag && sleep 15 && pretty_print "Local instance is up! Open Appsmith at http://localhost! "
+docker run -d --name appsmith -p 80:80 -v "$PWD/stacks:/appsmith-stacks" -e APPSMITH_BASE_URL=http://localhost appsmith/appsmith-local-$edition:$tag && sleep 15 && pretty_print "Local instance is up! Open Appsmith at http://localhost! "

@@ -60,6 +60,7 @@ export interface JSONFormComponentProps<TValues = any> {
   showReset: boolean;
   submitButtonStyles: ButtonStyleProps;
   title: string;
+  titleTextColor?: string;
   updateFormData: (values: TValues) => void;
   // TODO: Fix this the next time the file is edited
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -69,6 +70,7 @@ export interface JSONFormComponentProps<TValues = any> {
   updateWidgetProperty: (propertyName: string, propertyValue: any) => void;
   widgetId: string;
   showConnectDataOverlay?: boolean;
+  maxAllowedFields?: number;
 }
 
 const StyledContainer = styled(WidgetStyleContainer)<StyledContainerProps>`
@@ -174,7 +176,8 @@ function JSONFormComponent<TValues>(
     if (fieldLimitExceeded) {
       return (
         <InfoMessage fixHeight={fixMessageHeight}>
-          Source data exceeds {MAX_ALLOWED_FIELDS} fields.&nbsp;
+          Source data exceeds {rest.maxAllowedFields || MAX_ALLOWED_FIELDS}{" "}
+          fields. &nbsp;
           {renderMode === RenderModes.PAGE
             ? "Please contact your developer for more information"
             : "Please update the source data."}
@@ -230,6 +233,7 @@ function JSONFormComponent<TValues>(
           submitButtonLabel={submitButtonLabel}
           submitButtonStyles={rest.submitButtonStyles}
           title={rest.title}
+          titleTextColor={rest.titleTextColor}
           unregisterResetObserver={unregisterResetObserver}
           updateFormData={updateFormData}
         >

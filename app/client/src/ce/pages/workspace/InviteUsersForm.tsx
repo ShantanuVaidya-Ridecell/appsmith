@@ -3,7 +3,7 @@ import styled from "styled-components";
 import TagListField from "components/editorComponents/form/fields/TagListField";
 import { reduxForm, SubmissionError } from "redux-form";
 import { connect, useSelector } from "react-redux";
-import type { AppState } from "ee/reducers";
+import type { DefaultRootState } from "react-redux";
 import { getRolesForField } from "ee/selectors/workspaceSelectors";
 import type {
   InviteUsersToWorkspaceFormValues,
@@ -83,7 +83,7 @@ export const ErrorBox = styled.div<{ message?: boolean }>`
 
 export const StyledInviteFieldGroup = styled.div`
   display: flex;
-  align-items: baseline;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 0.8rem;
 `;
@@ -414,7 +414,7 @@ function InviteUsersForm(props: any) {
       ...(!isFeatureEnabled ? { users: usersAsStringsArray } : {}),
       role: roles,
       numberOfUsersInvited: usersAsStringsArray.length,
-      orgId: props.workspaceId,
+      workspaceId: props.workspaceId,
     });
 
     return inviteUsersToWorkspace(
@@ -551,7 +551,7 @@ function InviteUsersForm(props: any) {
 }
 
 export const mapStateToProps = (
-  state: AppState,
+  state: DefaultRootState,
   { formName }: { formName?: string },
 ) => {
   return {

@@ -1,7 +1,7 @@
 import type { Action } from "entities/Action";
 import { PluginType } from "entities/Plugin";
 import { getBindingAndReactivePathsOfAction } from "entities/Action/actionProperties";
-import { EvaluationSubstitutionType } from "entities/DataTree/dataTreeFactory";
+import { EvaluationSubstitutionType } from "constants/EvaluationConstants";
 
 const DEFAULT_ACTION: Action = {
   actionConfiguration: {},
@@ -10,7 +10,7 @@ const DEFAULT_ACTION: Action = {
     id: "randomDatasource",
   },
   dynamicBindingPathList: [],
-  executeOnLoad: false,
+  runBehaviour: "MANUAL",
   id: "",
   baseId: "",
   invalids: [],
@@ -23,6 +23,9 @@ const DEFAULT_ACTION: Action = {
   pluginId: "",
   messages: [],
   pluginType: PluginType.DB,
+  isDirtyMap: {
+    SCHEMA_GENERATION: false,
+  },
 };
 
 describe("getReactivePathsOfAction", () => {
@@ -37,6 +40,7 @@ describe("getReactivePathsOfAction", () => {
       isLoading: EvaluationSubstitutionType.TEMPLATE,
       config: EvaluationSubstitutionType.TEMPLATE,
       datasourceUrl: EvaluationSubstitutionType.TEMPLATE,
+      run: EvaluationSubstitutionType.TEMPLATE,
     });
   });
 
@@ -90,6 +94,7 @@ describe("getReactivePathsOfAction", () => {
       data: EvaluationSubstitutionType.TEMPLATE,
       isLoading: EvaluationSubstitutionType.TEMPLATE,
       datasourceUrl: EvaluationSubstitutionType.TEMPLATE,
+      run: EvaluationSubstitutionType.TEMPLATE,
       "config.body": EvaluationSubstitutionType.TEMPLATE,
       "config.body2": EvaluationSubstitutionType.TEMPLATE,
       "config.field1": EvaluationSubstitutionType.SMART_SUBSTITUTE,
@@ -159,6 +164,7 @@ describe("getReactivePathsOfAction", () => {
       data: EvaluationSubstitutionType.TEMPLATE,
       isLoading: EvaluationSubstitutionType.TEMPLATE,
       datasourceUrl: EvaluationSubstitutionType.TEMPLATE,
+      run: EvaluationSubstitutionType.TEMPLATE,
       "config.params[0].key": EvaluationSubstitutionType.TEMPLATE,
       "config.params[0].value": EvaluationSubstitutionType.TEMPLATE,
       "config.params[1].key": EvaluationSubstitutionType.TEMPLATE,
@@ -218,6 +224,7 @@ describe("getReactivePathsOfAction", () => {
       data: EvaluationSubstitutionType.TEMPLATE,
       isLoading: EvaluationSubstitutionType.TEMPLATE,
       datasourceUrl: EvaluationSubstitutionType.TEMPLATE,
+      run: EvaluationSubstitutionType.TEMPLATE,
       "config.key": EvaluationSubstitutionType.TEMPLATE,
       "config.value": EvaluationSubstitutionType.TEMPLATE,
     });
@@ -279,6 +286,7 @@ describe("getReactivePathsOfAction", () => {
       data: EvaluationSubstitutionType.TEMPLATE,
       isLoading: EvaluationSubstitutionType.TEMPLATE,
       datasourceUrl: EvaluationSubstitutionType.TEMPLATE,
+      run: EvaluationSubstitutionType.TEMPLATE,
       "config.body": EvaluationSubstitutionType.TEMPLATE,
       "config.field1": EvaluationSubstitutionType.SMART_SUBSTITUTE,
     });
@@ -294,6 +302,7 @@ describe("getReactivePathsOfAction", () => {
       data: EvaluationSubstitutionType.TEMPLATE,
       isLoading: EvaluationSubstitutionType.TEMPLATE,
       datasourceUrl: EvaluationSubstitutionType.TEMPLATE,
+      run: EvaluationSubstitutionType.TEMPLATE,
       "config.body": EvaluationSubstitutionType.TEMPLATE,
       "config.body2": EvaluationSubstitutionType.TEMPLATE,
     });

@@ -9,6 +9,8 @@ import com.appsmith.server.domains.Workspace;
 import com.appsmith.server.dtos.InviteUsersDTO;
 import com.appsmith.server.exceptions.AppsmithError;
 import com.appsmith.server.exceptions.AppsmithException;
+import com.appsmith.server.helpers.SecureBaseUrlResolver;
+import com.appsmith.server.helpers.UserOrganizationHelper;
 import com.appsmith.server.helpers.ValidationUtils;
 import com.appsmith.server.repositories.UserRepository;
 import com.appsmith.server.services.AnalyticsService;
@@ -47,7 +49,8 @@ public class UserAndAccessManagementServiceCEImpl implements UserAndAccessManage
     private final UserService userService;
     private final PermissionGroupPermission permissionGroupPermission;
     private final EmailService emailService;
-    private final CommonConfig commonConfig;
+    private final UserOrganizationHelper userOrganizationHelper;
+    private final SecureBaseUrlResolver secureBaseUrlResolver;
 
     private final CaptchaService captchaService;
 
@@ -61,7 +64,9 @@ public class UserAndAccessManagementServiceCEImpl implements UserAndAccessManage
             PermissionGroupPermission permissionGroupPermission,
             EmailService emailService,
             CommonConfig commonConfig,
-            CaptchaService captchaService) {
+            UserOrganizationHelper userOrganizationHelper,
+            CaptchaService captchaService,
+            SecureBaseUrlResolver secureBaseUrlResolver) {
 
         this.sessionUserService = sessionUserService;
         this.permissionGroupService = permissionGroupService;
@@ -71,8 +76,9 @@ public class UserAndAccessManagementServiceCEImpl implements UserAndAccessManage
         this.userService = userService;
         this.emailService = emailService;
         this.permissionGroupPermission = permissionGroupPermission;
-        this.commonConfig = commonConfig;
+        this.userOrganizationHelper = userOrganizationHelper;
         this.captchaService = captchaService;
+        this.secureBaseUrlResolver = secureBaseUrlResolver;
     }
 
     @Override
@@ -123,6 +129,18 @@ public class UserAndAccessManagementServiceCEImpl implements UserAndAccessManage
             usernames.add(username.toLowerCase());
         }
 
+        // Pre-flight origin validation: verify that the Origin header matches
+        // APPSMITH_BASE_URL BEFORE any user creation or permission-group writes.
+        // Without this, a mismatched origin would only fail at the email-sending
+        // stage, after the user has already been persisted in the workspace.
+        return secureBaseUrlResolver
+                .resolveSecureBaseUrl(originHeader)
+                .switchIfEmpty(Mono.error(new AppsmithException(AppsmithError.MISCONFIGURED_INSTANCE_BASE_URL)))
+                .flatMap(validatedOrigin -> doInviteUsers(inviteUsersDTO, originHeader, usernames));
+    }
+
+    private Mono<List<User>> doInviteUsers(InviteUsersDTO inviteUsersDTO, String originHeader, Set<String> usernames) {
+
         Map<String, Object> eventData = new HashMap<>();
 
         Mono<User> currentUserMono = sessionUserService.getCurrentUser().cache();
@@ -160,8 +178,10 @@ public class UserAndAccessManagementServiceCEImpl implements UserAndAccessManage
                     eventData.put(FieldName.WORKSPACE, workspace);
                     List<PermissionGroup> defaultPermissionGroups = tuple.getT3();
 
-                    Mono<User> getUserFromDbAndCheckIfUserExists = userRepository
-                            .findByEmail(username)
+                    Mono<User> getUserFromDbAndCheckIfUserExists = userOrganizationHelper
+                            .getCurrentUserOrganizationId()
+                            .flatMap(organizationId ->
+                                    userRepository.findByEmailAndOrganizationId(username, organizationId))
                             .flatMap(user -> throwErrorIfUserAlreadyExistsInWorkspace(user, defaultPermissionGroups)
                                     .thenReturn(user));
 

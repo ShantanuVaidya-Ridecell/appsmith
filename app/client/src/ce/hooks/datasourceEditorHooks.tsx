@@ -3,7 +3,7 @@ import {
   createMessage,
 } from "ee/constants/messages";
 import { FEATURE_FLAG } from "ee/entities/FeatureFlag";
-import type { AppState } from "ee/reducers";
+import type { DefaultRootState } from "react-redux";
 import { getPlugin } from "ee/selectors/entitiesSelector";
 import AnalyticsUtil from "ee/utils/AnalyticsUtil";
 import {
@@ -14,6 +14,7 @@ import { Button } from "@appsmith/ads";
 import type { Datasource } from "entities/Datasource";
 import type { ApiDatasourceForm } from "entities/Datasource/RestAPIForm";
 import NewActionButton from "pages/Editor/DataSourceEditor/NewActionButton";
+import { PluginPackageName } from "entities/Plugin";
 import { useShowPageGenerationOnHeader } from "pages/Editor/DataSourceEditor/hooks";
 import React from "react";
 import { useDispatch, useSelector } from "react-redux";
@@ -23,7 +24,7 @@ import { isEnabledForPreviewData } from "utils/editorContextUtils";
 import { useFeatureFlag } from "utils/hooks/useFeatureFlag";
 import { getCurrentApplication } from "ee/selectors/applicationSelectors";
 import { openGeneratePageModal } from "pages/Editor/GeneratePage/store/generatePageActions";
-import { IDE_TYPE, type IDEType } from "ee/entities/IDE/constants";
+import { IDE_TYPE, type IDEType } from "ee/IDE/Interfaces/IDETypes";
 
 export interface HeaderActionProps {
   datasource: Datasource | ApiDatasourceForm | undefined;
@@ -47,9 +48,10 @@ export const useHeaderActions = (
     FEATURE_FLAG.release_drag_drop_building_blocks_enabled,
   );
   const userAppPermissions = useSelector(
-    (state: AppState) => getCurrentApplication(state)?.userPermissions ?? [],
+    (state: DefaultRootState) =>
+      getCurrentApplication(state)?.userPermissions ?? [],
   );
-  const pagePermissions = useSelector((state: AppState) =>
+  const pagePermissions = useSelector((state: DefaultRootState) =>
     getPagePermissions(state),
   );
   const showGenerateButton = useShowPageGenerationOnHeader(
@@ -61,7 +63,7 @@ export const useHeaderActions = (
   // for Anvil, we're removing the button that generates the page for users in Anvil
   const isAnvilEnabled = useSelector(getIsAnvilEnabledInCurrentApplication);
 
-  const plugin = useSelector((state: AppState) =>
+  const plugin = useSelector((state: DefaultRootState) =>
     getPlugin(state, datasource?.pluginId || ""),
   );
 
@@ -99,15 +101,17 @@ export const useHeaderActions = (
       );
     };
 
-    const newActionButton = (
-      <NewActionButton
-        datasource={datasource as Datasource}
-        disabled={!canCreateDatasourceActions || !isPluginAuthorized}
-        eventFrom="datasource-pane"
-        isNewQuerySecondaryButton={shouldShowSecondaryGenerateButton}
-        pluginType={pluginType}
-      />
-    );
+    // Appsmith AI is deprecated: creating new queries on its datasources is blocked
+    const newActionButton =
+      plugin?.packageName === PluginPackageName.APPSMITH_AI ? null : (
+        <NewActionButton
+          datasource={datasource as Datasource}
+          disabled={!canCreateDatasourceActions || !isPluginAuthorized}
+          eventFrom="datasource-pane"
+          isNewQuerySecondaryButton={shouldShowSecondaryGenerateButton}
+          pluginType={pluginType}
+        />
+      );
 
     const generatePageButton =
       showGenerateButton && !showReconnectButton && !isAnvilEnabled ? (

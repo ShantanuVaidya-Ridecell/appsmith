@@ -1,5 +1,4 @@
-import type { AppState } from "ee/reducers";
-import * as Sentry from "@sentry/react";
+import type { DefaultRootState } from "react-redux";
 import { fetchDefaultPlugins } from "actions/pluginActions";
 import { getAllTemplates, getTemplateFilters } from "actions/templateActions";
 import { setHeaderMeta } from "actions/themeActions";
@@ -8,7 +7,7 @@ import { isEmpty } from "lodash";
 import ReconnectDatasourceModal from "pages/Editor/gitSync/ReconnectDatasourceModal";
 import React, { useEffect } from "react";
 import { useDispatch, useSelector } from "react-redux";
-import { Route, Switch, useRouteMatch } from "react-router-dom";
+import { Switch, useRouteMatch } from "react-router-dom";
 import {
   allTemplatesFiltersSelector,
   getForkableWorkspaces,
@@ -21,8 +20,7 @@ import TemplateFilters from "./TemplateFilters";
 import { TemplateContent } from "./TemplateContent";
 import TemplateView from "./TemplateView";
 import { getFetchedWorkspaces } from "ee/selectors/workspaceSelectors";
-
-const SentryRoute = Sentry.withSentryRouting(Route);
+import { SentryRoute } from "components/SentryRoute";
 
 const PageWrapper = styled.div`
   margin-top: ${(props) => props.theme.homePage.header}px;
@@ -63,13 +61,14 @@ function TemplateRoutes() {
   const { path } = useRouteMatch();
   const dispatch = useDispatch();
   const workspaceListLength = useSelector(
-    (state: AppState) => getFetchedWorkspaces(state).length,
+    (state: DefaultRootState) => getFetchedWorkspaces(state).length,
   );
   const pluginListLength = useSelector(
-    (state: AppState) => state.entities.plugins.defaultPluginList.length,
+    (state: DefaultRootState) =>
+      state.entities.plugins.defaultPluginList.length,
   );
   const templatesCount = useSelector(
-    (state: AppState) => state.ui.templates.templates.length,
+    (state: DefaultRootState) => state.ui.templates.templates.length,
   );
   const filters = useSelector(allTemplatesFiltersSelector);
 

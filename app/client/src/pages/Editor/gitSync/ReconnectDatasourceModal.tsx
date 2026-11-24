@@ -42,7 +42,7 @@ import type { Datasource } from "entities/Datasource";
 import AnalyticsUtil from "ee/utils/AnalyticsUtil";
 import { useQuery } from "../utils";
 import ListItemWrapper from "./components/DatasourceListItem";
-import { findDefaultPage } from "ee/sagas/ApplicationSagas";
+import { findDefaultPage } from "pages/utils";
 import { ReduxActionTypes } from "ee/constants/ReduxActionConstants";
 import {
   getOAuthAccessToken,
@@ -69,13 +69,15 @@ import {
   areEnvironmentsFetched,
   getCurrentEnvironmentDetails,
 } from "ee/selectors/environmentSelectors";
-import type { AppState } from "ee/reducers";
+import type { DefaultRootState } from "react-redux";
 import { getFetchedWorkspaces } from "ee/selectors/workspaceSelectors";
 import { getApplicationsOfWorkspace } from "ee/selectors/selectedWorkspaceSelectors";
 import useReconnectModalData from "ee/pages/Editor/gitSync/useReconnectModalData";
 import { resetImportData } from "ee/actions/workspaceActions";
 import { getLoadingTokenForDatasourceId } from "selectors/datasourceSelectors";
 import ReconnectDatasourceForm from "Datasource/components/ReconnectDatasourceForm";
+import { getIsCreatingAgent } from "ee/selectors/aiAgentSelectors";
+import { setIsCreatingAgent } from "ee/actions/aiAgentActions";
 
 const Section = styled.div`
   display: flex;
@@ -86,10 +88,10 @@ const Section = styled.div`
   width: calc(100% - 206px);
 `;
 
-const BodyContainer = styled.div`
+const BodyContainer = styled.div<{ isCreatingAiAgent?: boolean }>`
   flex: 3;
-  height: 640px;
-  max-height: 82vh;
+  height: ${(props) => (props.isCreatingAiAgent ? "auto" : "640px")};
+  max-height: ${(props) => (props.isCreatingAiAgent ? "auto" : "82vh")};
 `;
 
 // TODO: Removed usage of "t--" classes since they clash with the test classes.
@@ -190,6 +192,8 @@ const Message = styled.div`
 
 const DBFormWrapper = styled.div`
   width: calc(100% - 206px);
+  min-width: 400px;
+  min-height: 360px;
   overflow: auto;
   display: flex;
   overflow: hidden;
@@ -215,8 +219,17 @@ const DBFormWrapper = styled.div`
   }
 `;
 
-const ModalContentWrapper = styled(ModalContent)`
-  width: 100%;
+const ModalHeaderWrapper = styled.div<{ isAgentFlowEnabled: boolean }>`
+  & > div {
+    padding-bottom: ${(props) =>
+      props.isAgentFlowEnabled ? "0px" : undefined};
+  }
+`;
+
+const ModalContentWrapper = styled(ModalContent)<{
+  isCreatingAiAgent?: boolean;
+}>`
+  width: ${(props) => (props.isCreatingAiAgent ? "auto" : "100%")};
 `;
 const ModalBodyWrapper = styled(ModalBody)`
   overflow-y: hidden;
@@ -244,10 +257,10 @@ function SuccessMessages() {
 function ReconnectDatasourceModal() {
   const dispatch = useDispatch();
   const isModalOpen = useSelector(getIsReconnectingDatasourcesModalOpen);
-  const workspaceId = useSelector(getWorkspaceIdForImport);
+  const importWorkspaceId = useSelector(getWorkspaceIdForImport);
   const pageIdForImport = useSelector(getPageIdForImport);
-  const environmentsFetched = useSelector((state: AppState) =>
-    areEnvironmentsFetched(state, workspaceId),
+  const environmentsFetched = useSelector((state: DefaultRootState) =>
+    areEnvironmentsFetched(state, importWorkspaceId),
   );
   const unconfiguredDatasources = useSelector(getUnconfiguredDatasources);
   const unconfiguredDatasourceIds = unconfiguredDatasources.map(
@@ -297,7 +310,7 @@ function ReconnectDatasourceModal() {
   const [isTesting, setIsTesting] = useState(false);
   const queryDS = datasources.find((ds) => ds.id === queryDatasourceId);
   const dsName = queryDS?.name;
-  const orgId = queryDS?.workspaceId;
+  const datasourceWorkspaceId = queryDS?.workspaceId;
 
   const checkIfDatasourceIsConfigured = (ds: Datasource | null) => {
     if (!ds || pluginsArray.length === 0) return false;
@@ -330,6 +343,7 @@ function ReconnectDatasourceModal() {
     parentEntityId, // appId or packageId from query params
     skipMessage,
   } = useReconnectModalData({ pageId, appId });
+  const isCreatingAgent = useSelector(getIsCreatingAgent);
 
   // when redirecting from oauth, processing the status
   if (isImport) {
@@ -351,7 +365,7 @@ function ReconnectDatasourceModal() {
         environmentName: currentEnvDetails.name,
         pageId: queryPageId,
         oAuthPassOrFailVerdict: status,
-        workspaceId: orgId,
+        workspaceId: datasourceWorkspaceId,
         datasourceName: dsName,
         pluginName: plugins[datasource?.pluginId || ""]?.name,
         ideType,
@@ -404,14 +418,14 @@ function ReconnectDatasourceModal() {
 
   // todo uncomment this to fetch datasource config
   useEffect(() => {
-    if (isModalOpen && workspaceId && environmentsFetched) {
+    if (isModalOpen && importWorkspaceId && environmentsFetched) {
       dispatch(
         initDatasourceConnectionDuringImportRequest({
-          workspaceId: workspaceId as string,
+          workspaceId: importWorkspaceId as string,
         }),
       );
     }
-  }, [workspaceId, isModalOpen, environmentsFetched]);
+  }, [importWorkspaceId, isModalOpen, environmentsFetched]);
 
   useEffect(() => {
     if (isModalOpen) {
@@ -611,20 +625,36 @@ function ReconnectDatasourceModal() {
   };
 
   return (
-    <Modal open={isModalOpen}>
+    <Modal
+      onOpenChange={(isOpen) => {
+        if (!isOpen) {
+          dispatch(setIsCreatingAgent({ isCreatingAgent: false }));
+        }
+      }}
+      open={isModalOpen}
+    >
       <ModalContentWrapper
         data-testid="reconnect-datasource-modal"
+        isCreatingAiAgent={isCreatingAgent}
         onClick={handleClose}
         onEscapeKeyDown={onClose}
         onInteractOutside={handleClose}
         overlayClassName="reconnect-datasource-modal"
       >
-        <ModalHeader>Reconnect datasources</ModalHeader>
-        <ModalBodyWrapper>
-          <BodyContainer>
-            <Title>
-              {createMessage(RECONNECT_MISSING_DATASOURCE_CREDENTIALS)}
-            </Title>
+        <ModalHeaderWrapper isAgentFlowEnabled={isCreatingAgent}>
+          <ModalHeader>
+            {isCreatingAgent ? "Connect Datasources" : "Reconnect datasources"}
+          </ModalHeader>
+        </ModalHeaderWrapper>
+        <ModalBodyWrapper
+          style={{ padding: isCreatingAgent ? "0px" : undefined }}
+        >
+          <BodyContainer isCreatingAiAgent={isCreatingAgent}>
+            {!isCreatingAgent && (
+              <Title>
+                {createMessage(RECONNECT_MISSING_DATASOURCE_CREDENTIALS)}
+              </Title>
+            )}
 
             <Text>{missingDsCredentialsDescription}</Text>
             <ContentWrapper>

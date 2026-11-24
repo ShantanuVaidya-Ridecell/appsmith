@@ -16,10 +16,10 @@ import { DefaultAutocompleteDefinitions } from "widgets/WidgetUtils";
 import type {
   AnvilConfig,
   AutocompletionDefinitions,
-} from "WidgetProvider/constants";
+} from "WidgetProvider/types";
 import { FILL_WIDGET_MIN_WIDTH } from "constants/minWidthConstants";
 import { ResponsiveBehavior } from "layoutSystems/common/utils/constants";
-import { BlueprintOperationTypes } from "WidgetProvider/constants";
+import { BlueprintOperationTypes } from "WidgetProvider/types";
 import IconSVG from "../icon.svg";
 import ThumbnailSVG from "../thumbnail.svg";
 import { WIDGET_TAGS, layoutConfigurations } from "constants/WidgetConstants";
@@ -502,6 +502,16 @@ class ButtonGroupWidget extends BaseWidget<
                   sectionName: "General",
                   children: [
                     {
+                      helpText: "Show helper text with button on hover",
+                      propertyName: "tooltip",
+                      label: "Tooltip",
+                      controlType: "INPUT_TEXT",
+                      placeholderText: "Downloads the report",
+                      isBindProperty: true,
+                      isTriggerProperty: false,
+                      validation: { type: ValidationTypes.TEXT },
+                    },
+                    {
                       propertyName: "isVisible",
                       helpText: "Controls the visibility of the widget",
                       label: "Visible",
@@ -876,6 +886,7 @@ export interface ButtonGroupWidgetProps extends WidgetProps {
       isDisabled?: boolean;
       disabledWhenInvalid?: boolean;
       label?: string;
+      tooltip?: string;
       buttonType?: string;
       buttonColor?: string;
       iconName?: IconName;

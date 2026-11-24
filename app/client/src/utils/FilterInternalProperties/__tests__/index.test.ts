@@ -1,8 +1,5 @@
 import { filterInternalProperties } from "..";
-import {
-  ENTITY_TYPE,
-  EvaluationSubstitutionType,
-} from "entities/DataTree/dataTreeFactory";
+import { ENTITY_TYPE } from "ee/entities/DataTree/types";
 import type {
   DataTreeEntityConfig,
   DataTreeEntityObject,
@@ -11,6 +8,7 @@ import type {
 import { registerWidgets } from "WidgetProvider/factory/registrationHelper";
 import InputWidget from "widgets/InputWidgetV2";
 import type { JSCollectionData } from "ee/reducers/entityReducers/jsActionsReducer";
+import { EvaluationSubstitutionType } from "constants/EvaluationConstants";
 
 describe("filterInternalProperties tests", () => {
   beforeAll(() => {

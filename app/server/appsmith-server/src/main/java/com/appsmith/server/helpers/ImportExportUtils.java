@@ -5,8 +5,11 @@ import com.appsmith.external.models.ActionDTO;
 import com.appsmith.external.models.Datasource;
 import com.appsmith.server.constants.FieldName;
 import com.appsmith.server.domains.Application;
+import com.appsmith.server.domains.ApplicationDetail;
 import com.appsmith.server.dtos.ApplicationJson;
 import com.appsmith.server.dtos.ArtifactExchangeJson;
+import com.appsmith.server.exceptions.AppsmithError;
+import com.appsmith.server.exceptions.AppsmithException;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.InvalidDataAccessApiUsageException;
 import org.springframework.data.mongodb.MongoTransactionException;
@@ -14,11 +17,62 @@ import org.springframework.transaction.TransactionException;
 
 import java.time.Instant;
 import java.util.Map;
+import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import static com.appsmith.external.helpers.AppsmithBeanUtils.copyNestedNonNullProperties;
 
 @Slf4j
 public class ImportExportUtils {
+
+    private static final Pattern TRAILING_NUMBER_PATTERN = Pattern.compile("^(.*?)(\\d+)$");
+
+    /**
+     * Generates a unique name for an entity being imported into a context that already contains
+     * {@code existingNames}, following Appsmith's entity-naming convention.
+     * <p>
+     * When the incoming name already ends in a number it increments from there
+     * (e.g. {@code JSObject1 -> JSObject2}); otherwise it appends an incrementing suffix
+     * (e.g. {@code Query -> Query1}). If the name does not clash it is returned unchanged.
+     *
+     * @param name          the incoming entity name
+     * @param existingNames the names already present in the destination context
+     * @return a name not present in {@code existingNames}
+     */
+    public static String generateUniqueNameForImport(String name, Set<String> existingNames) {
+        if (name == null || existingNames == null || !existingNames.contains(name)) {
+            return name;
+        }
+
+        Matcher matcher = TRAILING_NUMBER_PATTERN.matcher(name);
+        // Default to appending a fresh suffix to the whole name. This is also the fallback
+        // when the trailing number cannot be incremented safely (too large to parse, or at
+        // Long.MAX_VALUE where suffix++ would overflow into a negative value).
+        String base = name;
+        long suffix = 0;
+
+        if (matcher.matches()) {
+            try {
+                long parsedSuffix = Long.parseLong(matcher.group(2));
+                if (parsedSuffix < Long.MAX_VALUE) {
+                    base = matcher.group(1);
+                    suffix = parsedSuffix;
+                }
+            } catch (NumberFormatException e) {
+                // Suffix too large to parse — keep the whole-name fallback above.
+            }
+        }
+
+        String candidate;
+
+        do {
+            suffix++;
+            candidate = base + suffix;
+        } while (existingNames.contains(candidate));
+
+        return candidate;
+    }
 
     /**
      * Method to provide non-cryptic and user-friendly error message with actionable input for Import-Export flows
@@ -81,10 +135,21 @@ public class ImportExportUtils {
 
     public static void setPropertiesToExistingApplication(
             Application importedApplication, Application existingApplication) {
+        boolean preserveAnvil = hasAnvilPositioning(existingApplication.getUnpublishedApplicationDetail())
+                || hasAnvilPositioning(existingApplication.getPublishedApplicationDetail());
+        if (preserveAnvil && !hasAnvilPositioning(importedApplication.getUnpublishedApplicationDetail())) {
+            throw new AppsmithException(
+                    AppsmithError.INVALID_PARAMETER,
+                    "replacement import must use responsive positioning for an existing responsive application");
+        }
+        // Published pages remain on the target during replacement. Do not switch their renderer.
+        if (hasAnvilPositioning(existingApplication.getPublishedApplicationDetail())
+                && !hasAnvilPositioning(importedApplication.getPublishedApplicationDetail())) {
+            importedApplication.setPublishedApplicationDetail(null);
+        }
         importedApplication.setId(existingApplication.getId());
 
         // Since we don't want to merge the ApplicationDetailObjects we would just assign the imported values directly
-        existingApplication.setPublishedApplicationDetail(importedApplication.getPublishedApplicationDetail());
         existingApplication.setUnpublishedApplicationDetail(importedApplication.getUnpublishedApplicationDetail());
 
         // For the existing application we don't need to default
@@ -98,9 +163,6 @@ public class ImportExportUtils {
         // These properties are not present in the application when it is created, hence the initial commit
         // to git doesn't contain these keys and if we want to discard the changes, the function
         // copyNestedNonNullProperties ignore these properties and the changes are not discarded
-        if (importedApplication.getPublishedAppLayout() == null) {
-            existingApplication.setPublishedAppLayout(null);
-        }
         if (importedApplication.getUnpublishedAppLayout() == null) {
             existingApplication.setUnpublishedAppLayout(null);
         }
@@ -108,16 +170,10 @@ public class ImportExportUtils {
         copyNestedNonNullProperties(importedApplication, existingApplication);
     }
 
-    /**
-     * This method sets the published mode properties in the imported application.
-     * When a user imports an application from the git repository, since the git only stores the unpublished version,
-     * the current deployed version in the newly imported app is not updated. This function sets the initial deployed
-     * version to the same as the edit mode one.
-     * @param importedApplication
-     */
-    public static void setPublishedApplicationProperties(Application importedApplication) {
-        importedApplication.setPublishedApplicationDetail(importedApplication.getUnpublishedApplicationDetail());
-        importedApplication.setPublishedAppLayout(importedApplication.getUnpublishedAppLayout());
+    private static boolean hasAnvilPositioning(ApplicationDetail detail) {
+        return detail != null
+                && detail.getAppPositioning() != null
+                && detail.getAppPositioning().getType() == Application.AppPositioning.Type.ANVIL;
     }
 
     public static boolean isPageNameInUpdatedList(ApplicationJson applicationJson, String pageName) {

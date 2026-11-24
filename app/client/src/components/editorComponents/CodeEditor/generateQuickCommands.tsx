@@ -5,7 +5,7 @@ import type { CommandsCompletion } from "utils/autocomplete/CodemirrorTernServic
 import ReactDOM from "react-dom";
 import type { SlashCommandPayload } from "entities/Action";
 import { SlashCommand } from "entities/Action";
-import { ENTITY_TYPE } from "entities/DataTree/dataTreeFactory";
+import { ENTITY_TYPE } from "ee/entities/DataTree/types";
 import { EntityIcon, JsFileIconV2 } from "pages/Editor/Explorer/ExplorerIcons";
 import { getAssetUrl } from "ee/utils/airgapHelpers";
 import type { FeatureFlags } from "ee/entities/FeatureFlag";
@@ -14,7 +14,7 @@ import { APPSMITH_AI } from "ee/components/editorComponents/GPT/trigger";
 import { DatasourceCreateEntryPoints } from "constants/Datasource";
 import AnalyticsUtil from "ee/utils/AnalyticsUtil";
 import BetaCard from "../BetaCard";
-import type { NavigationData } from "selectors/navigationSelectors";
+import type { NavigationData } from "entities/DataTree/dataTreeTypes";
 import type { AIEditorContext } from "ee/components/editorComponents/GPT";
 import type { EntityTypeValue } from "ee/entities/DataTree/types";
 import history, { NavigationMethod } from "utils/history";
@@ -400,7 +400,6 @@ export const generateQuickCommands = (
       displayText: APPSMITH_AI,
       shortcut: Shortcuts.ASK_AI,
       triggerCompletionsPostPick: true,
-      isBeta: true,
       action: () => {
         executeCommand({
           actionType: SlashCommand.ASK_AI,

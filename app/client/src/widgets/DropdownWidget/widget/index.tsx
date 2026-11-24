@@ -4,7 +4,7 @@ import type {
   PropertyUpdates,
   SnipingModeProperty,
   WidgetCallout,
-} from "WidgetProvider/constants";
+} from "WidgetProvider/types";
 import { MinimumPopupWidthInPercentage } from "WidgetProvider/constants";
 import { LabelPosition } from "components/constants";
 import { EventType } from "constants/AppsmithActionConstants/ActionConstants";
@@ -12,7 +12,7 @@ import { WIDGET_TAGS, layoutConfigurations } from "constants/WidgetConstants";
 import type { ValidationResponse } from "constants/WidgetValidation";
 import { ValidationTypes } from "constants/WidgetValidation";
 import type { Stylesheet } from "entities/AppTheming";
-import { EvaluationSubstitutionType } from "entities/DataTree/dataTreeFactory";
+import { EvaluationSubstitutionType } from "constants/EvaluationConstants";
 import _ from "lodash";
 import { buildDeprecationWidgetMessage } from "pages/Editor/utils";
 import React from "react";
@@ -487,6 +487,7 @@ class DropdownWidget extends BaseWidget<DropdownWidgetProps, WidgetState> {
   componentDidMount() {
     this.changeSelectedOption();
   }
+
   componentDidUpdate(prevProps: DropdownWidgetProps): void {
     // removing selectedOptionValue if defaultValueChanges
     if (

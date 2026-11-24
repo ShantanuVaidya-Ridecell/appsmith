@@ -1,9 +1,8 @@
 import log from "loglevel";
 import React, { useCallback } from "react";
 import styled from "styled-components";
-import * as Sentry from "@sentry/react";
 import { useDispatch, useSelector } from "react-redux";
-import type { CanvasWidgetStructure } from "WidgetProvider/constants";
+import type { CanvasWidgetStructure } from "WidgetProvider/types";
 import useWidgetFocus from "utils/hooks/useWidgetFocus";
 import { selectCombinedPreviewMode } from "selectors/gitModSelectors";
 import { getSelectedAppTheme } from "selectors/appThemingSelectors";
@@ -17,9 +16,11 @@ import { CANVAS_ART_BOARD } from "constants/componentClassNameConstants";
 import { renderAppsmithCanvas } from "layoutSystems/CanvasFactory";
 import type { WidgetProps } from "widgets/BaseWidget";
 import { getAppThemeSettings } from "ee/selectors/applicationSelectors";
+import { useWDSThemeProps } from "ee/hooks/useWDSThemeProps";
 import CodeModeTooltip from "pages/Editor/WidgetsEditor/components/CodeModeTooltip";
 import { getIsAnvilLayout } from "layoutSystems/anvil/integrations/selectors";
 import { focusWidget } from "actions/widgetActions";
+import { appsmithTelemetry } from "instrumentation";
 
 interface CanvasProps {
   widgetsStructure: CanvasWidgetStructure;
@@ -52,13 +53,7 @@ const Canvas = (props: CanvasProps) => {
   const isAnvilLayout = useSelector(getIsAnvilLayout);
 
   const themeSetting = useSelector(getAppThemeSettings);
-  const wdsThemeProps = {
-    borderRadius: themeSetting.borderRadius,
-    seedColor: themeSetting.accentColor,
-    colorMode: themeSetting.colorMode.toLowerCase(),
-    userSizing: themeSetting.sizing,
-    userDensity: themeSetting.density,
-  } as Parameters<typeof useTheme>[0];
+  const wdsThemeProps = useWDSThemeProps(themeSetting);
   // in case of non-WDS theme, we will pass an empty object to useTheme hook
   // so that fixedLayout theme does not break because of calculations done in useTheme
   const { theme } = useTheme(isAnvilLayout ? wdsThemeProps : {});
@@ -120,7 +115,7 @@ const Canvas = (props: CanvasProps) => {
     return renderChildren();
   } catch (error) {
     log.error("Error rendering DSL", error);
-    Sentry.captureException(error);
+    appsmithTelemetry.captureException(error, { errorName: "Canvas" });
 
     return null;
   }

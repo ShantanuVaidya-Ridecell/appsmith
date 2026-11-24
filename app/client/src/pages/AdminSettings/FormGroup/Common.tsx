@@ -1,7 +1,7 @@
-import { createMessage } from "ee/constants/messages";
+import { createMessage, LEARN_MORE } from "ee/constants/messages";
 import React from "react";
 import styled from "styled-components";
-import { Icon, Tooltip, Text } from "@appsmith/ads";
+import { Icon, Tooltip, Text, Link } from "@appsmith/ads";
 import type { Setting } from "ee/pages/AdminSettings/config/types";
 import EnterpriseTag from "components/EnterpriseTag";
 import BusinessTag from "components/BusinessTag";
@@ -50,6 +50,19 @@ export const StyledAsterisk = styled(Text)`
   font-weight: 500;
 `;
 
+export const StyledLink = styled(Link)`
+  .ads-v2-link__text {
+    font-weight: 600;
+  }
+  margin-top: 8px;
+`;
+
+const StyledHelpTextTooltipContent = styled.div`
+  display: flex;
+  flex-direction: column;
+  gap: var(--ads-v2-spaces-2);
+`;
+
 export function FormGroup({ children, className, setting }: FieldHelperProps) {
   return (
     <StyledFormGroup
@@ -62,7 +75,7 @@ export function FormGroup({ children, className, setting }: FieldHelperProps) {
             className="admin-settings-form-group-label"
             color="var(--ads-v2-color-fg)"
             data-testid="admin-settings-form-group-label"
-            kind="body-m"
+            kind={setting.labelKind ?? "body-m"}
             renderAs="label"
           >
             {setting.label || ""}
@@ -72,7 +85,27 @@ export function FormGroup({ children, className, setting }: FieldHelperProps) {
           </Text>
         )}
         {setting.helpText && (
-          <Tooltip content={createMessage(() => setting.helpText || "")}>
+          <Tooltip
+            content={
+              setting.helpTextLink ? (
+                <StyledHelpTextTooltipContent>
+                  <span>{createMessage(() => setting.helpText || "")}</span>
+                  <Link
+                    data-testid="admin-settings-form-group-helptext-link"
+                    kind="primary"
+                    rel="noopener noreferrer"
+                    target="_blank"
+                    to={setting.helpTextLink}
+                  >
+                    {createMessage(LEARN_MORE)}
+                  </Link>
+                </StyledHelpTextTooltipContent>
+              ) : (
+                createMessage(() => setting.helpText || "")
+              )
+            }
+            mouseLeaveDelay={0.3}
+          >
             <Icon
               className={"help-icon"}
               color="var(--ads-v2-color-fg)"
@@ -86,14 +119,24 @@ export function FormGroup({ children, className, setting }: FieldHelperProps) {
           (setting.isEnterprise === true ? <EnterpriseTag /> : <BusinessTag />)}
       </StyledLabel>
       {children}
-      {setting.subText && (
-        <StyledSubtext
-          data-testid="admin-settings-form-group-subtext"
-          renderAs="p"
-        >
-          {createMessage(() => setting.subText || "")}
-        </StyledSubtext>
-      )}
+      {setting.subText &&
+        (setting.subTextLink ? (
+          <StyledLink
+            className="t--sub-text-link"
+            kind="secondary"
+            target="_blank"
+            to={setting.subTextLink}
+          >
+            {createMessage(() => setting.subText || "")}
+          </StyledLink>
+        ) : (
+          <StyledSubtext
+            data-testid="admin-settings-form-group-subtext"
+            renderAs="p"
+          >
+            {createMessage(() => setting.subText || "")}
+          </StyledSubtext>
+        ))}
     </StyledFormGroup>
   );
 }

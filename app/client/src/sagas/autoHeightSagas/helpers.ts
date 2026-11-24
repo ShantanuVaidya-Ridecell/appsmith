@@ -1,4 +1,4 @@
-import type { AppState } from "ee/reducers";
+import type { DefaultRootState } from "react-redux";
 import {
   GridDefaults,
   MAIN_CONTAINER_WIDGET_ID,
@@ -8,7 +8,7 @@ import type { AutoHeightLayoutTreeReduxState } from "reducers/entityReducers/aut
 import type {
   CanvasWidgetsReduxState,
   FlattenedWidgetProps,
-} from "reducers/entityReducers/canvasWidgetsReducer";
+} from "ee/reducers/entityReducers/canvasWidgetsReducer";
 import { select } from "redux-saga/effects";
 import { getWidgetMetaProps, getWidgets } from "sagas/selectors";
 import { selectCombinedPreviewMode } from "selectors/gitModSelectors";
@@ -27,7 +27,7 @@ export function* shouldWidgetsCollapse() {
 }
 
 export function* shouldAllInvisibleWidgetsInAutoHeightContainersCollapse() {
-  const flag: boolean = yield select((state: AppState) => {
+  const flag: boolean = yield select((state: DefaultRootState) => {
     return !!state.ui.applications.currentApplication?.collapseInvisibleWidgets;
   });
 
@@ -202,10 +202,6 @@ export function* getMinHeightBasedOnChildren(
       if (!(shouldCollapse && bottomRow === topRow))
         minHeightInRows = Math.max(minHeightInRows, bottomRow);
     }
-  }
-
-  if (widgetId === MAIN_CONTAINER_WIDGET_ID) {
-    return minHeightInRows + GridDefaults.MAIN_CANVAS_EXTENSION_OFFSET;
   }
 
   return minHeightInRows;

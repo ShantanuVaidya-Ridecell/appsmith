@@ -32,6 +32,11 @@ public interface CustomJSLibServiceCE extends CrudService<CustomJSLib, String> {
     Mono<CustomJSLibContextDTO> persistCustomJSLibMetaDataIfDoesNotExistAndGetDTO(
             CustomJSLib jsLib, Boolean isForceInstall);
 
+    /**
+     * With {@code isDryOps}, adds the library to {@code customJSLibsDryOps} for a later bulk save instead of saving
+     * it. Import shares that map across concurrent calls, so implementations must add to it with
+     * {@link com.appsmith.server.helpers.DryOpsUtils#addDryOp}.
+     */
     Mono<CustomJSLibContextDTO> persistCustomJSLibMetaDataIfDoesNotExistAndGetDTO(
             CustomJSLib jsLib,
             Boolean isForceInstall,
@@ -40,4 +45,13 @@ public interface CustomJSLibServiceCE extends CrudService<CustomJSLib, String> {
 
     Flux<CustomJSLib> getAllVisibleJSLibsInContext(
             @NotNull String branchedContextId, CreatorContextType contextType, String branchName, Boolean isViewMode);
+
+    /**
+     * Bulk saves a list of CustomJSLib entities.
+     * This is used during import to save all collected JS libs in a single batch operation.
+     *
+     * @param customJSLibs List of CustomJSLib entities to save
+     * @return Flux of saved CustomJSLib entities
+     */
+    Flux<CustomJSLib> bulkSave(List<CustomJSLib> customJSLibs);
 }

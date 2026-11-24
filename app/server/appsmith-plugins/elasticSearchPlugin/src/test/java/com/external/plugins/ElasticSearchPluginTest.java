@@ -7,17 +7,20 @@ import com.appsmith.external.models.DBAuth;
 import com.appsmith.external.models.DatasourceConfiguration;
 import com.appsmith.external.models.Endpoint;
 import com.appsmith.external.models.RequestParamDTO;
+import com.appsmith.util.RestrictedHostFilter;
 import com.external.plugins.exceptions.ElasticSearchPluginError;
 import lombok.extern.slf4j.Slf4j;
 import mockwebserver3.MockResponse;
 import mockwebserver3.MockWebServer;
 import org.apache.http.HttpHost;
+import org.apache.http.StatusLine;
 import org.apache.http.auth.AuthScope;
 import org.apache.http.auth.UsernamePasswordCredentials;
 import org.apache.http.client.CredentialsProvider;
 import org.apache.http.impl.client.BasicCredentialsProvider;
 import org.apache.http.impl.nio.client.HttpAsyncClientBuilder;
 import org.elasticsearch.client.Request;
+import org.elasticsearch.client.Response;
 import org.elasticsearch.client.RestClient;
 import org.elasticsearch.client.RestClientBuilder;
 import org.junit.jupiter.api.BeforeAll;
@@ -27,6 +30,8 @@ import org.testcontainers.elasticsearch.ElasticsearchContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Scheduler;
+import reactor.core.scheduler.Schedulers;
 import reactor.test.StepVerifier;
 
 import java.io.IOException;
@@ -36,6 +41,9 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
 
 import static com.appsmith.external.constants.ActionConstants.ACTION_CONFIGURATION_BODY;
@@ -44,6 +52,10 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 @Slf4j
 @Testcontainers
@@ -393,206 +405,258 @@ public class ElasticSearchPluginTest {
                 .verifyComplete();
     }
 
+    // The itShouldDeny* / itShouldRejectGetToMetadata* tests below all explicitly verify the
+    // SSRF filter's blocking behavior. Surefire bypasses the filter JVM-wide (see root pom) for
+    // the benefit of the rest of this class (which talks to the Testcontainers ES on loopback),
+    // so each test method flips it back on for its body. The redirect variants additionally
+    // allowlist loopback so the MockWebServer that serves the 301 is reachable.
+
     @Test
     public void itShouldDenyTestDatasourceWithInstanceMetadataAws() {
-        DatasourceConfiguration datasourceConfiguration = new DatasourceConfiguration();
-        datasourceConfiguration.setAuthentication(elasticInstanceCredentials);
-        Endpoint endpoint = new Endpoint();
-        endpoint.setHost("http://169.254.169.254");
-        endpoint.setPort(Long.valueOf(port));
-        datasourceConfiguration.setEndpoints(Collections.singletonList(endpoint));
+        RestrictedHostFilter.setSsrfFilterDisabledForTesting(false);
+        try {
+            DatasourceConfiguration datasourceConfiguration = new DatasourceConfiguration();
+            datasourceConfiguration.setAuthentication(elasticInstanceCredentials);
+            Endpoint endpoint = new Endpoint();
+            endpoint.setHost("http://169.254.169.254");
+            endpoint.setPort(Long.valueOf(port));
+            datasourceConfiguration.setEndpoints(Collections.singletonList(endpoint));
 
-        StepVerifier.create(pluginExecutor.testDatasource(datasourceConfiguration))
-                .assertNext(result -> {
-                    assertFalse(result.getInvalids().isEmpty());
-                    assertTrue(result.getInvalids()
-                            .contains("Error running HEAD request: Host 169.254.169.254 is not allowed"));
-                })
-                .verifyComplete();
+            StepVerifier.create(pluginExecutor.testDatasource(datasourceConfiguration))
+                    .assertNext(result -> {
+                        assertFalse(result.getInvalids().isEmpty());
+                        assertTrue(result.getInvalids()
+                                .contains("Error running HEAD request: Host 169.254.169.254 is not allowed"));
+                    })
+                    .verifyComplete();
+        } finally {
+            RestrictedHostFilter.resetSsrfFilterDisabledForTesting();
+        }
     }
 
     @Test
     public void itShouldDenyTestDatasourceWithInstanceMetadataAwsWithDnsResolution() {
-        DatasourceConfiguration datasourceConfiguration = new DatasourceConfiguration();
-        datasourceConfiguration.setAuthentication(elasticInstanceCredentials);
-        Endpoint endpoint = new Endpoint();
-        endpoint.setHost("http://169.254.169.254.nip.io");
-        endpoint.setPort(Long.valueOf(port));
-        datasourceConfiguration.setEndpoints(Collections.singletonList(endpoint));
+        RestrictedHostFilter.setSsrfFilterDisabledForTesting(false);
+        try {
+            DatasourceConfiguration datasourceConfiguration = new DatasourceConfiguration();
+            datasourceConfiguration.setAuthentication(elasticInstanceCredentials);
+            Endpoint endpoint = new Endpoint();
+            endpoint.setHost("http://169.254.169.254.nip.io");
+            endpoint.setPort(Long.valueOf(port));
+            datasourceConfiguration.setEndpoints(Collections.singletonList(endpoint));
 
-        StepVerifier.create(pluginExecutor.testDatasource(datasourceConfiguration))
-                .assertNext(result -> {
-                    assertFalse(result.getInvalids().isEmpty());
-                    assertTrue(result.getInvalids()
-                            .contains("Error running HEAD request: Host 169.254.169.254.nip.io is not allowed"));
-                })
-                .verifyComplete();
+            StepVerifier.create(pluginExecutor.testDatasource(datasourceConfiguration))
+                    .assertNext(result -> {
+                        assertFalse(result.getInvalids().isEmpty());
+                        assertTrue(result.getInvalids()
+                                .contains("Error running HEAD request: Host 169.254.169.254.nip.io is not allowed"));
+                    })
+                    .verifyComplete();
+        } finally {
+            RestrictedHostFilter.resetSsrfFilterDisabledForTesting();
+        }
     }
 
     @Test
     public void itShouldDenyTestDatasourceWithInstanceMetadataGcp() {
-        DatasourceConfiguration datasourceConfiguration = new DatasourceConfiguration();
-        datasourceConfiguration.setAuthentication(elasticInstanceCredentials);
-        Endpoint endpoint = new Endpoint();
-        endpoint.setHost("http://metadata.google.internal");
-        endpoint.setPort(Long.valueOf(port));
-        datasourceConfiguration.setEndpoints(Collections.singletonList(endpoint));
+        RestrictedHostFilter.setSsrfFilterDisabledForTesting(false);
+        try {
+            DatasourceConfiguration datasourceConfiguration = new DatasourceConfiguration();
+            datasourceConfiguration.setAuthentication(elasticInstanceCredentials);
+            Endpoint endpoint = new Endpoint();
+            endpoint.setHost("http://metadata.google.internal");
+            endpoint.setPort(Long.valueOf(port));
+            datasourceConfiguration.setEndpoints(Collections.singletonList(endpoint));
 
-        StepVerifier.create(pluginExecutor.testDatasource(datasourceConfiguration))
-                .assertNext(result -> {
-                    assertFalse(result.getInvalids().isEmpty());
-                    assertTrue(result.getInvalids()
-                            .contains("Error running HEAD request: Host metadata.google.internal is not allowed"));
-                })
-                .verifyComplete();
+            StepVerifier.create(pluginExecutor.testDatasource(datasourceConfiguration))
+                    .assertNext(result -> {
+                        assertFalse(result.getInvalids().isEmpty());
+                        assertTrue(result.getInvalids()
+                                .contains("Error running HEAD request: Host metadata.google.internal is not allowed"));
+                    })
+                    .verifyComplete();
+        } finally {
+            RestrictedHostFilter.resetSsrfFilterDisabledForTesting();
+        }
     }
 
     @Test
     public void itShouldRejectGetToMetadataAws() {
-        DatasourceConfiguration datasourceConfiguration = new DatasourceConfiguration();
-        datasourceConfiguration.setAuthentication(elasticInstanceCredentials);
-        Endpoint endpoint = new Endpoint();
-        endpoint.setHost("http://169.254.169.254");
-        endpoint.setPort(Long.valueOf(port));
-        datasourceConfiguration.setEndpoints(Collections.singletonList(endpoint));
+        RestrictedHostFilter.setSsrfFilterDisabledForTesting(false);
+        try {
+            DatasourceConfiguration datasourceConfiguration = new DatasourceConfiguration();
+            datasourceConfiguration.setAuthentication(elasticInstanceCredentials);
+            Endpoint endpoint = new Endpoint();
+            endpoint.setHost("http://169.254.169.254");
+            endpoint.setPort(Long.valueOf(port));
+            datasourceConfiguration.setEndpoints(Collections.singletonList(endpoint));
 
-        final ActionConfiguration actionConfiguration = new ActionConfiguration();
-        actionConfiguration.setHttpMethod(HttpMethod.GET);
-        actionConfiguration.setPath("/");
+            final ActionConfiguration actionConfiguration = new ActionConfiguration();
+            actionConfiguration.setHttpMethod(HttpMethod.GET);
+            actionConfiguration.setPath("/");
 
-        final Mono<ActionExecutionResult> resultMono = pluginExecutor
-                .datasourceCreate(datasourceConfiguration)
-                .flatMap(conn -> pluginExecutor.execute(conn, dsConfig, actionConfiguration));
+            final Mono<ActionExecutionResult> resultMono = pluginExecutor
+                    .datasourceCreate(datasourceConfiguration)
+                    .flatMap(conn -> pluginExecutor.execute(conn, dsConfig, actionConfiguration));
 
-        StepVerifier.create(resultMono)
-                .assertNext(result -> {
-                    assertFalse(result.getIsExecutionSuccess());
-                    assertEquals(
-                            "Host 169.254.169.254 is not allowed",
-                            result.getPluginErrorDetails().getDownstreamErrorMessage());
-                })
-                .verifyComplete();
+            StepVerifier.create(resultMono)
+                    .assertNext(result -> {
+                        assertFalse(result.getIsExecutionSuccess());
+                        assertEquals(
+                                "Host 169.254.169.254 is not allowed",
+                                result.getPluginErrorDetails().getDownstreamErrorMessage());
+                    })
+                    .verifyComplete();
+        } finally {
+            RestrictedHostFilter.resetSsrfFilterDisabledForTesting();
+        }
     }
 
     @Test
     public void itShouldRejectGetToMetadataAwsWithDnsResolution() {
-        DatasourceConfiguration datasourceConfiguration = new DatasourceConfiguration();
-        datasourceConfiguration.setAuthentication(elasticInstanceCredentials);
-        Endpoint endpoint = new Endpoint();
-        endpoint.setHost("http://169.254.169.254.nip.io");
-        endpoint.setPort(Long.valueOf(port));
-        datasourceConfiguration.setEndpoints(Collections.singletonList(endpoint));
+        RestrictedHostFilter.setSsrfFilterDisabledForTesting(false);
+        try {
+            DatasourceConfiguration datasourceConfiguration = new DatasourceConfiguration();
+            datasourceConfiguration.setAuthentication(elasticInstanceCredentials);
+            Endpoint endpoint = new Endpoint();
+            endpoint.setHost("http://169.254.169.254.nip.io");
+            endpoint.setPort(Long.valueOf(port));
+            datasourceConfiguration.setEndpoints(Collections.singletonList(endpoint));
 
-        final ActionConfiguration actionConfiguration = new ActionConfiguration();
-        actionConfiguration.setHttpMethod(HttpMethod.GET);
-        actionConfiguration.setPath("/");
+            final ActionConfiguration actionConfiguration = new ActionConfiguration();
+            actionConfiguration.setHttpMethod(HttpMethod.GET);
+            actionConfiguration.setPath("/");
 
-        final Mono<ActionExecutionResult> resultMono = pluginExecutor
-                .datasourceCreate(datasourceConfiguration)
-                .flatMap(conn -> pluginExecutor.execute(conn, dsConfig, actionConfiguration));
+            final Mono<ActionExecutionResult> resultMono = pluginExecutor
+                    .datasourceCreate(datasourceConfiguration)
+                    .flatMap(conn -> pluginExecutor.execute(conn, dsConfig, actionConfiguration));
 
-        StepVerifier.create(resultMono)
-                .assertNext(result -> {
-                    assertFalse(result.getIsExecutionSuccess());
-                    assertEquals(
-                            "Host 169.254.169.254.nip.io is not allowed",
-                            result.getPluginErrorDetails().getDownstreamErrorMessage());
-                })
-                .verifyComplete();
+            StepVerifier.create(resultMono)
+                    .assertNext(result -> {
+                        assertFalse(result.getIsExecutionSuccess());
+                        assertEquals(
+                                "Host 169.254.169.254.nip.io is not allowed",
+                                result.getPluginErrorDetails().getDownstreamErrorMessage());
+                    })
+                    .verifyComplete();
+        } finally {
+            RestrictedHostFilter.resetSsrfFilterDisabledForTesting();
+        }
     }
 
     @Test
     public void itShouldRejectGetToMetadataAwsWithDnsResolutionAndRedirect() throws IOException {
+        RestrictedHostFilter.setSsrfFilterDisabledForTesting(false);
+        RestrictedHostFilter.setAlwaysAllowedHostsForTesting("127.0.0.1", "localhost", "::1");
         MockWebServer mockWebServer = new MockWebServer();
-        MockResponse mockRedirectResponse = new MockResponse()
-                .setResponseCode(301)
-                .addHeader("Location", "http://169.254.169.254.nip.io/latest/meta-data");
-        mockWebServer.enqueue(mockRedirectResponse);
-        mockWebServer.start();
+        try {
+            MockResponse mockRedirectResponse = new MockResponse()
+                    .setResponseCode(301)
+                    .addHeader("Location", "http://169.254.169.254.nip.io/latest/meta-data");
+            mockWebServer.enqueue(mockRedirectResponse);
+            mockWebServer.start();
 
-        DatasourceConfiguration datasourceConfiguration = new DatasourceConfiguration();
-        datasourceConfiguration.setAuthentication(elasticInstanceCredentials);
-        Endpoint endpoint = new Endpoint();
-        endpoint.setHost("http://" + mockWebServer.getHostName());
-        endpoint.setPort((long) mockWebServer.getPort());
-        datasourceConfiguration.setEndpoints(Collections.singletonList(endpoint));
+            DatasourceConfiguration datasourceConfiguration = new DatasourceConfiguration();
+            datasourceConfiguration.setAuthentication(elasticInstanceCredentials);
+            Endpoint endpoint = new Endpoint();
+            endpoint.setHost("http://" + mockWebServer.getHostName());
+            endpoint.setPort((long) mockWebServer.getPort());
+            datasourceConfiguration.setEndpoints(Collections.singletonList(endpoint));
 
-        final ActionConfiguration actionConfiguration = new ActionConfiguration();
-        actionConfiguration.setHttpMethod(HttpMethod.GET);
-        actionConfiguration.setPath("/");
+            final ActionConfiguration actionConfiguration = new ActionConfiguration();
+            actionConfiguration.setHttpMethod(HttpMethod.GET);
+            actionConfiguration.setPath("/");
 
-        final Mono<ActionExecutionResult> resultMono = pluginExecutor
-                .datasourceCreate(datasourceConfiguration)
-                .flatMap(conn -> pluginExecutor.execute(conn, dsConfig, actionConfiguration));
+            final Mono<ActionExecutionResult> resultMono = pluginExecutor
+                    .datasourceCreate(datasourceConfiguration)
+                    .flatMap(conn -> pluginExecutor.execute(conn, dsConfig, actionConfiguration));
 
-        StepVerifier.create(resultMono)
-                .assertNext(result -> {
-                    assertFalse(result.getIsExecutionSuccess());
-                    assertEquals(
-                            "Host 169.254.169.254.nip.io is not allowed",
-                            result.getPluginErrorDetails().getDownstreamErrorMessage());
-                })
-                .verifyComplete();
+            StepVerifier.create(resultMono)
+                    .assertNext(result -> {
+                        assertFalse(result.getIsExecutionSuccess());
+                        assertEquals(
+                                "Host 169.254.169.254.nip.io is not allowed",
+                                result.getPluginErrorDetails().getDownstreamErrorMessage());
+                    })
+                    .verifyComplete();
+        } finally {
+            RestrictedHostFilter.resetSsrfFilterDisabledForTesting();
+            RestrictedHostFilter.clearAlwaysAllowedHostsForTesting();
+            mockWebServer.shutdown();
+        }
     }
 
     @Test
     public void itShouldRejectGetToMetadataGcp() {
-        DatasourceConfiguration datasourceConfiguration = new DatasourceConfiguration();
-        datasourceConfiguration.setAuthentication(elasticInstanceCredentials);
-        Endpoint endpoint = new Endpoint();
-        endpoint.setHost("http://metadata.google.internal");
-        endpoint.setPort(Long.valueOf(port));
-        datasourceConfiguration.setEndpoints(Collections.singletonList(endpoint));
+        RestrictedHostFilter.setSsrfFilterDisabledForTesting(false);
+        try {
+            DatasourceConfiguration datasourceConfiguration = new DatasourceConfiguration();
+            datasourceConfiguration.setAuthentication(elasticInstanceCredentials);
+            Endpoint endpoint = new Endpoint();
+            endpoint.setHost("http://metadata.google.internal");
+            endpoint.setPort(Long.valueOf(port));
+            datasourceConfiguration.setEndpoints(Collections.singletonList(endpoint));
 
-        final ActionConfiguration actionConfiguration = new ActionConfiguration();
-        actionConfiguration.setHttpMethod(HttpMethod.GET);
-        actionConfiguration.setPath("/");
+            final ActionConfiguration actionConfiguration = new ActionConfiguration();
+            actionConfiguration.setHttpMethod(HttpMethod.GET);
+            actionConfiguration.setPath("/");
 
-        final Mono<ActionExecutionResult> resultMono = pluginExecutor
-                .datasourceCreate(datasourceConfiguration)
-                .flatMap(conn -> pluginExecutor.execute(conn, dsConfig, actionConfiguration));
+            final Mono<ActionExecutionResult> resultMono = pluginExecutor
+                    .datasourceCreate(datasourceConfiguration)
+                    .flatMap(conn -> pluginExecutor.execute(conn, dsConfig, actionConfiguration));
 
-        StepVerifier.create(resultMono)
-                .assertNext(result -> {
-                    assertFalse(result.getIsExecutionSuccess());
-                    assertEquals(
-                            "Host metadata.google.internal is not allowed",
-                            result.getPluginErrorDetails().getDownstreamErrorMessage());
-                })
-                .verifyComplete();
+            StepVerifier.create(resultMono)
+                    .assertNext(result -> {
+                        assertFalse(result.getIsExecutionSuccess());
+                        assertEquals(
+                                "Host metadata.google.internal is not allowed",
+                                result.getPluginErrorDetails().getDownstreamErrorMessage());
+                    })
+                    .verifyComplete();
+        } finally {
+            RestrictedHostFilter.resetSsrfFilterDisabledForTesting();
+        }
     }
 
     @Test
     public void itShouldRejectGetToMetadataGcpAndRedirect() throws IOException {
+        RestrictedHostFilter.setSsrfFilterDisabledForTesting(false);
+        RestrictedHostFilter.setAlwaysAllowedHostsForTesting("127.0.0.1", "localhost", "::1");
         MockWebServer mockWebServer = new MockWebServer();
-        MockResponse mockRedirectResponse =
-                new MockResponse().setResponseCode(301).addHeader("Location", "http://metadata.google.internal");
-        mockWebServer.enqueue(mockRedirectResponse);
-        mockWebServer.start();
+        try {
+            MockResponse mockRedirectResponse =
+                    new MockResponse().setResponseCode(301).addHeader("Location", "http://metadata.google.internal");
+            mockWebServer.enqueue(mockRedirectResponse);
+            mockWebServer.start();
 
-        DatasourceConfiguration datasourceConfiguration = new DatasourceConfiguration();
-        datasourceConfiguration.setAuthentication(elasticInstanceCredentials);
-        Endpoint endpoint = new Endpoint();
-        endpoint.setHost("http://" + mockWebServer.getHostName());
-        endpoint.setPort((long) mockWebServer.getPort());
-        datasourceConfiguration.setEndpoints(Collections.singletonList(endpoint));
+            DatasourceConfiguration datasourceConfiguration = new DatasourceConfiguration();
+            datasourceConfiguration.setAuthentication(elasticInstanceCredentials);
+            Endpoint endpoint = new Endpoint();
+            endpoint.setHost("http://" + mockWebServer.getHostName());
+            endpoint.setPort((long) mockWebServer.getPort());
+            datasourceConfiguration.setEndpoints(Collections.singletonList(endpoint));
 
-        final ActionConfiguration actionConfiguration = new ActionConfiguration();
-        actionConfiguration.setHttpMethod(HttpMethod.GET);
-        actionConfiguration.setPath("/");
+            final ActionConfiguration actionConfiguration = new ActionConfiguration();
+            actionConfiguration.setHttpMethod(HttpMethod.GET);
+            actionConfiguration.setPath("/");
 
-        final Mono<ActionExecutionResult> resultMono = pluginExecutor
-                .datasourceCreate(datasourceConfiguration)
-                .flatMap(conn -> pluginExecutor.execute(conn, dsConfig, actionConfiguration));
+            final Mono<ActionExecutionResult> resultMono = pluginExecutor
+                    .datasourceCreate(datasourceConfiguration)
+                    .flatMap(conn -> pluginExecutor.execute(conn, dsConfig, actionConfiguration));
 
-        StepVerifier.create(resultMono)
-                .assertNext(result -> {
-                    assertFalse(result.getIsExecutionSuccess());
-                    assertEquals(
-                            "Host metadata.google.internal is not allowed",
-                            result.getPluginErrorDetails().getDownstreamErrorMessage());
-                })
-                .verifyComplete();
+            StepVerifier.create(resultMono)
+                    .assertNext(result -> {
+                        assertFalse(result.getIsExecutionSuccess());
+                        assertEquals(
+                                "Host metadata.google.internal is not allowed",
+                                result.getPluginErrorDetails().getDownstreamErrorMessage());
+                    })
+                    .verifyComplete();
+        } finally {
+            RestrictedHostFilter.resetSsrfFilterDisabledForTesting();
+            RestrictedHostFilter.clearAlwaysAllowedHostsForTesting();
+            mockWebServer.shutdown();
+        }
     }
 
     @Test
@@ -675,5 +739,54 @@ public class ElasticSearchPluginTest {
                     assertEquals("localhost_9200", endpointIdentifier);
                 })
                 .verifyComplete();
+    }
+
+    @Test
+    public void testDatasource_connection_doesNotRunOnTheSubscribingThread() throws Exception {
+        RestClient mockClient = mock(RestClient.class);
+        StatusLine okStatus = mock(StatusLine.class);
+        when(okStatus.getStatusCode()).thenReturn(200);
+        Response okResponse = mock(Response.class);
+        when(okResponse.getStatusLine()).thenReturn(okStatus);
+        AtomicReference<String> clientThread = new AtomicReference<>();
+        when(mockClient.performRequest(any(Request.class))).thenAnswer(invocation -> {
+            clientThread.set(Thread.currentThread().getName());
+            return okResponse;
+        });
+
+        Scheduler caller = Schedulers.newSingle("caller-event-loop");
+        try {
+            StepVerifier.create(pluginExecutor.testDatasource(mockClient).subscribeOn(caller))
+                    .assertNext(result -> assertTrue(result.isSuccess()))
+                    .verifyComplete();
+        } finally {
+            caller.dispose();
+        }
+        assertNotNull(clientThread.get(), "performRequest was never called");
+        assertFalse(
+                clientThread.get().startsWith("caller-event-loop"),
+                "performRequest ran on the subscribing thread: " + clientThread.get());
+    }
+
+    @Test
+    public void datasourceDestroy_doesNotRunOnTheCallerThread() throws Exception {
+        RestClient mockClient = mock(RestClient.class);
+        AtomicReference<String> closeThread = new AtomicReference<>();
+        CountDownLatch closed = new CountDownLatch(1);
+        doAnswer(invocation -> {
+                    closeThread.set(Thread.currentThread().getName());
+                    closed.countDown();
+                    return null;
+                })
+                .when(mockClient)
+                .close();
+
+        Thread caller = new Thread(() -> pluginExecutor.datasourceDestroy(mockClient), "caller-event-loop-destroy");
+        caller.start();
+        caller.join(5_000);
+        assertTrue(closed.await(5, TimeUnit.SECONDS), "close was never called");
+        assertFalse(
+                closeThread.get().startsWith("caller-event-loop-destroy"),
+                "client close ran on the caller thread: " + closeThread.get());
     }
 }

@@ -13,10 +13,17 @@ public class RedisErrorMessages extends BasePluginErrorMessages {
 
     public static final String INVALID_REDIS_COMMAND_ERROR_MSG = "Not a valid Redis command: %s";
 
+    public static final String COMMAND_NAME_BINDING_ERROR_MSG =
+            "Redis command names must be static. Use bindings only in command arguments.";
+
     public static final String NO_PONG_RESPONSE_ERROR_MSG = "Expected PONG in response of PING but got %s";
 
     public static final String QUERY_EXECUTION_FAILED_ERROR_MSG =
             "Error occurred while executing Redis query. To know more about the error please check the error details.";
+
+    public static final String DS_UNEXPECTED_SSL_OPTION_ERROR_MSG =
+            "Appsmith server has found an unexpected SSL option: %s. Please reach out to Appsmith customer support"
+                    + " to resolve this.";
 
     /*
     ************************************************************************************************************************************************

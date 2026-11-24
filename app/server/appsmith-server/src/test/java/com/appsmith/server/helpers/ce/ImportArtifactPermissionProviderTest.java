@@ -16,6 +16,7 @@ import com.appsmith.server.solutions.DatasourcePermission;
 import com.appsmith.server.solutions.DomainPermission;
 import com.appsmith.server.solutions.PagePermission;
 import com.appsmith.server.solutions.WorkspacePermission;
+import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -27,6 +28,7 @@ import java.util.List;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -61,9 +63,15 @@ class ImportArtifactPermissionProviderTest {
         assertTrue(importArtifactPermissionProvider.hasEditPermission(new NewAction()));
         assertTrue(importArtifactPermissionProvider.hasEditPermission(new Datasource()));
 
-        assertTrue(importArtifactPermissionProvider.canCreateDatasource(new Workspace()));
-        assertTrue(importArtifactPermissionProvider.canCreateAction(new NewPage()));
-        assertTrue(importArtifactPermissionProvider.canCreatePage(new Application()));
+        assertEquals(
+                Boolean.TRUE,
+                importArtifactPermissionProvider
+                        .canCreateDatasource(new Workspace())
+                        .block());
+        assertEquals(
+                Boolean.TRUE,
+                importArtifactPermissionProvider.canCreateAction(new NewPage()).block());
+        importArtifactPermissionProvider.canCreatePage(new Application()).subscribe(Assertions::assertTrue);
     }
 
     @Test
@@ -101,9 +109,14 @@ class ImportArtifactPermissionProviderTest {
         // we'll create a permission provider for each domain and check if the create permission is false
 
         List<Tuple2<BaseDomain, AclPermission>> domainAndPermissionList = new ArrayList<>();
-        domainAndPermissionList.add(Tuples.of(new Application(), applicationPermission.getPageCreatePermission()));
-        domainAndPermissionList.add(Tuples.of(new NewPage(), pagePermission.getActionCreatePermission()));
-        domainAndPermissionList.add(Tuples.of(new Workspace(), workspacePermission.getDatasourceCreatePermission()));
+        domainAndPermissionList.add(Tuples.of(
+                new Application(),
+                applicationPermission.getPageCreatePermission().block()));
+        domainAndPermissionList.add(Tuples.of(
+                new NewPage(), pagePermission.getActionCreatePermission().block()));
+        domainAndPermissionList.add(Tuples.of(
+                new Workspace(),
+                workspacePermission.getDatasourceCreatePermission().block()));
 
         for (Tuple2<BaseDomain, AclPermission> domainAndPermission : domainAndPermissionList) {
             BaseDomain domain = domainAndPermission.getT1();
@@ -112,11 +125,11 @@ class ImportArtifactPermissionProviderTest {
                     createPermissionProviderForDomainCreatePermission(domain, domainAndPermission.getT2());
 
             if (domain instanceof Application) {
-                assertFalse(provider.canCreatePage((Application) domain));
+                provider.canCreatePage((Application) domain).subscribe(Assertions::assertFalse);
             } else if (domain instanceof NewPage) {
-                assertFalse(provider.canCreateAction((NewPage) domain));
+                assertFalse(provider.canCreateAction((NewPage) domain).block());
             } else if (domain instanceof Workspace) {
-                assertFalse(provider.canCreateDatasource((Workspace) domain));
+                provider.canCreateDatasource((Workspace) domain).subscribe(Assertions::assertFalse);
             }
         }
     }
@@ -136,13 +149,14 @@ class ImportArtifactPermissionProviderTest {
                         .getRequiredPermissionOnTargetWorkspace())
                 .isEqualTo(workspacePermission.getReadPermission());
 
-        assertTrue(builder.permissionRequiredToCreateDatasource(true).build().isPermissionRequiredToCreateDatasource());
-        assertTrue(builder.permissionRequiredToCreatePage(true).build().isPermissionRequiredToCreatePage());
-        assertTrue(builder.permissionRequiredToCreateAction(true).build().isPermissionRequiredToCreateAction());
+        assertTrue(
+                builder.permissionRequiredToCreateDatasource(true).build().getPermissionRequiredToCreateDatasource());
+        assertTrue(builder.permissionRequiredToCreatePage(true).build().getPermissionRequiredToCreatePage());
+        assertTrue(builder.permissionRequiredToCreateAction(true).build().getPermissionRequiredToCreateAction());
 
-        assertTrue(builder.permissionRequiredToEditDatasource(true).build().isPermissionRequiredToEditDatasource());
-        assertTrue(builder.permissionRequiredToEditContext(true).build().isPermissionRequiredToEditContext());
-        assertTrue(builder.permissionRequiredToEditAction(true).build().isPermissionRequiredToEditAction());
+        assertTrue(builder.permissionRequiredToEditDatasource(true).build().getPermissionRequiredToEditDatasource());
+        assertTrue(builder.permissionRequiredToEditContext(true).build().getPermissionRequiredToEditContext());
+        assertTrue(builder.permissionRequiredToEditAction(true).build().getPermissionRequiredToEditAction());
     }
 
     @Test
@@ -156,12 +170,12 @@ class ImportArtifactPermissionProviderTest {
                 .allPermissionsRequired()
                 .build();
 
-        assertTrue(provider.isPermissionRequiredToCreateDatasource());
-        assertTrue(provider.isPermissionRequiredToCreatePage());
-        assertTrue(provider.isPermissionRequiredToCreateAction());
-        assertTrue(provider.isPermissionRequiredToEditDatasource());
-        assertTrue(provider.isPermissionRequiredToEditContext());
-        assertTrue(provider.isPermissionRequiredToEditAction());
+        assertTrue(provider.getPermissionRequiredToCreateDatasource());
+        assertTrue(provider.getPermissionRequiredToCreatePage());
+        assertTrue(provider.getPermissionRequiredToCreateAction());
+        assertTrue(provider.getPermissionRequiredToEditDatasource());
+        assertTrue(provider.getPermissionRequiredToEditContext());
+        assertTrue(provider.getPermissionRequiredToEditAction());
     }
 
     /**

@@ -3,6 +3,7 @@ import * as Constants from "./constants";
 import childProcess from "child_process";
 import fs from "node:fs";
 import { ConnectionString } from "mongodb-connection-string-url";
+import { readEnvFile } from "./env-file";
 
 export function showHelp() {
   console.log(
@@ -14,6 +15,7 @@ export function showHelp() {
   console.log("\tcrs, check_replica_set\tCheck replica set mongoDB.\r");
   console.log("\tbackup\t\t\tTake a backup of Appsmith instance.\r");
   console.log("\trestore\t\t\tRestore Appsmith instance from a backup.\r");
+  console.log("\tefl, enable-form-login\t\tEnable form login.\r");
   console.log("\t--help\t\t\t" + "Show help.");
 }
 
@@ -38,8 +40,30 @@ export async function start(apps) {
   console.log("Started", apps);
 }
 
-export function getDburl() {
-  let dbUrl = "";
+export function parseRedisUrl(redisUrlObject) {
+  if (redisUrlObject && redisUrlObject !== "undefined") {
+    try {
+      const redisUrl = new URL(redisUrlObject);
+
+      return redisUrl.hostname;
+    } catch (err) {
+      console.error("Error parsing redis URL:", err);
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Reads the raw APPSMITH_REDIS_URL value, from the environment first and the
+ * env file second. Returns null when it is not set.
+ */
+export function readRedisUrlSetting(): string | null {
+  const fromEnv = process.env.APPSMITH_REDIS_URL;
+
+  if (fromEnv && fromEnv !== "undefined") {
+    return fromEnv;
+  }
 
   try {
     const env_array = fs
@@ -48,26 +72,103 @@ export function getDburl() {
       .split("\n");
 
     for (const i in env_array) {
-      if (
-        env_array[i].startsWith("APPSMITH_MONGODB_URI") ||
-        env_array[i].startsWith("APPSMITH_DB_URL")
-      ) {
-        dbUrl = env_array[i].toString().split("=")[1].trim();
-        break; // Break early when the desired line is found
+      if (env_array[i].startsWith("APPSMITH_REDIS_URL")) {
+        return env_array[i].substring(env_array[i].indexOf("=") + 1).trim();
       }
     }
   } catch (err) {
     console.error("Error reading the environment file:", err);
   }
-  const dbEnvUrl =
-    process.env.APPSMITH_DB_URL || process.env.APPSMITH_MONGO_DB_URI;
 
-  // Make sure dbEnvUrl takes precedence over dbUrl
-  if (dbEnvUrl && dbEnvUrl !== "undefined") {
-    dbUrl = dbEnvUrl.trim();
+  return null;
+}
+
+/**
+ * Hostname of the configured Redis. Use getRedisCliConnection() when the value is
+ * passed to redis-cli, so credentials, port and TLS are preserved.
+ */
+export function getRedisUrl() {
+  const redisUrlObject = readRedisUrlSetting();
+
+  if (redisUrlObject) {
+    try {
+      return parseRedisUrl(redisUrlObject);
+    } catch (err) {
+      console.error("Error parsing redis URL:", err);
+    }
   }
 
-  return dbUrl;
+  return null;
+}
+
+export interface RedisCliConnection {
+  /** redis-cli flags: host, port, and when present --tls and --user. */
+  args: string[];
+  /** Password for REDISCLI_AUTH, or null when the URL carries none. */
+  password: string | null;
+}
+
+/**
+ * Splits a configured Redis URL into redis-cli flags plus the password. The
+ * password is returned separately so callers can hand it to redis-cli through
+ * the REDISCLI_AUTH environment variable instead of the command line, where it
+ * would be visible in the process table. Accepts redis, rediss (TLS) and the
+ * server-only redis-cluster scheme, or a bare host / host:port. Returns null
+ * when the value is empty.
+ */
+export function toRedisCliConnection(
+  redisUrl: string | undefined,
+): RedisCliConnection | null {
+  const value = (redisUrl ?? "").trim();
+
+  if (!value || value === "undefined") {
+    return null;
+  }
+
+  const url = new URL(value.includes("://") ? value : `redis://${value}`);
+  const args = ["-h", url.hostname, "-p", url.port || "6379"];
+
+  if (url.protocol === "rediss:") {
+    args.push("--tls");
+  }
+
+  if (url.username) {
+    args.push("--user", decodeURIComponent(url.username));
+  }
+
+  return {
+    args,
+    password: url.password ? decodeURIComponent(url.password) : null,
+  };
+}
+
+export function getRedisCliConnection(): RedisCliConnection | null {
+  return toRedisCliConnection(readRedisUrlSetting());
+}
+
+/** Environment for a redis-cli child process, with the password in REDISCLI_AUTH. */
+export function redisCliEnv(redis: RedisCliConnection): NodeJS.ProcessEnv {
+  return redis.password
+    ? { ...process.env, REDISCLI_AUTH: redis.password }
+    : { ...process.env };
+}
+
+export function getDburl() {
+  for (const name of [
+    "APPSMITH_DB_URL",
+    "APPSMITH_MONGODB_URI",
+    "APPSMITH_MONGO_DB_URI",
+  ]) {
+    const value = process.env[name]?.trim();
+
+    if (value && value !== "undefined") return value;
+  }
+
+  const configuration = readEnvFile(Constants.ENV_PATH);
+
+  return (
+    configuration.APPSMITH_DB_URL || configuration.APPSMITH_MONGODB_URI || ""
+  );
 }
 
 export async function execCommand(cmd: string[], options?) {

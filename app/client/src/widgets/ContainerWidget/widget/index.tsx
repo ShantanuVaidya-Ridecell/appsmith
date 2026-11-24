@@ -1,6 +1,6 @@
 import type { MouseEventHandler } from "react";
 import React from "react";
-import type { DerivedPropertiesMap } from "WidgetProvider/factory";
+import type { DerivedPropertiesMap } from "WidgetProvider/factory/types";
 import type { ContainerStyle } from "../component";
 import ContainerComponent from "../component";
 import type { WidgetProps, WidgetState } from "widgets/BaseWidget";
@@ -24,7 +24,7 @@ import {
   type WidgetBaseConfiguration,
   type WidgetDefaultProps,
   type FlattenedWidgetProps,
-} from "WidgetProvider/constants";
+} from "WidgetProvider/types";
 import { WIDGET_TAGS } from "constants/WidgetConstants";
 import IconSVG from "../icon.svg";
 import ThumbnailSVG from "../thumbnail.svg";
@@ -39,7 +39,7 @@ import {
 } from "layoutSystems/common/utils/constants";
 import { renderAppsmithCanvas } from "layoutSystems/CanvasFactory";
 import { generateDefaultLayoutPreset } from "layoutSystems/anvil/layoutComponents/presets/DefaultLayoutPreset";
-import type { CanvasWidgetsReduxState } from "reducers/entityReducers/canvasWidgetsReducer";
+import type { CanvasWidgetsReduxState } from "ee/reducers/entityReducers/canvasWidgetsReducer";
 import { LayoutSystemTypes } from "layoutSystems/types";
 import type { LayoutProps } from "layoutSystems/anvil/utils/anvilTypes";
 import { getWidgetBluePrintUpdates } from "utils/WidgetBlueprintUtils";
@@ -413,9 +413,11 @@ export interface ContainerWidgetProps<T extends WidgetProps>
   containerStyle?: ContainerStyle;
   onClick?: MouseEventHandler<HTMLDivElement>;
   onClickCapture?: MouseEventHandler<HTMLDivElement>;
+  showHoverPointer?: boolean;
   shouldScrollContents?: boolean;
   noPad?: boolean;
   positioning?: Positioning;
+  forceFullOpacity?: boolean; // used to force full opacity for ui module instance meta widgets
 }
 
 export default ContainerWidget;

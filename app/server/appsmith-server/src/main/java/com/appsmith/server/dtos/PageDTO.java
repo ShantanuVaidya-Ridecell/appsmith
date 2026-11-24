@@ -5,6 +5,7 @@ import com.appsmith.external.models.Policy;
 import com.appsmith.external.views.Git;
 import com.appsmith.external.views.Views;
 import com.appsmith.server.domains.Layout;
+import com.appsmith.server.domains.ce.LayoutContainer;
 import com.fasterxml.jackson.annotation.JsonFormat;
 import com.fasterxml.jackson.annotation.JsonView;
 import lombok.Getter;
@@ -13,6 +14,8 @@ import lombok.Setter;
 import lombok.ToString;
 import lombok.experimental.FieldNameConstants;
 import org.springframework.data.annotation.Transient;
+import org.springframework.util.CollectionUtils;
+import org.springframework.util.StringUtils;
 
 import java.time.Instant;
 import java.util.HashMap;
@@ -26,7 +29,7 @@ import java.util.Set;
 @NoArgsConstructor
 @ToString
 @FieldNameConstants
-public class PageDTO {
+public class PageDTO implements LayoutContainer {
 
     @Transient
     @JsonView({Views.Public.class})
@@ -35,6 +38,9 @@ public class PageDTO {
     @Transient
     @JsonView({Views.Public.class})
     private String baseId;
+
+    @JsonView({Views.Public.class, Views.Export.class, Git.class})
+    String uniqueSlug;
 
     @JsonView({Views.Public.class, Views.Export.class, Git.class})
     String name;
@@ -112,6 +118,17 @@ public class PageDTO {
 
     public void sanitiseToExportDBObject() {
         this.setDependencyMap(null);
-        this.getLayouts().forEach(Layout::sanitiseToExportDBObject);
+        if (!CollectionUtils.isEmpty(this.getLayouts())) {
+            this.getLayouts().forEach(Layout::sanitiseToExportDBObject);
+        }
+    }
+
+    @JsonView(Views.Internal.class)
+    public String getUniqueSlugOrFallback() {
+        if (StringUtils.hasText(uniqueSlug)) {
+            return this.uniqueSlug;
+        }
+
+        return this.slug;
     }
 }

@@ -19,7 +19,7 @@ import {
 } from "ee/constants/messages";
 import { getAppsmithConfigs } from "ee/configs";
 import { howMuchTimeBeforeText } from "utils/helpers";
-import { getTenantPermissions } from "ee/selectors/tenantSelectors";
+import { getOrganizationPermissions } from "ee/selectors/organizationSelectors";
 import { DISCORD_URL } from "constants/ThirdPartyConstants";
 import { useFeatureFlag } from "utils/hooks/useFeatureFlag";
 import { FEATURE_FLAG } from "ee/entities/FeatureFlag";
@@ -85,8 +85,8 @@ const LeftPaneVersionData = styled.div`
 
 export default function MobileSideBar(props: MobileSideBarProps) {
   const user = useSelector(getCurrentUser);
-  const tenantPermissions = useSelector(getTenantPermissions);
-  const { appVersion } = getAppsmithConfigs();
+  const organizationPermissions = useSelector(getOrganizationPermissions);
+  const { appVersion, disableHelpIcon } = getAppsmithConfigs();
   const howMuchTimeBefore = howMuchTimeBeforeText(appVersion.releaseDate);
   const isFeatureEnabled = useFeatureFlag(FEATURE_FLAG.license_gac_enabled);
 
@@ -115,8 +115,8 @@ export default function MobileSideBar(props: MobileSideBarProps) {
               getOnSelectAction(DropdownOnSelectActions.REDIRECT, {
                 path: getAdminSettingsPath(
                   isFeatureEnabled,
-                  user?.isSuperUser,
-                  tenantPermissions,
+                  user?.isSuperUser || false,
+                  organizationPermissions,
                 ),
               });
             }}
@@ -134,22 +134,24 @@ export default function MobileSideBar(props: MobileSideBarProps) {
           text="Sign Out"
         />
       </Section>
-      <Section>
-        <StyledMenuItem
-          icon="discord"
-          onSelect={() => {
-            window.open(DISCORD_URL, "_blank");
-          }}
-          text={"Join our discord"}
-        />
-        <StyledMenuItem
-          icon="book"
-          onSelect={() => {
-            window.open("https://docs.appsmith.com/", "_blank");
-          }}
-          text={createMessage(DOCUMENTATION)}
-        />
-      </Section>
+      {!disableHelpIcon && (
+        <Section>
+          <StyledMenuItem
+            icon="discord"
+            onSelect={() => {
+              window.open(DISCORD_URL, "_blank");
+            }}
+            text={"Join our discord"}
+          />
+          <StyledMenuItem
+            icon="book"
+            onSelect={() => {
+              window.open("https://docs.appsmith.com/", "_blank");
+            }}
+            text={createMessage(DOCUMENTATION)}
+          />
+        </Section>
+      )}
       <LeftPaneVersionData>
         <span>
           {createMessage(

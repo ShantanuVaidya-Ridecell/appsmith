@@ -3,7 +3,6 @@ package com.appsmith.git.files.operations;
 import com.appsmith.external.git.constants.GitSpan;
 import com.appsmith.external.git.operations.FileOperationsCE;
 import com.appsmith.external.helpers.ObservationHelper;
-import com.appsmith.external.models.ApplicationGitReference;
 import com.appsmith.external.models.BaseDomain;
 import com.appsmith.external.views.Git;
 import com.appsmith.git.constants.CommonConstants;
@@ -15,7 +14,6 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.ObjectReader;
 import com.fasterxml.jackson.databind.ObjectWriter;
-import com.fasterxml.jackson.databind.node.ObjectNode;
 import io.micrometer.tracing.Span;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
@@ -70,28 +68,21 @@ public class FileOperationsCEv2Impl implements FileOperationsCE {
     }
 
     @Override
-    public void saveMetadataResource(ApplicationGitReference applicationGitReference, Path baseRepo) {
-        ObjectNode metadata = objectMapper.valueToTree(applicationGitReference.getMetadata());
-        metadata.put(CommonConstants.FILE_FORMAT_VERSION, CommonConstants.fileFormatVersion);
-        saveResource(metadata, baseRepo.resolve(CommonConstants.METADATA + CommonConstants.JSON_EXTENSION));
-    }
-
-    @Override
     public void saveWidgets(JSONObject sourceEntity, String resourceName, Path path) {
         Span span = observationHelper.createSpan(GitSpan.FILE_WRITE);
         try {
             Files.createDirectories(path);
             String resourceType = WIDGETS;
             span.tag(RESOURCE_TYPE, resourceType);
-            observationHelper.startSpan(span, true);
+            observationHelper.startSpan(span);
 
             writeToFile(
                     objectReader.readTree(sourceEntity.toString()),
                     path.resolve(resourceName + CommonConstants.JSON_EXTENSION));
         } catch (IOException e) {
-            log.debug("Error while writings widgets data to file, {}", e.getMessage());
+            log.error("Error while writing widgets data to file. path={}, resource={}", path, resourceName, e);
         } finally {
-            observationHelper.endSpan(span, true);
+            observationHelper.endSpan(span);
         }
     }
 
@@ -103,14 +94,36 @@ public class FileOperationsCEv2Impl implements FileOperationsCE {
             resourceType = METADATA;
         }
         span.tag(RESOURCE_TYPE, resourceType);
-        observationHelper.startSpan(span, true);
+        observationHelper.startSpan(span);
 
         try (BufferedWriter fileWriter = Files.newBufferedWriter(path, StandardCharsets.UTF_8)) {
             objectWriter.writeValue(fileWriter, sourceEntity);
             return true;
         } finally {
-            observationHelper.endSpan(span, true);
+            observationHelper.endSpan(span);
         }
+    }
+
+    public boolean hasFileChanged(Object sourceEntity, Object fsSourceEntity) throws IOException {
+        if (fsSourceEntity == null) {
+            return true;
+        }
+
+        boolean hasChanged = true;
+        if (sourceEntity instanceof String s) {
+            hasChanged = !s.equals(fsSourceEntity.toString());
+        } else if (sourceEntity instanceof JSONObject json) {
+            JsonNode sourceNode = objectMapper.readTree(json.toString());
+            String contentToWrite = objectWriter.writeValueAsString(sourceNode);
+            String fsContent = objectWriter.writeValueAsString(fsSourceEntity);
+            hasChanged = !contentToWrite.equals(fsContent);
+        } else {
+            String contentToWrite = objectWriter.writeValueAsString(sourceEntity);
+            String fsContent = objectWriter.writeValueAsString(fsSourceEntity);
+            hasChanged = !contentToWrite.equals(fsContent);
+        }
+
+        return hasChanged;
     }
 
     /**
@@ -122,16 +135,16 @@ public class FileOperationsCEv2Impl implements FileOperationsCE {
     @Override
     public Object readFile(Path filePath) {
         Span span = observationHelper.createSpan(GitSpan.FILE_READ);
-        observationHelper.startSpan(span, true);
+        observationHelper.startSpan(span);
 
         Object file;
         try (FileReader reader = new FileReader(filePath.toFile())) {
             file = objectReader.readValue(reader, Object.class);
         } catch (Exception e) {
-            log.error("Error while reading file {} with message {} with cause", filePath, e.getMessage(), e.getCause());
+            log.error("Error while reading file. path={}", filePath, e);
             return null;
         } finally {
-            observationHelper.endSpan(span, true);
+            observationHelper.endSpan(span);
         }
         return file;
     }
@@ -151,11 +164,7 @@ public class FileOperationsCEv2Impl implements FileOperationsCE {
                 try (FileReader reader = new FileReader(file)) {
                     resource.put(file.getName() + keySuffix, objectReader.readValue(reader, Object.class));
                 } catch (Exception e) {
-                    log.error(
-                            "Error while reading file {} with message {} with cause",
-                            file.toPath(),
-                            e.getMessage(),
-                            e.getCause());
+                    log.error("Error while reading file. path={}", file.toPath(), e);
                 }
             });
         }
@@ -167,9 +176,9 @@ public class FileOperationsCEv2Impl implements FileOperationsCE {
         if (metadata == null) {
             return 1;
         }
+
         JsonNode json = objectMapper.valueToTree(metadata);
-        int fileFormatVersion = json.get(CommonConstants.FILE_FORMAT_VERSION).asInt();
-        return fileFormatVersion;
+        return json.get(CommonConstants.FILE_FORMAT_VERSION).asInt();
     }
 
     @Override
@@ -179,6 +188,10 @@ public class FileOperationsCEv2Impl implements FileOperationsCE {
             return new JSONObject(objectMapper.writeValueAsString(
                     pageJSON.get("unpublishedPage").get("layouts").get(0).get("dsl")));
         } catch (JsonProcessingException e) {
+            log.error(
+                    "Error while extracting the main container from the page DSL. page={}",
+                    pageJSON.path("unpublishedPage").path("name").asText(),
+                    e);
             throw new RuntimeException(e);
         }
     }
@@ -196,8 +209,7 @@ public class FileOperationsCEv2Impl implements FileOperationsCE {
             Files.createDirectories(path.getParent());
             return writeToFile(sourceEntity, path);
         } catch (IOException e) {
-            log.error("Error while writing resource to file {} with {}", path, e.getMessage());
-            log.debug(e.getMessage());
+            log.error("Error while writing resource to file. path={}", path, e);
         }
         return false;
     }
@@ -220,7 +232,10 @@ public class FileOperationsCEv2Impl implements FileOperationsCE {
                                         pathLocal.getFileName().toString()))
                         .forEach(this::deleteFile);
             } catch (IOException e) {
-                log.error("Error while scanning directory: {}, with error {}", resourceDirectory, e.getMessage());
+                log.error(
+                        "Error while scanning directory for deleted resource files. directory={}",
+                        resourceDirectory,
+                        e);
             }
         }
     }
@@ -243,7 +258,10 @@ public class FileOperationsCEv2Impl implements FileOperationsCE {
                                 && !validResources.contains(path.getFileName().toString()))
                         .forEach(this::deleteDirectory);
             } catch (IOException e) {
-                log.error("Error while scanning directory {} with error {}", resourceDirectory, e.getMessage());
+                log.error(
+                        "Error while scanning directory for deleted resource directories. directory={}",
+                        resourceDirectory,
+                        e);
             }
         }
     }
@@ -259,7 +277,7 @@ public class FileOperationsCEv2Impl implements FileOperationsCE {
             try {
                 FileUtils.deleteDirectory(directory.toFile());
             } catch (IOException e) {
-                log.error("Unable to delete directory for path {} with message {}", directory, e.getMessage());
+                log.error("Unable to delete directory. path={}", directory, e);
             }
         }
     }
@@ -274,9 +292,9 @@ public class FileOperationsCEv2Impl implements FileOperationsCE {
         try {
             Files.deleteIfExists(filePath);
         } catch (DirectoryNotEmptyException e) {
-            log.error("Unable to delete non-empty directory at {} with cause", filePath, e.getMessage());
+            log.error("Unable to delete non-empty directory. path={}", filePath, e);
         } catch (IOException e) {
-            log.error("Unable to delete file {} with {}", filePath, e.getMessage());
+            log.error("Unable to delete file. path={}", filePath, e);
         }
     }
 
@@ -289,14 +307,14 @@ public class FileOperationsCEv2Impl implements FileOperationsCE {
     @Override
     public String readFileAsString(Path filePath) {
         Span span = observationHelper.createSpan(GitSpan.FILE_READ);
-        observationHelper.startSpan(span, true);
+        observationHelper.startSpan(span);
         String data = CommonConstants.EMPTY_STRING;
         try {
             data = FileUtils.readFileToString(filePath.toFile(), "UTF-8");
         } catch (IOException e) {
-            log.error("Error while reading the file from git repo {} ", e.getMessage());
+            log.error("Error while reading the file from the git repo. path={}", filePath, e);
         } finally {
-            observationHelper.endSpan(span, true);
+            observationHelper.endSpan(span);
         }
         return data;
     }
@@ -319,7 +337,8 @@ public class FileOperationsCEv2Impl implements FileOperationsCE {
                 return Mono.just(0L);
             }
         } catch (IOException ex) {
-            log.error("Error reading index.lock file: {}", ex.getMessage());
+            // A lock file left behind here keeps blocking every subsequent git operation on this repo
+            log.warn("Unable to read the git lock file, it could not be cleaned up. path={}", path, ex);
             return Mono.just(0L);
         }
     }

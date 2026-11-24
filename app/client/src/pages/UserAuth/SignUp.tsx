@@ -1,7 +1,7 @@
 import React, { useEffect } from "react";
 import type { InjectedFormProps } from "redux-form";
 import { reduxForm, formValueSelector } from "redux-form";
-import { AUTH_LOGIN_URL } from "constants/routes";
+import { AUTH_LOGIN_URL, ORG_LOGIN_PATH } from "constants/routes";
 import { SIGNUP_FORM_NAME } from "ee/constants/forms";
 import type { RouteComponentProps } from "react-router-dom";
 import { useHistory, useLocation, withRouter } from "react-router-dom";
@@ -26,11 +26,13 @@ import {
   GOOGLE_RECAPTCHA_KEY_ERROR,
   LOOKING_TO_SELF_HOST,
   VISIT_OUR_DOCS,
+  SIGN_IN_TO_AN_EXISTING_ORGANISATION,
+  USING_APPSMITH,
 } from "ee/constants/messages";
 import FormTextField from "components/utils/ReduxFormTextField";
 import ThirdPartyAuth from "pages/UserAuth/ThirdPartyAuth";
 import { FormGroup } from "@appsmith/ads-old";
-import { Button, Link, Callout } from "@appsmith/ads";
+import { Button, Link, Callout, Text } from "@appsmith/ads";
 import { isEmail, isStrongPassword, isEmptyString } from "utils/formhelpers";
 
 import type { SignupFormValues } from "pages/UserAuth/helpers";
@@ -38,7 +40,7 @@ import AnalyticsUtil from "ee/utils/AnalyticsUtil";
 
 import { SIGNUP_SUBMIT_PATH } from "ee/constants/ApiConstants";
 import { connect, useSelector } from "react-redux";
-import type { AppState } from "ee/reducers";
+import type { DefaultRootState } from "react-redux";
 
 import { SIGNUP_FORM_EMAIL_FIELD_NAME } from "ee/constants/forms";
 import { getAppsmithConfigs } from "ee/configs";
@@ -48,17 +50,22 @@ import { getIsSafeRedirectURL } from "utils/helpers";
 import Container from "pages/UserAuth/Container";
 import {
   getIsFormLoginEnabled,
-  getTenantConfig,
+  getOrganizationConfig,
   getThirdPartyAuths,
-} from "ee/selectors/tenantSelectors";
+} from "ee/selectors/organizationSelectors";
 import Helmet from "react-helmet";
 import { useFeatureFlag } from "utils/hooks/useFeatureFlag";
 import { FEATURE_FLAG } from "ee/entities/FeatureFlag";
 import { getHTMLPageTitle } from "ee/utils/BusinessFeatures/brandingPageHelpers";
 import log from "loglevel";
 import { SELF_HOSTING_DOC } from "constants/ThirdPartyConstants";
-import * as Sentry from "@sentry/react";
-import { Severity } from "@sentry/react";
+import CsrfTokenInput from "pages/UserAuth/CsrfTokenInput";
+import { useIsCloudBillingEnabled } from "hooks";
+import { isLoginHostname } from "utils/cloudBillingUtils";
+import { appsmithTelemetry } from "instrumentation";
+import { getIsAiAgentInstanceEnabled } from "ee/selectors/aiAgentSelectors";
+import { getSafeErrorMessage } from "ee/constants/approvedErrorMessages";
+import RecentDomainsSection from "./RecentDomainsSection";
 
 declare global {
   interface Window {
@@ -96,9 +103,10 @@ type SignUpFormProps = InjectedFormProps<
 export function SignUp(props: SignUpFormProps) {
   const history = useHistory();
   const isFormLoginEnabled = useSelector(getIsFormLoginEnabled);
+  const isAiAgentInstanceEnabled = useSelector(getIsAiAgentInstanceEnabled);
 
   useEffect(() => {
-    if (!isFormLoginEnabled) {
+    if (!isFormLoginEnabled && !isAiAgentInstanceEnabled) {
       const search = new URL(window.location.href)?.searchParams?.toString();
 
       history.replace({
@@ -119,9 +127,11 @@ export function SignUp(props: SignUpFormProps) {
   const isBrandingEnabled = useFeatureFlag(
     FEATURE_FLAG.license_branding_enabled,
   );
-  const tentantConfig = useSelector(getTenantConfig);
-  const { instanceName } = tentantConfig;
+  const organizationConfig = useSelector(getOrganizationConfig);
+  const { instanceName } = organizationConfig;
   const htmlPageTitle = getHTMLPageTitle(isBrandingEnabled, instanceName);
+  const isCloudBillingEnabled = useIsCloudBillingEnabled();
+  const isHostnameEqualtoLogin = isLoginHostname();
 
   const recaptchaStatus = useScript(
     `https://www.google.com/recaptcha/api.js?render=${googleRecaptchaSiteKey.apiKey}`,
@@ -135,11 +145,8 @@ export function SignUp(props: SignUpFormProps) {
   if (queryParams.get("error")) {
     errorMessage = queryParams.get("error") || "";
     showError = true;
-    Sentry.captureException("Sign up failed", {
-      level: Severity.Error,
-      extra: {
-        error: new Error(errorMessage),
-      },
+    appsmithTelemetry.captureException(new Error(errorMessage), {
+      errorName: "SignUp",
     });
   }
 
@@ -193,6 +200,20 @@ export function SignUp(props: SignUpFormProps) {
     }
   };
 
+  const cloudBillingSignIn = (
+    <div className="flex flex-row text-[color:var(--ads-v2\-color-fg)] text-[14px] gap-1">
+      <Text kind="body-m">{createMessage(USING_APPSMITH)}</Text>
+      <Link
+        className="t--sign-up t--signup-link"
+        kind="primary"
+        target="_self"
+        to={ORG_LOGIN_PATH}
+      >
+        {createMessage(SIGN_IN_TO_AN_EXISTING_ORGANISATION)}
+      </Link>
+    </div>
+  );
+
   const footerSection = (
     <>
       <div className="px-2 flex align-center justify-center text-center text-[color:var(--ads-v2\-color-fg)] text-[14px]">
@@ -206,7 +227,8 @@ export function SignUp(props: SignUpFormProps) {
           {createMessage(SIGNUP_PAGE_LOGIN_LINK_TEXT)}
         </Link>
       </div>
-      {cloudHosting && (
+
+      {cloudHosting && !isAiAgentInstanceEnabled && (
         <>
           <OrWithLines>or</OrWithLines>
           <div className="px-2 text-center text-[color:var(--ads-v2\-color-fg)] text-[14px]">
@@ -227,12 +249,17 @@ export function SignUp(props: SignUpFormProps) {
   );
 
   return (
-    <Container footer={footerSection} title={createMessage(SIGNUP_PAGE_TITLE)}>
+    <Container
+      footer={!isCloudBillingEnabled && footerSection}
+      title={createMessage(SIGNUP_PAGE_TITLE)}
+    >
       <Helmet>
         <title>{htmlPageTitle}</title>
       </Helmet>
 
-      {showError && <Callout kind="error">{errorMessage}</Callout>}
+      {showError && (
+        <Callout kind="error">{getSafeErrorMessage(errorMessage)}</Callout>
+      )}
       {socialLoginList.length > 0 && (
         <ThirdPartyAuth logins={socialLoginList} type={"SIGNUP"} />
       )}
@@ -243,6 +270,7 @@ export function SignUp(props: SignUpFormProps) {
           method="POST"
           onSubmit={(e) => handleSubmit(e)}
         >
+          <CsrfTokenInput />
           <FormGroup
             intent={error ? "danger" : "none"}
             label={createMessage(SIGNUP_PAGE_EMAIL_INPUT_LABEL)}
@@ -284,13 +312,17 @@ export function SignUp(props: SignUpFormProps) {
           </FormActions>
         </SpacedSubmitForm>
       )}
+      {isCloudBillingEnabled && isHostnameEqualtoLogin && cloudBillingSignIn}
+      {isCloudBillingEnabled && isHostnameEqualtoLogin && (
+        <RecentDomainsSection />
+      )}
     </Container>
   );
 }
 
 const selector = formValueSelector(SIGNUP_FORM_NAME);
 
-export default connect((state: AppState, props: SignUpFormProps) => {
+export default connect((state: DefaultRootState, props: SignUpFormProps) => {
   const queryParams = new URLSearchParams(props.location.search);
 
   return {

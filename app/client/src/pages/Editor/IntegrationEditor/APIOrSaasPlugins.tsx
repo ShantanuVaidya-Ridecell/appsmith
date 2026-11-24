@@ -4,18 +4,20 @@ import {
   createDatasourceFromForm,
   createTempDatasourceFromForm,
 } from "actions/datasourceActions";
-import type { AppState } from "ee/reducers";
+import type { DefaultRootState } from "react-redux";
 import AnalyticsUtil from "ee/utils/AnalyticsUtil";
 import {
   type GenerateCRUDEnabledPluginMap,
   type Plugin,
   PluginPackageName,
   PluginType,
+  type UpcomingIntegration,
 } from "entities/Plugin";
 import { getQueryParams } from "utils/URLUtils";
 import {
   getGenerateCRUDEnabledPluginMap,
   getPlugins,
+  getUpcomingPlugins,
 } from "ee/selectors/entitiesSelector";
 import { getIsGeneratePageInitiator } from "utils/GenerateCrudUtil";
 import { getAssetUrl, isAirgapped } from "ee/utils/airgapHelpers";
@@ -38,17 +40,18 @@ import {
   CREATE_NEW_DATASOURCE_REST_API,
   CREATE_NEW_SAAS_SECTION_HEADER,
   createMessage,
+  UPCOMING_SAAS_INTEGRATIONS,
 } from "ee/constants/messages";
 import scrollIntoView from "scroll-into-view-if-needed";
 import PremiumDatasources from "./PremiumDatasources";
 import { pluginSearchSelector } from "./CreateNewDatasourceHeader";
-import {
-  PREMIUM_INTEGRATIONS,
-  type PremiumIntegration,
-} from "./PremiumDatasources/Constants";
+import { getFilteredUpcomingIntegrations } from "./PremiumDatasources/Constants";
 import { getDatasourcesLoadingState } from "selectors/datasourceSelectors";
 import { getIDETypeByUrl } from "ee/entities/IDE/utils";
-import type { IDEType } from "ee/entities/IDE/constants";
+import type { IDEType } from "ee/IDE/Interfaces/IDETypes";
+import { filterSearch } from "./util";
+import { selectFeatureFlagCheck } from "ee/selectors/featureFlagsSelectors";
+import { FEATURE_FLAG } from "ee/entities/FeatureFlag";
 
 interface CreateAPIOrSaasPluginsProps {
   location: {
@@ -70,11 +73,11 @@ interface CreateAPIOrSaasPluginsProps {
     parentEntityType: ActionParentEntityTypeInterface,
     apiType: string,
   ) => void;
-  isPremiumDatasourcesViewEnabled?: boolean;
-  premiumPlugins: PremiumIntegration[];
+  upcomingIntegrations: UpcomingIntegration[];
   authApiPlugin?: Plugin;
   restAPIVisible?: boolean;
   graphQLAPIVisible?: boolean;
+  isIntegrationsEnabledForPaid?: boolean;
 }
 
 export const API_ACTION = {
@@ -229,7 +232,9 @@ function APIOrSaasPlugins(props: CreateAPIOrSaasPluginsProps) {
           rightSibling={isCreating && <Spinner className="cta" size={"sm"} />}
         />
       ))}
-      <PremiumDatasources plugins={props.premiumPlugins} />
+      {!props.isIntegrationsEnabledForPaid && (
+        <PremiumDatasources plugins={props.upcomingIntegrations} />
+      )}
     </DatasourceContainer>
   );
 }
@@ -256,7 +261,7 @@ function CreateAPIOrSaasPlugins(props: CreateAPIOrSaasPluginsProps) {
   if (isAirgappedInstance && props.showSaasAPIs) return null;
 
   if (
-    props.premiumPlugins.length === 0 &&
+    props.upcomingIntegrations.length === 0 &&
     props.plugins.length === 0 &&
     !props.restAPIVisible &&
     !props.graphQLAPIVisible
@@ -274,21 +279,36 @@ function CreateAPIOrSaasPlugins(props: CreateAPIOrSaasPluginsProps) {
         </DatasourceSectionHeading>
         <APIOrSaasPlugins {...props} />
       </DatasourceSection>
+      {props.upcomingIntegrations.length > 0 &&
+      props.isIntegrationsEnabledForPaid ? (
+        <DatasourceSection id="upcoming-saas-integrations">
+          <DatasourceSectionHeading kind="heading-m">
+            {createMessage(UPCOMING_SAAS_INTEGRATIONS)}
+          </DatasourceSectionHeading>
+          <DatasourceContainer data-testid="upcoming-datasource-card-container">
+            <PremiumDatasources
+              isIntegrationsEnabledForPaid
+              plugins={props.upcomingIntegrations}
+            />
+          </DatasourceContainer>
+        </DatasourceSection>
+      ) : null}
     </>
   );
 }
 
 const mapStateToProps = (
-  state: AppState,
+  state: DefaultRootState,
   props: {
     showSaasAPIs?: boolean;
-    isPremiumDatasourcesViewEnabled: boolean;
     isCreating?: boolean;
   },
 ) => {
   const searchedPlugin = (
     pluginSearchSelector(state, "search") || ""
   ).toLocaleLowerCase();
+
+  const upcomingPlugins = getUpcomingPlugins(state);
 
   const allPlugins = getPlugins(state);
 
@@ -300,48 +320,72 @@ const mapStateToProps = (
         p.type === PluginType.EXTERNAL_SAAS,
   );
 
-  plugins = plugins
-    .sort((a, b) => {
+  plugins = filterSearch(
+    plugins.sort((a, b) => {
       // Sort the AI plugins alphabetically
       return a.name.localeCompare(b.name);
-    })
-    .filter((p) => p.name.toLocaleLowerCase().includes(searchedPlugin));
+    }),
+    searchedPlugin,
+  ) as Plugin[];
 
   let authApiPlugin = !props.showSaasAPIs
     ? allPlugins.find((p) => p.name === "REST API")
     : undefined;
 
-  authApiPlugin = createMessage(CREATE_NEW_DATASOURCE_AUTHENTICATED_REST_API)
-    .toLocaleLowerCase()
-    .includes(searchedPlugin)
-    ? authApiPlugin
-    : undefined;
+  authApiPlugin =
+    filterSearch(
+      [{ name: createMessage(CREATE_NEW_DATASOURCE_AUTHENTICATED_REST_API) }],
+      searchedPlugin,
+    ).length > 0
+      ? authApiPlugin
+      : undefined;
 
-  const premiumPlugins =
-    props.showSaasAPIs && props.isPremiumDatasourcesViewEnabled
-      ? PREMIUM_INTEGRATIONS.filter((p) =>
-          p.name.toLocaleLowerCase().includes(searchedPlugin),
-        )
-      : [];
+  const isExternalSaasEnabled = selectFeatureFlagCheck(
+    state,
+    FEATURE_FLAG.release_external_saas_plugins_enabled,
+  );
+
+  const isIntegrationsEnabledForPaid = selectFeatureFlagCheck(
+    state,
+    FEATURE_FLAG.license_external_saas_plugins_enabled,
+  );
+
+  const pluginNames = allPlugins.map((plugin) =>
+    plugin.name.toLocaleLowerCase(),
+  );
+
+  const upcomingIntegrations = props.showSaasAPIs
+    ? (filterSearch(
+        getFilteredUpcomingIntegrations(
+          isExternalSaasEnabled || isIntegrationsEnabledForPaid,
+          pluginNames,
+          upcomingPlugins,
+        ),
+        searchedPlugin,
+      ) as UpcomingIntegration[])
+    : [];
 
   const restAPIVisible =
     !props.showSaasAPIs &&
-    createMessage(CREATE_NEW_DATASOURCE_REST_API)
-      .toLocaleLowerCase()
-      .includes(searchedPlugin);
+    filterSearch(
+      [{ name: createMessage(CREATE_NEW_DATASOURCE_REST_API) }],
+      searchedPlugin,
+    ).length > 0;
   const graphQLAPIVisible =
     !props.showSaasAPIs &&
-    createMessage(CREATE_NEW_DATASOURCE_GRAPHQL_API)
-      .toLocaleLowerCase()
-      .includes(searchedPlugin);
+    filterSearch(
+      [{ name: createMessage(CREATE_NEW_DATASOURCE_GRAPHQL_API) }],
+      searchedPlugin,
+    ).length > 0;
 
   return {
     plugins,
-    premiumPlugins,
+    upcomingIntegrations,
     authApiPlugin,
     restAPIVisible,
     graphQLAPIVisible,
     isCreating: props.isCreating || getDatasourcesLoadingState(state),
+    isIntegrationsEnabledForPaid,
   };
 };
 

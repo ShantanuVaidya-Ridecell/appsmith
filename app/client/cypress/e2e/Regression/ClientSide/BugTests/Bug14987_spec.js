@@ -8,12 +8,7 @@ import { PluginActionForm } from "../../../../support/Pages/PluginActionForm";
 describe(
   "Verify setting tab form controls not to have tooltip and tooltip (underline) styles",
   {
-    tags: [
-      "@tag.Datasource",
-      "@tag.Settings",
-      "@tag.Git",
-      "@tag.AccessControl",
-    ],
+    tags: ["@tag.Datasource", "@tag.Settings", "@tag.AccessControl"],
   },
   function () {
     let guid, datasourceName;
@@ -32,7 +27,7 @@ describe(
       pluginActionForm.toolbar.toggleSettings();
 
       cy.get(".label-icon-wrapper")
-        .contains("Run the query on page load")
+        .contains("Run behavior")
         .parent()
         .then(($el) => {
           cy.window().then((win) => {

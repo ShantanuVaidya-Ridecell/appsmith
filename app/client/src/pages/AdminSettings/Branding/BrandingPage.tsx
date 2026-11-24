@@ -4,7 +4,7 @@ import { useForm } from "react-hook-form";
 
 import Previews from "./previews";
 import SettingsForm from "./SettingsForm";
-import { getTenantConfig } from "ee/selectors/tenantSelectors";
+import { getOrganizationConfig } from "ee/selectors/organizationSelectors";
 import { Wrapper } from "pages/AdminSettings/Authentication/AuthPage";
 
 import { getAssetUrl } from "ee/utils/airgapHelpers";
@@ -22,6 +22,8 @@ export interface Inputs {
   brandColors: Record<brandColorsKeys, string>;
   brandLogo: string;
   brandFavicon: string;
+  logoWidth?: number;
+  logoHeight?: number;
 }
 
 interface BrandingPageProps {
@@ -31,11 +33,13 @@ interface BrandingPageProps {
 function BrandingPage(props: BrandingPageProps) {
   const { category } = props;
   const isBrandingEnabled = category?.isFeatureEnabled ?? false;
-  const tenantConfig = useSelector(getTenantConfig);
+  const organizationConfig = useSelector(getOrganizationConfig);
   const defaultValues = {
-    brandColors: tenantConfig.brandColors,
-    brandLogo: tenantConfig.brandLogoUrl,
-    brandFavicon: tenantConfig.brandFaviconUrl,
+    brandColors: organizationConfig.brandColors,
+    brandLogo: organizationConfig.brandLogoUrl,
+    brandFavicon: organizationConfig.brandFaviconUrl,
+    logoWidth: organizationConfig.logoWidth,
+    logoHeight: organizationConfig.logoHeight,
   };
   const {
     control,
@@ -53,15 +57,17 @@ function BrandingPage(props: BrandingPageProps) {
   const values = getValues();
 
   /**
-   * reset the form when the tenant config changes
+   * reset the form when the organization config changes
    */
   useEffect(() => {
     reset({
-      brandColors: tenantConfig.brandColors,
-      brandLogo: tenantConfig.brandLogoUrl,
-      brandFavicon: tenantConfig.brandFaviconUrl,
+      brandColors: organizationConfig.brandColors,
+      brandLogo: organizationConfig.brandLogoUrl,
+      brandFavicon: organizationConfig.brandFaviconUrl,
+      logoWidth: organizationConfig.logoWidth,
+      logoHeight: organizationConfig.logoHeight,
     });
-  }, [tenantConfig, reset]);
+  }, [organizationConfig, reset]);
 
   watch();
 

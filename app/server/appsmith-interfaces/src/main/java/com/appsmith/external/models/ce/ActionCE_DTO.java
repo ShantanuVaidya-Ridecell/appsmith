@@ -15,10 +15,12 @@ import com.appsmith.external.models.Executable;
 import com.appsmith.external.models.PluginType;
 import com.appsmith.external.models.Policy;
 import com.appsmith.external.models.Property;
+import com.appsmith.external.models.RunBehaviourEnum;
 import com.appsmith.external.views.FromRequest;
 import com.appsmith.external.views.Git;
 import com.appsmith.external.views.Views;
 import com.fasterxml.jackson.annotation.JsonFormat;
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonView;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
@@ -99,8 +101,26 @@ public class ActionCE_DTO implements Identifiable, Executable {
     @JsonView(Views.Public.class)
     List<ErrorDTO> errorReports;
 
-    @JsonView({Views.Public.class, FromRequest.class, Git.class})
+    /**
+     * @deprecated This field is deprecated and will be removed in a future release.
+     * Use runBehaviour instead.
+     */
+    @Deprecated
+    @JsonView({Views.Internal.class, FromRequest.class})
     Boolean executeOnLoad;
+
+    @JsonView({Views.Public.class, FromRequest.class, Git.class})
+    RunBehaviourEnum runBehaviour;
+
+    public RunBehaviourEnum getRunBehaviour() {
+        if (runBehaviour != null) {
+            return runBehaviour;
+        }
+        if (executeOnLoad != null) {
+            return Boolean.TRUE.equals(executeOnLoad) ? RunBehaviourEnum.ON_PAGE_LOAD : RunBehaviourEnum.MANUAL;
+        }
+        return null;
+    }
 
     @JsonView({Views.Public.class, FromRequest.class, Git.class})
     Boolean clientSideExecution;
@@ -347,5 +367,19 @@ public class ActionCE_DTO implements Identifiable, Executable {
         return this.getPageId();
     }
 
+    public void setContextId(String contextId) {
+        this.pageId = contextId;
+    }
+
     public static class Fields {}
+
+    @JsonIgnore
+    public String getArtifactId() {
+        return this.getApplicationId();
+    }
+
+    @JsonIgnore
+    public String getContextId() {
+        return this.getPageId();
+    }
 }

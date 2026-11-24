@@ -2,7 +2,6 @@ package com.appsmith.server.refactors.applications;
 
 import com.appsmith.external.constants.AnalyticsEvents;
 import com.appsmith.external.models.CreatorContextType;
-import com.appsmith.server.applications.base.ApplicationService;
 import com.appsmith.server.constants.FieldName;
 import com.appsmith.server.domains.ActionCollection;
 import com.appsmith.server.domains.Layout;
@@ -16,11 +15,13 @@ import com.appsmith.server.exceptions.AppsmithError;
 import com.appsmith.server.exceptions.AppsmithException;
 import com.appsmith.server.layouts.UpdateLayoutService;
 import com.appsmith.server.newpages.base.NewPageService;
+import com.appsmith.server.refactors.ContextLayoutRefactoringService;
 import com.appsmith.server.refactors.entities.EntityRefactoringService;
+import com.appsmith.server.refactors.resolver.ContextLayoutRefactorResolver;
 import com.appsmith.server.services.AnalyticsService;
 import com.appsmith.server.services.SessionUserService;
-import com.appsmith.server.solutions.PagePermission;
 import com.appsmith.server.validations.EntityValidationService;
+import com.appsmith.server.widgets.refactors.WidgetRefactoringServiceCEImpl;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import reactor.core.publisher.Flux;
@@ -36,7 +37,6 @@ import java.util.Set;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
-import static com.appsmith.server.constants.CommonConstants.EVALUATION_VERSION;
 import static com.appsmith.server.helpers.ContextTypeUtils.getDefaultContextIfNull;
 
 @Slf4j
@@ -44,8 +44,6 @@ import static com.appsmith.server.helpers.ContextTypeUtils.getDefaultContextIfNu
 public class RefactoringServiceCEImpl implements RefactoringServiceCE {
     private final NewPageService newPageService;
     private final UpdateLayoutService updateLayoutService;
-    private final ApplicationService applicationService;
-    private final PagePermission pagePermission;
     private final AnalyticsService analyticsService;
     private final SessionUserService sessionUserService;
     private final EntityValidationService entityValidationService;
@@ -54,6 +52,7 @@ public class RefactoringServiceCEImpl implements RefactoringServiceCE {
     protected final EntityRefactoringService<NewAction> newActionEntityRefactoringService;
     protected final EntityRefactoringService<ActionCollection> actionCollectionEntityRefactoringService;
     protected final EntityRefactoringService<Layout> widgetEntityRefactoringService;
+    protected final ContextLayoutRefactorResolver contextLayoutRefactorResolver;
 
     /*
      * To replace fetchUsers in `{{JSON.stringify(fetchUsers)}}` with getUsers, the following regex is required :
@@ -73,7 +72,7 @@ public class RefactoringServiceCEImpl implements RefactoringServiceCE {
      * @return : The DSL after refactor updates
      */
     Mono<Tuple2<LayoutDTO, Set<String>>> refactorName(RefactorEntityNameDTO refactorEntityNameDTO) {
-        String pageId = refactorEntityNameDTO.getPageId();
+        String contextId = getBranchedContextId(refactorEntityNameDTO);
         String layoutId = refactorEntityNameDTO.getLayoutId();
         String oldName = refactorEntityNameDTO.getOldFullyQualifiedName();
 
@@ -83,21 +82,30 @@ public class RefactoringServiceCEImpl implements RefactoringServiceCE {
 
         refactoringMetaDTO.setOldNamePattern(oldNamePattern);
 
-        refactoringMetaDTO.setEvalVersionMono(
-                getContextBasedEvalVersionMono(pageId, refactorEntityNameDTO, refactoringMetaDTO));
+        refactoringMetaDTO.setEvalVersionMono(contextLayoutRefactorResolver
+                .getContextLayoutRefactorHelper(refactorEntityNameDTO.getContextType())
+                .getEvaluationVersionMono(contextId, refactorEntityNameDTO, refactoringMetaDTO));
 
         Mono<Void> refactoredReferencesMono = refactorAllReferences(refactorEntityNameDTO, refactoringMetaDTO);
 
         return refactoredReferencesMono.then(Mono.defer(() -> {
-            PageDTO page = refactoringMetaDTO.getUpdatedPage();
             Set<String> updatedBindingPaths = refactoringMetaDTO.getUpdatedBindingPaths();
-            if (page != null) {
-                List<Layout> layouts = page.getLayouts();
+            ContextLayoutRefactoringService<?, ?> contextLayoutRefactorHelper =
+                    contextLayoutRefactorResolver.getContextLayoutRefactorHelper(
+                            refactorEntityNameDTO.getContextType());
+            List<Layout> layouts = contextLayoutRefactorHelper.getLayouts(refactoringMetaDTO);
+            if (layouts != null) {
                 for (Layout layout : layouts) {
                     if (layoutId.equals(layout.getId())) {
                         layout.setDsl(updateLayoutService.unescapeMongoSpecialCharacters(layout));
+                        String artifactId = contextLayoutRefactorHelper.getArtifactId(refactoringMetaDTO);
                         return updateLayoutService
-                                .updateLayout(page.getId(), page.getApplicationId(), layout.getId(), layout)
+                                .updateLayout(
+                                        contextId,
+                                        artifactId,
+                                        layout.getId(),
+                                        layout,
+                                        refactorEntityNameDTO.getContextType())
                                 .zipWith(Mono.just(updatedBindingPaths));
                     }
                 }
@@ -105,27 +113,6 @@ public class RefactoringServiceCEImpl implements RefactoringServiceCE {
             // Return empty Layout when there is no layout
             return Mono.just(Tuples.of(new LayoutDTO(), Set.of()));
         }));
-    }
-
-    protected Mono<Integer> getContextBasedEvalVersionMono(
-            String contextId, RefactorEntityNameDTO refactorEntityNameDTO, RefactoringMetaDTO refactoringMetaDTO) {
-        Mono<PageDTO> pageMono = newPageService
-                // fetch the unpublished page
-                .findPageById(contextId, pagePermission.getEditPermission(), false)
-                .cache();
-
-        refactoringMetaDTO.setPageDTOMono(pageMono);
-        Mono<Integer> evalVersionMono = pageMono.flatMap(page -> {
-                    return applicationService.findById(page.getApplicationId()).map(application -> {
-                        Integer evaluationVersion = application.getEvaluationVersion();
-                        if (evaluationVersion == null) {
-                            evaluationVersion = EVALUATION_VERSION;
-                        }
-                        return evaluationVersion;
-                    });
-                })
-                .cache();
-        return evalVersionMono;
     }
 
     protected static Pattern getReplacementPattern(String oldName) {
@@ -156,6 +143,32 @@ public class RefactoringServiceCEImpl implements RefactoringServiceCE {
         // Sanitize refactor request wrt the type of entity being refactored
         service.sanitizeRefactorEntityDTO(refactorEntityNameDTO);
 
+        // Make sure to retrieve correct page id for branched page
+        String contextId = getBranchedContextId(refactorEntityNameDTO);
+
+        // For contexts other than PAGE, skip context DTO fetching
+        if (!CreatorContextType.PAGE.equals(refactorEntityNameDTO.getContextType())) {
+            return continueRefactorFlow(refactorEntityNameDTO, service, contextId);
+        }
+
+        // Pre-fetch context data once and populate cache to avoid redundant fetches
+        return contextLayoutRefactorResolver
+                .getContextLayoutRefactorHelper(refactorEntityNameDTO.getContextType())
+                .getContextDTOMono(contextId, false)
+                .flatMap(contextDTO -> {
+                    // Populate cache with actual objects based on context type
+                    if (contextDTO instanceof PageDTO) {
+                        refactorEntityNameDTO.withCachedPageDTO((PageDTO) contextDTO);
+                    }
+
+                    // Continue with the rest of the refactor flow
+                    return continueRefactorFlow(refactorEntityNameDTO, service, contextId);
+                });
+    }
+
+    private Mono<LayoutDTO> continueRefactorFlow(
+            RefactorEntityNameDTO refactorEntityNameDTO, EntityRefactoringService<?> service, String contextId) {
+
         // Validate whether this name is allowed based on the type of entity
         Mono<Boolean> isValidNameMono;
         if (EntityType.WIDGET.equals(refactorEntityNameDTO.getEntityType())) {
@@ -171,9 +184,6 @@ public class RefactoringServiceCEImpl implements RefactoringServiceCE {
                     });
         }
 
-        // Make sure to retrieve correct page id for branched page
-        String contextId = getBranchedContextId(refactorEntityNameDTO);
-
         final Map<String, String> analyticsProperties = new HashMap<>();
 
         return isValidNameMono
@@ -187,7 +197,7 @@ public class RefactoringServiceCEImpl implements RefactoringServiceCE {
             RefactorEntityNameDTO refactorEntityNameDTO,
             String branchedContextId,
             Map<String, String> analyticsProperties) {
-        return validateEntityName(refactorEntityNameDTO, branchedContextId)
+        return validateEntityNameWithCache(refactorEntityNameDTO, branchedContextId)
                 .then(prepareAnalyticsProperties(refactorEntityNameDTO, branchedContextId, analyticsProperties));
     }
 
@@ -196,11 +206,13 @@ public class RefactoringServiceCEImpl implements RefactoringServiceCE {
             String branchedContextId,
             Map<String, String> analyticsProperties) {
         refactorEntityNameDTO.setPageId(branchedContextId);
-        return newPageService.getByIdWithoutPermissionCheck(branchedContextId).map(page -> {
-            analyticsProperties.put(FieldName.APPLICATION_ID, page.getApplicationId());
+
+        // Use cached applicationId directly - no database call needed!
+        if (refactorEntityNameDTO.hasCachedApplicationId()) {
+            analyticsProperties.put(FieldName.APPLICATION_ID, refactorEntityNameDTO.getCachedApplicationId());
             analyticsProperties.put(FieldName.PAGE_ID, refactorEntityNameDTO.getPageId());
-            return analyticsProperties;
-        });
+        }
+        return Mono.just(analyticsProperties);
     }
 
     protected Mono<Void> validateEntityName(RefactorEntityNameDTO refactorEntityNameDTO, String contextId) {
@@ -281,6 +293,52 @@ public class RefactoringServiceCEImpl implements RefactoringServiceCE {
         return Flux.merge(existingEntityNamesFlux).collect(Collectors.toSet());
     }
 
+    // New cache-aware method
+    public Mono<Set<String>> getAllExistingEntitiesMonoWithCache(
+            String contextId,
+            CreatorContextType contextType,
+            String layoutId,
+            boolean isFQN,
+            RefactorEntityNameDTO cacheDTO) {
+
+        Iterable<Flux<String>> existingEntityNamesFlux =
+                getExistingEntityNamesFluxWithCache(contextId, layoutId, isFQN, contextType, cacheDTO);
+
+        return Flux.merge(existingEntityNamesFlux).collect(Collectors.toSet());
+    }
+
+    // Update the validation method to use cache
+    protected Mono<Void> validateEntityNameWithCache(RefactorEntityNameDTO refactorEntityNameDTO, String contextId) {
+        return isNameAllowedWithCache(
+                        contextId,
+                        getDefaultContextIfNull(refactorEntityNameDTO.getContextType()),
+                        refactorEntityNameDTO.getLayoutId(),
+                        refactorEntityNameDTO.getNewFullyQualifiedName(),
+                        refactorEntityNameDTO) // Pass DTO with cache
+                .flatMap(valid -> {
+                    if (!valid) {
+                        return Mono.error(new AppsmithException(
+                                AppsmithError.NAME_CLASH_NOT_ALLOWED_IN_REFACTOR,
+                                refactorEntityNameDTO.getOldFullyQualifiedName(),
+                                refactorEntityNameDTO.getNewFullyQualifiedName()));
+                    }
+                    return Mono.empty();
+                });
+    }
+
+    public Mono<Boolean> isNameAllowedWithCache(
+            String contextId,
+            CreatorContextType contextType,
+            String layoutId,
+            String newName,
+            RefactorEntityNameDTO cacheDTO) {
+
+        boolean isFQN = newName.contains(".");
+
+        return getAllExistingEntitiesMonoWithCache(contextId, contextType, layoutId, isFQN, cacheDTO)
+                .map(existingNames -> !existingNames.contains(newName));
+    }
+
     protected Iterable<Flux<String>> getExistingEntityNamesFlux(
             String contextId, String layoutId, boolean isFQN, CreatorContextType contextType) {
         Flux<String> existingActionNamesFlux =
@@ -305,6 +363,37 @@ public class RefactoringServiceCEImpl implements RefactoringServiceCE {
 
         ArrayList<Flux<String>> list = new ArrayList<>();
 
+        list.add(existingActionNamesFlux);
+        list.add(existingWidgetNamesFlux);
+        list.add(existingActionCollectionNamesFlux);
+
+        return list;
+    }
+
+    // New cache-aware method
+    protected Iterable<Flux<String>> getExistingEntityNamesFluxWithCache(
+            String contextId,
+            String layoutId,
+            boolean isFQN,
+            CreatorContextType contextType,
+            RefactorEntityNameDTO cacheDTO) {
+
+        Flux<String> existingActionNamesFlux =
+                newActionEntityRefactoringService.getExistingEntityNames(contextId, contextType, layoutId, false);
+
+        Flux<String> existingWidgetNamesFlux = Flux.empty();
+        Flux<String> existingActionCollectionNamesFlux = Flux.empty();
+
+        if (!isFQN) {
+            // Use cache-aware method for widgets
+            existingWidgetNamesFlux = ((WidgetRefactoringServiceCEImpl) widgetEntityRefactoringService)
+                    .getExistingEntityNamesWithCache(contextId, contextType, layoutId, false, cacheDTO);
+
+            existingActionCollectionNamesFlux = actionCollectionEntityRefactoringService.getExistingEntityNames(
+                    contextId, contextType, layoutId, false);
+        }
+
+        ArrayList<Flux<String>> list = new ArrayList<>();
         list.add(existingActionNamesFlux);
         list.add(existingWidgetNamesFlux);
         list.add(existingActionCollectionNamesFlux);

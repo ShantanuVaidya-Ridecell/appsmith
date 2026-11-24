@@ -8,7 +8,7 @@ import {
   takeLatest,
 } from "redux-saga/effects";
 
-import * as Sentry from "@sentry/react";
+import { appsmithTelemetry } from "instrumentation";
 import log from "loglevel";
 
 import {
@@ -76,12 +76,14 @@ import {
 import { AppThemingMode } from "selectors/appThemingSelectors";
 import { generateAutoHeightLayoutTreeAction } from "actions/autoHeightActions";
 import { SelectionRequestType } from "sagas/WidgetSelectUtils";
-import { startFormEvaluations } from "actions/evaluationActions";
+import { startFormEvaluations } from "actions/formEvaluationActions";
 import { getUIComponent } from "pages/Editor/QueryEditor/helpers";
 import { type Plugin, UIComponentTypes } from "entities/Plugin";
 import { getCurrentEnvironmentId } from "ee/selectors/environmentSelectors";
 import { updateAndSaveAnvilLayout } from "layoutSystems/anvil/utils/anvilChecksUtils";
 import type { ReplayOperation } from "entities/Replay/ReplayEntity/ReplayOperations";
+import { objectKeys } from "@appsmith/utils";
+import { handleUIModuleWidgetReplay } from "ee/sagas/moduleInterfaceSaga";
 
 export interface UndoRedoPayload {
   operation: ReplayOperation;
@@ -103,7 +105,7 @@ export default function* undoRedoListenerSaga() {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function* openPropertyPaneSaga(replay: any) {
   try {
-    const replayWidgetId = Object.keys(replay.widgets)[0];
+    const replayWidgetId = objectKeys(replay.widgets)[0] as string;
 
     if (!replayWidgetId || !replay.widgets[replayWidgetId].propertyUpdates)
       return;
@@ -131,7 +133,9 @@ export function* openPropertyPaneSaga(replay: any) {
     );
   } catch (e) {
     log.error(e);
-    Sentry.captureException(e);
+    appsmithTelemetry.captureException(e, {
+      errorName: "OpenPropertyPaneError",
+    });
   }
 }
 
@@ -155,15 +159,15 @@ export function* postUndoRedoSaga(replay: any) {
       processUndoRedoToasts(replay.toasts);
     }
 
-    if (!replay.widgets || Object.keys(replay.widgets).length <= 0) return;
+    if (!replay.widgets || objectKeys(replay.widgets).length <= 0) return;
 
-    const widgetIds = Object.keys(replay.widgets);
+    const widgetIds = objectKeys(replay.widgets) as string[];
 
     yield put(selectWidgetInitAction(SelectionRequestType.Multiple, widgetIds));
     scrollWidgetIntoView(widgetIds[0]);
   } catch (e) {
     log.error(e);
-    Sentry.captureException(e);
+    appsmithTelemetry.captureException(e, { errorName: "PostUndoRedoError" });
   }
 }
 
@@ -225,6 +229,8 @@ export function* undoRedoSaga(action: ReduxAction<UndoRedoPayload>) {
           timeTaken: endTime - startTime,
         });
 
+        yield call(handleUIModuleWidgetReplay, replay, replayEntity.widgets);
+
         yield call(updateAndSaveAnvilLayout, replayEntity.widgets, {
           isRetry: false,
           shouldReplay: false,
@@ -256,7 +262,7 @@ export function* undoRedoSaga(action: ReduxAction<UndoRedoPayload>) {
     }
   } catch (e) {
     log.error(e);
-    Sentry.captureException(e);
+    appsmithTelemetry.captureException(e, { errorName: "UndoRedoSagaError" });
   }
 }
 
@@ -357,6 +363,7 @@ function* replayActionSaga(
                 replayEntity.actionConfiguration,
                 replayEntity.datasource.id || "",
                 replayEntity.pluginId,
+                replayEntity.contextType,
                 u.modifiedProperty,
                 true,
                 datasource?.datasourceStorages[currentEnvironment]

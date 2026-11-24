@@ -1,5 +1,6 @@
 import type { ReduxAction } from "actions/ReduxActionTypes";
-import produce from "immer";
+import log from "loglevel";
+import { create } from "mutative";
 
 export const createReducer = (
   // TODO: Fix this the next time the file is edited
@@ -32,7 +33,23 @@ export const createImmerReducer = (
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return function reducer(state = initialState, action: ReduxAction<any>) {
     if (handlers.hasOwnProperty(action.type)) {
-      return produce(handlers[action.type])(state, action);
+      if (action?.payload?.updates) {
+        const updates = action?.payload?.updates;
+
+        try {
+          for (const update of updates) {
+            if (update.kind === "newTree") {
+              return update.rhs;
+            }
+          }
+        } catch (e) {
+          log.error(e);
+        }
+      }
+
+      const fn = handlers[action.type];
+
+      return create(state, (draft) => fn(draft, action));
     } else {
       return state;
     }

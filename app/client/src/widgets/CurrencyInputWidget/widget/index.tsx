@@ -6,7 +6,7 @@ import { EventType } from "constants/AppsmithActionConstants/ActionConstants";
 import type { ValidationResponse } from "constants/WidgetValidation";
 import { ValidationTypes } from "constants/WidgetValidation";
 import { createMessage, FIELD_REQUIRED_ERROR } from "ee/constants/messages";
-import type { DerivedPropertiesMap } from "WidgetProvider/factory";
+import type { DerivedPropertiesMap } from "WidgetProvider/factory/types";
 import {
   CurrencyDropdownOptions,
   getCountryCodeFromCurrencyCode,
@@ -16,7 +16,6 @@ import _ from "lodash";
 import derivedProperties from "./parsedDerivedProperties";
 import BaseInputWidget from "widgets/BaseInputWidget";
 import type { BaseInputWidgetProps } from "widgets/BaseInputWidget/widget";
-import * as Sentry from "@sentry/react";
 import log from "loglevel";
 import {
   formatCurrencyNumber,
@@ -35,7 +34,7 @@ import { NumberInputStepButtonPosition } from "widgets/BaseInputWidget/constants
 import type {
   AnvilConfig,
   AutocompletionDefinitions,
-} from "WidgetProvider/constants";
+} from "WidgetProvider/types";
 import { LabelPosition } from "components/constants";
 import { FILL_WIDGET_MIN_WIDTH } from "constants/minWidthConstants";
 import { ResponsiveBehavior } from "layoutSystems/common/utils/constants";
@@ -44,6 +43,7 @@ import { getDefaultCurrency } from "../component/CurrencyCodeDropdown";
 import IconSVG from "../icon.svg";
 import ThumbnailSVG from "../thumbnail.svg";
 import { WIDGET_TAGS } from "constants/WidgetConstants";
+import { appsmithTelemetry } from "instrumentation";
 
 export function defaultValueValidation(
   // TODO: Fix this the next time the file is edited
@@ -499,7 +499,9 @@ class CurrencyInputWidget extends BaseInputWidget<
         this.props.updateWidgetMetaProperty("text", formattedValue);
       } catch (e) {
         log.error(e);
-        Sentry.captureException(e);
+        appsmithTelemetry.captureException(e, {
+          errorName: "CurrencyInputWidget",
+        });
       }
     }
   }
@@ -517,7 +519,9 @@ class CurrencyInputWidget extends BaseInputWidget<
     } catch (e) {
       formattedValue = value;
       log.error(e);
-      Sentry.captureException(e);
+      appsmithTelemetry.captureException(e, {
+        errorName: "CurrencyInputWidget",
+      });
     }
 
     // text is stored as what user has typed
@@ -535,7 +539,25 @@ class CurrencyInputWidget extends BaseInputWidget<
   };
 
   isTextFormatted = () => {
-    return this.props.text.includes(getLocaleThousandSeparator());
+    const text = this.props.text;
+    const thousandSep = getLocaleThousandSeparator();
+
+    // Check if text contains thousand separator
+    if (!text.includes(thousandSep)) {
+      return false;
+    }
+
+    // If text looks like an unformatted number (e.g., "12.33" where . is meant as decimal,
+    // not thousand separator), it's not actually formatted yet.
+    // Unformatted numbers from defaultText will only contain digits, optional minus, and at most one dot.
+    const unformattedNumberPattern = /^-?\d+\.?\d*$/;
+
+    if (unformattedNumberPattern.test(text)) {
+      return false;
+    }
+
+    // Otherwise, assume it's formatted (contains thousand separators in proper context)
+    return true;
   };
 
   handleFocusChange = (isFocused?: boolean) => {
@@ -575,7 +597,9 @@ class CurrencyInputWidget extends BaseInputWidget<
       }
     } catch (e) {
       log.error(e);
-      Sentry.captureException(e);
+      appsmithTelemetry.captureException(e, {
+        errorName: "CurrencyInputWidget",
+      });
       this.props.updateWidgetMetaProperty("text", this.props.text);
     }
 
@@ -656,6 +680,7 @@ class CurrencyInputWidget extends BaseInputWidget<
         isDynamicHeightEnabled={isAutoHeightEnabledForWidget(this.props)}
         isInvalid={isInvalid}
         isLoading={this.props.isLoading}
+        isRequired={this.props.isRequired}
         label={this.props.label}
         labelAlignment={this.props.labelAlignment}
         labelPosition={this.props.labelPosition}

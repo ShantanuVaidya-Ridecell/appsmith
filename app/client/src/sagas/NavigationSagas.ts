@@ -5,6 +5,10 @@ import EntityNavigationFactory from "pages/Editor/EntityNavigation/factory";
 import type { EntityInfo } from "pages/Editor/EntityNavigation/types";
 import log from "loglevel";
 import type PaneNavigation from "pages/Editor/EntityNavigation/PaneNavigation";
+import {
+  navigateToAnyPageInApplication,
+  syncUrlDataWithLocation,
+} from "./ActionExecution/NavigateActionSaga";
 
 function* navigateEntitySaga(action: ReduxAction<EntityInfo>) {
   try {
@@ -23,5 +27,10 @@ function* navigateEntitySaga(action: ReduxAction<EntityInfo>) {
 export default function* navigationSagas() {
   yield all([
     takeEvery(ReduxActionTypes.NAVIGATE_TO_ENTITY, navigateEntitySaga),
+    takeEvery(
+      ReduxActionTypes.NAVIGATE_TO_ANOTHER_PAGE,
+      navigateToAnyPageInApplication,
+    ),
+    takeEvery(ReduxActionTypes.BROWSER_HISTORY_POPPED, syncUrlDataWithLocation),
   ]);
 }

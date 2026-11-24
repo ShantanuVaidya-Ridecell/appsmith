@@ -1,16 +1,18 @@
 import { getAppsmithConfigs } from "ee/configs";
+import { isPylonChatAvailable } from "utils/bootPylon";
 import {
   ADMIN_SETTINGS,
   APPSMITH_DISPLAY_VERSION,
   CHAT_WITH_US,
   DOCUMENTATION,
   HELP,
+  SEND_SUPPORT_INFO,
   WHATS_NEW,
   createMessage,
 } from "ee/constants/messages";
 import { FEATURE_FLAG } from "ee/entities/FeatureFlag";
 import { getCurrentApplicationIdForCreateNewApp } from "ee/selectors/applicationSelectors";
-import { getTenantPermissions } from "ee/selectors/tenantSelectors";
+import { getOrganizationPermissions } from "ee/selectors/organizationSelectors";
 import {
   getAdminSettingsPath,
   getShowAdminSettings,
@@ -37,10 +39,14 @@ import {
   getOnSelectAction,
 } from "../CustomizedDropdown/dropdownHelpers";
 import { IntercomConsent } from "pages/Editor/HelpButton";
-import { DOCS_BASE_URL } from "constants/ThirdPartyConstants";
+import { DOCS_AI_BASE_URL, DOCS_BASE_URL } from "constants/ThirdPartyConstants";
 import { ReduxActionTypes } from "ee/constants/ReduxActionConstants";
 import styled from "styled-components";
-const { cloudHosting, intercomAppID } = getAppsmithConfigs();
+import { getIsAiAgentInstanceEnabled } from "ee/selectors/aiAgentSelectors";
+import BetterbugsUtil from "utils/Analytics/betterbugs";
+import { useBetterbugsMetadata } from "ee/hooks/useBetterbugsMetadata";
+
+const { betterbugs, cloudHosting } = getAppsmithConfigs();
 
 export const VersionData = styled.div`
   display: flex;
@@ -61,15 +67,17 @@ const HomepageHeaderAction = ({
 }) => {
   const dispatch = useDispatch();
   const isFeatureEnabled = useFeatureFlag(FEATURE_FLAG.license_gac_enabled);
-  const tenantPermissions = useSelector(getTenantPermissions);
+  const organizationPermissions = useSelector(getOrganizationPermissions);
   const isCreateNewAppFlow = useSelector(
     getCurrentApplicationIdForCreateNewApp,
   );
   const isHomePage = useRouteMatch("/applications")?.isExact;
   const isAirgappedInstance = isAirgapped();
-  const { appVersion } = getAppsmithConfigs();
+  const { appVersion, disableHelpIcon } = getAppsmithConfigs();
   const howMuchTimeBefore = howMuchTimeBeforeText(appVersion.releaseDate);
   const [showIntercomConsent, setShowIntercomConsent] = useState(false);
+  const isAiAgentInstanceEnabled = useSelector(getIsAiAgentInstanceEnabled);
+  const betterbugsMetadata = useBetterbugsMetadata();
 
   if (!isHomePage || !!isCreateNewAppFlow) return null;
 
@@ -87,7 +95,7 @@ const HomepageHeaderAction = ({
                 path: getAdminSettingsPath(
                   isFeatureEnabled,
                   user?.isSuperUser,
-                  tenantPermissions,
+                  organizationPermissions,
                 ),
               });
             }}
@@ -96,7 +104,7 @@ const HomepageHeaderAction = ({
           />
         </Tooltip>
       )}
-      {!isAirgappedInstance && (
+      {!isAirgappedInstance && !disableHelpIcon && (
         <Menu
           onOpenChange={(open) => {
             if (open) {
@@ -127,17 +135,33 @@ const HomepageHeaderAction = ({
                 <MenuItem
                   className="t--documentation-button"
                   onClick={() => {
+                    if (isAiAgentInstanceEnabled) {
+                      window.open(DOCS_AI_BASE_URL, "_blank");
+
+                      return;
+                    }
+
                     window.open(DOCS_BASE_URL, "_blank");
                   }}
                   startIcon="book-line"
                 >
                   {createMessage(DOCUMENTATION)}
                 </MenuItem>
-                {intercomAppID && window.Intercom && !isAirgapped() && (
+                {betterbugs.enabled && !isAirgapped() && (
+                  <MenuItem
+                    onClick={() => {
+                      BetterbugsUtil.show(user, betterbugsMetadata);
+                    }}
+                    startIcon="support"
+                  >
+                    {createMessage(SEND_SUPPORT_INFO)}
+                  </MenuItem>
+                )}
+                {isPylonChatAvailable() && (
                   <MenuItem
                     onSelect={(e) => {
                       if (user?.isIntercomConsentGiven || cloudHosting) {
-                        window.Intercom("show");
+                        window.Pylon("show");
                       } else {
                         e?.preventDefault();
                         setShowIntercomConsent(true);

@@ -1,10 +1,11 @@
 import { useSelector } from "react-redux";
-import type { AppState } from "ee/reducers";
+import type { DefaultRootState } from "react-redux";
 import { getPageList } from "selectors/editorSelectors";
 import {
-  getActions,
   getAllWidgetsMap,
   getJSCollections,
+  getVisibleActions,
+  getVisibleDatasources,
 } from "ee/selectors/entitiesSelector";
 import { SEARCH_ITEM_TYPES } from "./utils";
 import { get } from "lodash";
@@ -13,7 +14,7 @@ import { FocusEntity } from "navigation/FocusEntity";
 import type { DataTreeEntityObject } from "ee/entities/DataTree/types";
 import { useMemo } from "react";
 
-const recentEntitiesSelector = (state: AppState) =>
+const recentEntitiesSelector = (state: DefaultRootState) =>
   state.ui.globalSearch.recentEntities || [];
 // TODO: Fix this the next time the file is edited
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -25,11 +26,9 @@ const useResentEntities = (): Array<
 > => {
   const widgetsMap = useSelector(getAllWidgetsMap);
   const recentEntities = useSelector(recentEntitiesSelector);
-  const actions = useSelector(getActions);
+  const actions = useSelector(getVisibleActions);
   const jsActions = useSelector(getJSCollections);
-  const reducerDatasources = useSelector((state: AppState) => {
-    return state.entities.datasources.list;
-  });
+  const reducerDatasources = useSelector(getVisibleDatasources);
 
   const pages = useSelector(getPageList);
   const result = useMemo(
@@ -64,19 +63,19 @@ const useResentEntities = (): Array<
                 pageId,
               }
             );
-          } else if (type === FocusEntity.API || type === FocusEntity.QUERY)
-            return {
-              ...actions.find((action) => action?.config?.id === id),
-              entityType: type,
-            };
-          else if (type === FocusEntity.JS_OBJECT)
+          } else if (type === FocusEntity.API || type === FocusEntity.QUERY) {
+            const action = actions.find((a) => a?.config?.id === id);
+
+            // Skip deleted queries and queries of hidden plugins.
+            return action ? { ...action, entityType: type } : null;
+          } else if (type === FocusEntity.JS_OBJECT)
             return {
               ...jsActions.find(
                 (action: JSCollectionData) => action?.config?.id === id,
               ),
               entityType: type,
             };
-          else if (type === FocusEntity.PROPERTY_PANE) {
+          else if (type === FocusEntity.WIDGET) {
             return { ...get(widgetsMap, id, null), entityType: type };
           }
         })

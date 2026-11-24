@@ -30,7 +30,7 @@ describe(
         prettify: false,
       });
 
-      jsEditor.EnableDisableAsyncFuncSettings("myFun1", true, false);
+      jsEditor.EnableDisableAsyncFuncSettings("myFun1", "On page load");
 
       ee.DragDropWidgetNVerify(WIDGET.TEXT, 200, 600);
       EditorNavigation.SelectEntityByName("Text1", EntityType.Widget);

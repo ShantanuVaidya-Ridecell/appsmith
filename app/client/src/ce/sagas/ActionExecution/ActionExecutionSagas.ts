@@ -42,9 +42,10 @@ import {
 } from "sagas/ActionExecution/geolocationSaga";
 import { postMessageSaga } from "sagas/ActionExecution/PostMessageSaga";
 import type { ActionDescription } from "ee/workers/Evaluation/fns";
-import type { AppState } from "ee/reducers";
+import type { DefaultRootState } from "react-redux";
 import { getAction } from "ee/selectors/entitiesSelector";
 import { getSourceFromTriggerMeta } from "ee/entities/AppsmithConsole/utils";
+import { globalFunctionLogoutUser } from "../userSagas";
 
 export interface TriggerMeta {
   source?: TriggerSource;
@@ -77,7 +78,7 @@ export function* executeActionTriggers(
     case "CLEAR_PLUGIN_ACTION":
       yield put(clearActionResponse(trigger.payload.actionId));
       const action: ReturnType<typeof getAction> = yield select(
-        (state: AppState) => getAction(state, trigger.payload.actionId),
+        (state: DefaultRootState) => getAction(state, trigger.payload.actionId),
       );
 
       if (action) {
@@ -131,6 +132,9 @@ export function* executeActionTriggers(
     case "POST_MESSAGE":
       yield call(postMessageSaga, trigger);
       break;
+    case "LOGOUT_USER_INIT":
+      yield call(globalFunctionLogoutUser, trigger);
+      break;
     default:
       log.error("Trigger type unknown", trigger, source);
       throw Error("Trigger type unknown");
@@ -139,10 +143,7 @@ export function* executeActionTriggers(
   return response;
 }
 
-// This function gets called when a user clicks on a button on the canvas UI
-// TODO: Fix this the next time the file is edited
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function* executeAppAction(payload: ExecuteTriggerPayload): any {
+export function* executeAppAction(payload: ExecuteTriggerPayload): Generator {
   const {
     callbackData,
     dynamicString,
@@ -154,8 +155,12 @@ export function* executeAppAction(payload: ExecuteTriggerPayload): any {
 
   log.debug({ dynamicString, callbackData, globalContext });
 
-  if (dynamicString === undefined) {
-    throw new Error("Executing undefined action");
+  if (!dynamicString || typeof dynamicString !== "string") {
+    log.warn("Attempted to execute action with invalid dynamicString:", {
+      payload,
+    });
+
+    return;
   }
 
   return yield call(

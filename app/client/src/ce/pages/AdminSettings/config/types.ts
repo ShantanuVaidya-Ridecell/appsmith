@@ -62,7 +62,10 @@ export type Setting = ControlType & {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   parse?: (value: any) => any;
   helpText?: string;
+  helpTextLink?: string;
   label?: React.ReactNode;
+  // Overrides the form-group label size. Defaults to body-m.
+  labelKind?: "body-m" | "heading-m";
   name?: string;
   placeholder?: string;
   validate?: (value: string, setting?: Setting) => string | void;
@@ -86,6 +89,10 @@ export type Setting = ControlType & {
   ) => void;
   sortOrder?: number;
   subText?: string;
+  subTextLink?: string;
+  // For TOGGLE/CHECKBOX settings backed by an env variable: the state to show when the variable is absent from the
+  // fetched admin settings (e.g. an env file that predates the setting). Mirrors the runtime default.
+  defaultValue?: boolean;
   toggleText?: (value: boolean) => string;
   // TODO: Fix this the next time the file is edited
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -103,6 +110,10 @@ export type Setting = ControlType & {
   isFeatureEnabled?: boolean;
   tooltip?: string;
   isEnterprise?: boolean;
+  postfix?: string;
+  // Renders the field disabled without the upgrade tag that isFeatureEnabled: false brings.
+  // For values that are display-only in the admin UI (e.g. derived connection status).
+  isReadOnly?: boolean;
 };
 
 export interface Category {
@@ -111,18 +122,18 @@ export interface Category {
   subText?: string;
   isConnected?: boolean;
   needsRefresh?: boolean;
+  needsRestart?: boolean;
   children?: Category[];
   icon?: string;
   categoryType: string;
   isEnterprise?: boolean;
   isFeatureEnabled?: boolean;
+  bottomComponent?: React.ElementType;
 }
 
 export const SettingCategories = {
   GENERAL: "general",
   EMAIL: "email",
-  VERSION: "version",
-  ADVANCED: "advanced",
   AUTHENTICATION: "authentication",
   FORM_AUTH: "form-login",
   GOOGLE_AUTH: "google-auth",
@@ -133,13 +144,21 @@ export const SettingCategories = {
   BRANDING: "branding",
   SAML_AUTH: "saml-auth",
   OIDC_AUTH: "oidc-auth",
-  DEVELOPER_SETTINGS: "developer-settings",
+  INSTANCE_SETTINGS: "instance-settings",
+  CONFIGURATION: "configuration",
+  MCP_KEYS: "mcp-keys",
+  MCP_SERVER: "mcp-server",
+  ADMIN_CENTRAL: "admin-central",
+  USER_SETTINGS: "user-settings",
+  PROFILE: "profile",
+  AI: "ai",
 };
 
 export enum CategoryType {
-  GENERAL = "general",
-  ACL = "acl",
-  OTHER = "other",
+  PROFILE = "profile",
+  ORGANIZATION = "organization",
+  USER_MANAGEMENT = "user-management",
+  INSTANCE = "instance",
 }
 
 export interface AdminConfigType {
@@ -153,8 +172,11 @@ export interface AdminConfigType {
   canSave: boolean;
   isConnected?: boolean;
   needsRefresh?: boolean;
+  needsRestart?: boolean;
   icon?: string;
   categoryType: CategoryType;
   isEnterprise?: boolean;
   isFeatureEnabled?: boolean;
+  // Rendered under the category fields. Enterprise uses this to add sections to a Community page.
+  bottomComponent?: React.ElementType;
 }

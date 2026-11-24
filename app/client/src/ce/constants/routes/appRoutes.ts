@@ -22,6 +22,11 @@ export const BUILDER_PATH = `${BUILDER_VIEWER_PATH_PREFIX}:applicationSlug/:page
 export const BUILDER_CUSTOM_PATH = `${BUILDER_VIEWER_PATH_PREFIX}:customSlug(.*\-):basePageId${ID_EXTRACTION_REGEX}/edit`;
 export const VIEWER_PATH = `${BUILDER_VIEWER_PATH_PREFIX}:applicationSlug/:pageSlug(.*\-):basePageId${ID_EXTRACTION_REGEX}`;
 export const VIEWER_CUSTOM_PATH = `${BUILDER_VIEWER_PATH_PREFIX}:customSlug(.*\-):basePageId${ID_EXTRACTION_REGEX}`;
+
+// Static URL routes that accept any page slug (must be added after more specific routes)
+export const BUILDER_PATH_STATIC = `${BUILDER_VIEWER_PATH_PREFIX}:staticApplicationSlug/:staticPageSlug/edit`;
+export const VIEWER_PATH_STATIC = `${BUILDER_VIEWER_PATH_PREFIX}:staticApplicationSlug/:staticPageSlug`;
+
 export const getViewerPath = (
   applicationSlug: string,
   pageSlug: string,
@@ -69,10 +74,12 @@ export const DATA_SOURCES_EDITOR_ID_PATH = `/datasource/:datasourceId`;
 export const APP_LIBRARIES_EDITOR_PATH = `/libraries`;
 export const APP_PACKAGES_EDITOR_PATH = `/packages`;
 export const APP_SETTINGS_EDITOR_PATH = `/settings`;
+export const APP_TRIGGER_SETTINGS_EDITOR_PATH = `/trigger-settings`;
 export const SAAS_GSHEET_EDITOR_ID_PATH = `/saas/google-sheets-plugin/datasources/:datasourceId`;
 export const BUILDER_CHECKLIST_PATH = `/checklist`;
 export const ADMIN_SETTINGS_PATH = "/settings";
 export const ADMIN_SETTINGS_CATEGORY_DEFAULT_PATH = "/settings/general";
+export const ADMIN_SETTINGS_CATEGORY_PROFILE_PATH = "/settings/profile";
 export const ADMIN_SETTINGS_CATEGORY_ACL_PATH = "/settings/groups";
 export const ADMIN_SETTINGS_CATEGORY_AUDIT_LOGS_PATH = "/settings/audit-logs";
 export const ADMIN_SETTINGS_CATEGORY_PATH = "/settings/:category/:selected?";
@@ -109,23 +116,35 @@ export const matchBuilderPath = (
   match(BUILDER_PATH + WIDGETS_EDITOR_ID_PATH, options)(pathName) ||
   match(BUILDER_CUSTOM_PATH + WIDGETS_EDITOR_ID_PATH, options)(pathName) ||
   match(BUILDER_PATH_DEPRECATED + WIDGETS_EDITOR_ID_PATH, options)(pathName) ||
-  match(BUILDER_PATH + WIDGETS_EDITOR_ID_PATH + ADD_PATH, options)(pathName);
+  match(BUILDER_PATH + WIDGETS_EDITOR_ID_PATH + ADD_PATH, options)(pathName) ||
+  match(BUILDER_PATH_STATIC, options)(pathName) ||
+  match(BUILDER_PATH_STATIC + WIDGETS_EDITOR_ID_PATH, options)(pathName) ||
+  match(
+    BUILDER_PATH_STATIC + WIDGETS_EDITOR_ID_PATH + ADD_PATH,
+    options,
+  )(pathName);
 
 export const matchJSObjectPath = match(JS_COLLECTION_ID_PATH);
 export const matchViewerPath = (pathName: string) =>
   match(VIEWER_PATH)(pathName) ||
   match(VIEWER_PATH_DEPRECATED)(pathName) ||
-  match(VIEWER_CUSTOM_PATH)(pathName);
+  match(VIEWER_CUSTOM_PATH)(pathName) ||
+  match(VIEWER_PATH_STATIC)(pathName);
 export const matchViewerForkPath = (pathName: string) =>
   match(`${VIEWER_PATH}${VIEWER_FORK_PATH}`)(pathName) ||
   match(`${VIEWER_CUSTOM_PATH}${VIEWER_FORK_PATH}`)(pathName) ||
-  match(`${VIEWER_PATH_DEPRECATED}${VIEWER_FORK_PATH}`)(pathName);
+  match(`${VIEWER_PATH_DEPRECATED}${VIEWER_FORK_PATH}`)(pathName) ||
+  match(`${VIEWER_PATH_STATIC}${VIEWER_FORK_PATH}`)(pathName);
 
 export const matchAppLibrariesPath = (pathName: string) =>
-  match(`${BUILDER_PATH}${APP_LIBRARIES_EDITOR_PATH}`)(pathName);
+  match(`${BUILDER_PATH}${APP_LIBRARIES_EDITOR_PATH}`)(pathName) ||
+  match(`${BUILDER_CUSTOM_PATH}${APP_LIBRARIES_EDITOR_PATH}`)(pathName) ||
+  match(`${BUILDER_PATH_STATIC}${APP_LIBRARIES_EDITOR_PATH}`)(pathName);
 
 export const matchAppPackagesPath = (pathName: string) =>
-  match(`${BUILDER_PATH}${APP_PACKAGES_EDITOR_PATH}`)(pathName);
+  match(`${BUILDER_PATH}${APP_PACKAGES_EDITOR_PATH}`)(pathName) ||
+  match(`${BUILDER_CUSTOM_PATH}${APP_PACKAGES_EDITOR_PATH}`)(pathName) ||
+  match(`${BUILDER_PATH_STATIC}${APP_PACKAGES_EDITOR_PATH}`)(pathName);
 
 export const addBranchParam = (branch: string) => {
   const url = new URL(window.location.href);
@@ -136,13 +155,17 @@ export const addBranchParam = (branch: string) => {
 };
 
 export interface BuilderRouteParams {
-  basePageId: string;
-  baseApplicationId: string;
+  basePageId?: string;
+  baseApplicationId?: string;
+  staticPageSlug?: string;
+  staticApplicationSlug?: string;
 }
 
 export interface AppViewerRouteParams {
-  basePageId: string;
+  basePageId?: string;
   baseApplicationId?: string;
+  staticPageSlug?: string;
+  staticApplicationSlug?: string;
 }
 
 export interface APIEditorRouteParams {

@@ -1,32 +1,9 @@
 import { ReduxActionTypes } from "ee/constants/ReduxActionConstants";
-import type { Log, Message, SourceEntity } from "entities/AppsmithConsole";
-import type { ENTITY_TYPE } from "ee/entities/AppsmithConsole/utils";
+import type { Log } from "entities/AppsmithConsole";
 import type {
   CanvasDebuggerState,
   DebuggerContext,
 } from "reducers/uiReducers/debuggerReducer";
-import type { EventName } from "ee/utils/analyticsUtilTypes";
-import type { APP_MODE } from "entities/App";
-import type { GenericEntityItem } from "ee/entities/IDE/constants";
-
-export interface LogDebuggerErrorAnalyticsPayload {
-  entityName: string;
-  entityId: string;
-  entityType: ENTITY_TYPE;
-  eventName: EventName;
-  propertyPath: string;
-  errorId?: string;
-  errorMessages?: Message[];
-  errorMessage?: Message["message"];
-  errorType?: Message["type"];
-  errorSubType?: Message["subType"];
-  analytics?: Log["analytics"];
-  appMode: APP_MODE;
-  source: SourceEntity;
-  logId: string;
-  environmentId?: string;
-  environmentName?: string;
-}
 
 export type DeleteErrorLogPayload = {
   id: string;
@@ -146,14 +123,5 @@ export const setCanvasDebuggerState = (
 export const showDebuggerLogs = () => {
   return {
     type: ReduxActionTypes.SHOW_DEBUGGER_LOGS,
-  };
-};
-
-export const setDebuggerStateInspectorSelectedItem = (
-  payload: GenericEntityItem,
-) => {
-  return {
-    type: ReduxActionTypes.SET_DEBUGGER_STATE_INSPECTOR_SELECTED_ITEM,
-    payload,
   };
 };

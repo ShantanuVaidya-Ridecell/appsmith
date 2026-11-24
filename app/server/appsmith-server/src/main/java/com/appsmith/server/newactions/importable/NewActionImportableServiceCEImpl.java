@@ -19,6 +19,7 @@ import com.appsmith.server.dtos.ImportingMetaDTO;
 import com.appsmith.server.dtos.MappedImportableResourcesDTO;
 import com.appsmith.server.exceptions.AppsmithError;
 import com.appsmith.server.exceptions.AppsmithException;
+import com.appsmith.server.helpers.GitUtils;
 import com.appsmith.server.helpers.ImportArtifactPermissionProvider;
 import com.appsmith.server.imports.importable.ImportableServiceCE;
 import com.appsmith.server.imports.importable.artifactbased.ArtifactBasedImportableService;
@@ -41,6 +42,7 @@ import java.util.Map;
 import java.util.Set;
 
 import static com.appsmith.external.helpers.AppsmithBeanUtils.copyNestedNonNullProperties;
+import static com.appsmith.server.helpers.ImportExportUtils.generateUniqueNameForImport;
 import static com.appsmith.server.helpers.ImportExportUtils.sanitizeDatasourceInActionDTO;
 import static java.lang.Boolean.TRUE;
 
@@ -59,6 +61,31 @@ public class NewActionImportableServiceCEImpl implements ImportableServiceCE<New
         return applicationImportableService;
     }
 
+    /**
+     * Strips audit fields, policies, git metadata, and foreign-key pointers on every {@link NewAction}
+     * carried by the incoming JSON.
+     *
+     * <p><b>Deliberate carve-out:</b> {@link NewAction#getId()} is <em>not</em> nulled here. Exported JSON
+     * stores a synthetic composite id of the form {@code pageName_actionName} on each action, which the
+     * importer consumes as a wiring key to remap {@code layoutOnLoadActions} and related cross-references
+     * before the action is saved. Nulling the id at this layer would break that wiring.
+     *
+     * <p>Save-time safety for the primary key is provided by the existing
+     * {@code newAction.makePristine()} call inside {@code prepareActionForImport}, which runs immediately
+     * before {@code repository.save} and nulls the composite id once it is no longer needed for wiring.
+     */
+    @Override
+    public void sanitizeEntitiesInJsonForImport(ArtifactExchangeJson artifactExchangeJson) {
+        if (artifactExchangeJson == null || artifactExchangeJson.getActionList() == null) {
+            return;
+        }
+        artifactExchangeJson.getActionList().forEach(newAction -> {
+            if (newAction != null) {
+                newAction.sanitiseToExportDBObject();
+            }
+        });
+    }
+
     // Requires contextNameMap, contextNameToOldNameMap, pluginMap and datasourceNameToIdMap, to be present in
     // importable resources.
     // Updates actionResultDTO in importable resources.
@@ -71,9 +98,9 @@ public class NewActionImportableServiceCEImpl implements ImportableServiceCE<New
             Mono<? extends Artifact> importableArtifactMono,
             ArtifactExchangeJson artifactExchangeJson) {
 
-        Mono<List<NewAction>> importedNewActionListMono = this.getImportableEntities(artifactExchangeJson);
+        Mono<List<NewAction>> actionsFromJSONMono = this.getImportableEntities(artifactExchangeJson);
 
-        return importedNewActionListMono
+        return actionsFromJSONMono
                 .flatMap(importedNewActionList -> createImportNewActionsMono(
                         importedNewActionList, importableArtifactMono, importingMetaDTO, mappedImportableResourcesDTO))
                 .flatMap(importActionResultDTO -> {
@@ -164,8 +191,10 @@ public class NewActionImportableServiceCEImpl implements ImportableServiceCE<New
                 "Action collections imported. artifactId {}, result: {}",
                 importableArtifact.getId(),
                 importActionCollectionResultDTO.getGist());
-        return newActionService
-                .updateActionsWithImportedCollectionIds(importActionCollectionResultDTO, importActionResultDTO)
+        Mono<Void> updatedActionReferencesMono = this.updateActionIdReferencesInActions(importActionResultDTO);
+        return updatedActionReferencesMono
+                .then(Mono.defer(() -> newActionService.updateActionsWithImportedCollectionIds(
+                        importActionCollectionResultDTO, importActionResultDTO)))
                 .flatMap(actionAndCollectionMapsDTO -> {
                     log.info("Updated actions with imported collection ids. artifactId {}", importableArtifact.getId());
                     // Updating the existing importableArtifact for git-sync
@@ -210,18 +239,22 @@ public class NewActionImportableServiceCEImpl implements ImportableServiceCE<New
                 });
     }
 
+    protected Mono<Void> updateActionIdReferencesInActions(ImportActionResultDTO importActionResultDTO) {
+        return Mono.empty().then();
+    }
+
     /**
      * Method to
      * - save imported actions with updated policies
      * - update default resource ids along with branch-name if the artifact is connected to git
      * - update the map of imported collectionIds to the actionIds in saved in DB
      *
-     * @param importedNewActions     action list extracted from the imported JSON file
+     * @param actionListFromJSON     action list extracted from the imported JSON file
      * @param importableArtifactMono imported and saved artifact in DB
      * @return A DTO class with several information
      */
     private Mono<ImportActionResultDTO> createImportNewActionsMono(
-            List<NewAction> importedNewActions,
+            List<NewAction> actionListFromJSON,
             Mono<? extends Artifact> importableArtifactMono,
             ImportingMetaDTO importingMetaDTO,
             MappedImportableResourcesDTO mappedImportableResourcesDTO) {
@@ -229,10 +262,10 @@ public class NewActionImportableServiceCEImpl implements ImportableServiceCE<New
         ArtifactBasedImportableService<NewAction, ?> artifactBasedImportableService =
                 getArtifactBasedImportableService(importingMetaDTO);
 
-        Mono<List<NewAction>> importedNewActionMono = Mono.justOrEmpty(importedNewActions);
+        Mono<List<NewAction>> actionsFromJSONMono = Mono.justOrEmpty(actionListFromJSON);
 
         if (TRUE.equals(importingMetaDTO.getAppendToArtifact())) {
-            importedNewActionMono = importedNewActionMono.map(importedNewActionList -> {
+            actionsFromJSONMono = actionsFromJSONMono.map(actionsFromJson -> {
                 List<String> importedContextNames =
                         artifactBasedImportableService.getImportedContextNames(mappedImportableResourcesDTO);
                 Map<String, String> newToOldNameMap = mappedImportableResourcesDTO.getContextNewNameToOldName();
@@ -242,14 +275,14 @@ public class NewActionImportableServiceCEImpl implements ImportableServiceCE<New
 
                     if (!newContextName.equals(oldContextName)) {
                         artifactBasedImportableService.renameContextInImportableResources(
-                                importedNewActionList, oldContextName, newContextName);
+                                actionsFromJson, oldContextName, newContextName);
                     }
                 }
-                return importedNewActionList;
+                return actionsFromJson;
             });
         }
 
-        return Mono.zip(importableArtifactMono, importedNewActionMono)
+        return Mono.zip(importableArtifactMono, actionsFromJSONMono)
                 .flatMap(objects -> importNewActions(
                         objects.getT1(), objects.getT2(), importingMetaDTO, mappedImportableResourcesDTO))
                 .onErrorResume(e -> {
@@ -268,7 +301,7 @@ public class NewActionImportableServiceCEImpl implements ImportableServiceCE<New
 
     @NotNull private Mono<ImportActionResultDTO> importNewActions(
             Artifact importableArtifact,
-            List<NewAction> importedNewActionList,
+            List<NewAction> actionListFromJSON,
             ImportingMetaDTO importingMetaDTO,
             MappedImportableResourcesDTO mappedImportableResourcesDTO) {
 
@@ -289,10 +322,15 @@ public class NewActionImportableServiceCEImpl implements ImportableServiceCE<New
 
             // find existing actions in all the branches of this artifact and put them in a map
             Mono<Map<String, NewAction>> actionsInOtherBranchesMono;
-            if (artifact.getGitArtifactMetadata() != null) {
+            if (GitUtils.isArtifactConnectedToGit(artifact.getGitArtifactMetadata())) {
+
+                List<String> allOtherBranches = importingMetaDTO.getBranchedArtifactIds().stream()
+                        .filter(branchedArtifactId -> !branchedArtifactId.equals(importingMetaDTO.getArtifactId())
+                                && !branchedArtifactId.equals(artifact.getId()))
+                        .toList();
+
                 actionsInOtherBranchesMono = artifactBasedImportableService
-                        .getExistingResourcesInOtherBranchesFlux(
-                                importingMetaDTO.getBranchedArtifactIds(), artifact.getId())
+                        .getExistingResourcesInOtherBranchesFlux(allOtherBranches)
                         .filter(newAction -> newAction.getGitSyncId() != null)
                         .collectMap(NewAction::getGitSyncId);
             } else {
@@ -303,7 +341,7 @@ public class NewActionImportableServiceCEImpl implements ImportableServiceCE<New
             // It is context level action and hence the action name should be unique
             if (TRUE.equals(importingMetaDTO.getIsPartialImport())
                     && mappedImportableResourcesDTO.getRefactoringNameReference() != null) {
-                updateActionNameBeforeMerge(importedNewActionList, mappedImportableResourcesDTO);
+                updateActionNameBeforeMerge(actionListFromJSON, mappedImportableResourcesDTO);
             }
 
             return Mono.zip(actionsInCurrentArtifactMono, actionsInOtherBranchesMono)
@@ -315,82 +353,101 @@ public class NewActionImportableServiceCEImpl implements ImportableServiceCE<New
                         // this will be required in next phases when we'll delete the outdated actions
                         importActionResultDTO.setExistingActions(actionsInCurrentArtifact.values());
 
-                        List<NewAction> newNewActionList = new ArrayList<>();
-                        List<NewAction> existingNewActionList = new ArrayList<>();
+                        // Use synchronised lists to avoid concurrent modification exceptions
+                        List<NewAction> freshActionList = Collections.synchronizedList(new ArrayList<>());
+                        List<NewAction> existingNewActionList = Collections.synchronizedList(new ArrayList<>());
 
-                        for (NewAction newAction : importedNewActionList) {
-                            ActionDTO unpublishedAction = newAction.getUnpublishedAction();
-                            if (unpublishedAction == null
-                                    || !StringUtils.hasLength(unpublishedAction.calculateContextId())) {
-                                continue; // invalid action, skip it
-                            }
+                        return Flux.fromIterable(actionListFromJSON)
+                                .flatMap(actionToImport -> {
+                                    ActionDTO editActionDTO = actionToImport.getUnpublishedAction();
+                                    if (editActionDTO == null
+                                            || !StringUtils.hasLength(editActionDTO.calculateContextId())) {
+                                        return Mono.empty(); // invalid action, skip it
+                                    }
 
-                            NewAction branchedNewAction = null;
+                                    NewAction branchedNewAction = null;
 
-                            if (actionsInBranches.containsKey(newAction.getGitSyncId())) {
-                                branchedNewAction =
-                                        artifactBasedImportableService.getExistingEntityInOtherBranchForImportedEntity(
-                                                mappedImportableResourcesDTO, actionsInBranches, newAction);
-                            }
+                                    if (actionsInBranches.containsKey(actionToImport.getGitSyncId())) {
+                                        branchedNewAction =
+                                                artifactBasedImportableService
+                                                        .getExistingEntityInOtherBranchForImportedEntity(
+                                                                mappedImportableResourcesDTO,
+                                                                actionsInBranches,
+                                                                actionToImport);
+                                    }
 
-                            Context baseContext = populateIdReferencesAndReturnBaseContext(
-                                    importingMetaDTO,
-                                    mappedImportableResourcesDTO,
-                                    artifact,
-                                    branchedNewAction,
-                                    newAction);
+                                    Context baseContext = populateIdReferencesAndReturnBaseContext(
+                                            importingMetaDTO,
+                                            mappedImportableResourcesDTO,
+                                            artifact,
+                                            branchedNewAction,
+                                            actionToImport);
 
-                            // Check if the action has datasource is present and contains pluginId
-                            Datasource datasource =
-                                    newAction.getUnpublishedAction().getDatasource();
-                            if (datasource != null) {
-                                // Since the datasource are not yet saved to db, if we don't update the action with
-                                // correct datasource,
-                                // the action ave will fail due to validation
-                                updateDatasourceInAction(newAction, mappedImportableResourcesDTO, datasource);
-                            }
+                                    // Check if the action has datasource is present and contains pluginId
+                                    Datasource datasource = actionToImport
+                                            .getUnpublishedAction()
+                                            .getDatasource();
+                                    if (datasource != null) {
+                                        // Since the datasource are not yet saved to db, if we don't update the action
+                                        // with
+                                        // correct datasource,
+                                        // the action ave will fail due to validation
+                                        updateDatasourceInAction(
+                                                actionToImport, mappedImportableResourcesDTO, datasource);
+                                    }
 
-                            // Check if the action has gitSyncId and if it's already in DB
-                            if (existingArtifactContainsAction(actionsInCurrentArtifact, newAction)) {
+                                    // Check if the action has gitSyncId and if it's already in DB
+                                    if (existingArtifactContainsAction(actionsInCurrentArtifact, actionToImport)) {
 
-                                // Since the resource is already present in DB, just update resource
-                                NewAction existingAction =
-                                        artifactBasedImportableService
-                                                .getExistingEntityInCurrentBranchForImportedEntity(
-                                                        mappedImportableResourcesDTO,
-                                                        actionsInCurrentArtifact,
-                                                        newAction);
+                                        // Since the resource is already present in DB, just update resource
+                                        NewAction existingAction =
+                                                artifactBasedImportableService
+                                                        .getExistingEntityInCurrentBranchForImportedEntity(
+                                                                mappedImportableResourcesDTO,
+                                                                actionsInCurrentArtifact,
+                                                                actionToImport);
 
-                                updateExistingAction(existingAction, newAction, importingMetaDTO);
+                                        updateExistingAction(existingAction, actionToImport, importingMetaDTO);
 
-                                // Add it to actions list that'll be updated in bulk
-                                existingNewActionList.add(existingAction);
-                                importActionResultDTO.getImportedActionIds().add(existingAction.getId());
-                                putActionIdInMap(existingAction, importActionResultDTO);
-                            } else {
+                                        // Add it to actions list that'll be updated in bulk
+                                        existingNewActionList.add(existingAction);
+                                        importActionResultDTO
+                                                .getImportedActionIds()
+                                                .add(existingAction.getId());
+                                        putActionIdInMap(existingAction, importActionResultDTO);
+                                        return Mono.just(existingAction);
+                                    }
 
-                                artifactBasedImportableService.createNewResource(
-                                        importingMetaDTO, newAction, baseContext);
+                                    return artifactBasedImportableService
+                                            .createNewResource(importingMetaDTO, actionToImport, baseContext)
+                                            .flatMap(updatedAction -> {
+                                                populateDomainMappedReferences(
+                                                        mappedImportableResourcesDTO, updatedAction);
 
-                                populateDomainMappedReferences(mappedImportableResourcesDTO, newAction);
+                                                // Add it to actions list that'll be inserted or updated in bulk
+                                                freshActionList.add(updatedAction);
 
-                                // Add it to actions list that'll be inserted or updated in bulk
-                                newNewActionList.add(newAction);
-
-                                importActionResultDTO.getImportedActionIds().add(newAction.getId());
-                                putActionIdInMap(newAction, importActionResultDTO);
-                            }
-                        }
-
-                        log.info(
-                                "Saving actions in bulk. New: {}, Updated: {}",
-                                newNewActionList.size(),
-                                existingNewActionList.size());
-
-                        // Save all the new actions in bulk
-                        return Mono.when(
-                                        newActionService.bulkValidateAndInsertActionInRepository(newNewActionList),
-                                        newActionService.bulkValidateAndUpdateActionInRepository(existingNewActionList))
+                                                importActionResultDTO
+                                                        .getImportedActionIds()
+                                                        .add(updatedAction.getId());
+                                                putActionIdInMap(updatedAction, importActionResultDTO);
+                                                return Mono.just(updatedAction);
+                                            });
+                                })
+                                .then(Mono.defer(() -> {
+                                    log.info(
+                                            "Saving actions in bulk. New: {}, Updated: {}",
+                                            freshActionList.size(),
+                                            existingNewActionList.size());
+                                    return newActionService
+                                            .validateActionsBeforeImport(
+                                                    importingMetaDTO.getArtifactId(),
+                                                    freshActionList,
+                                                    existingNewActionList)
+                                            .flatMap(validatedActions -> Mono.when(
+                                                    newActionService.bulkInsertActions(validatedActions.getT1()),
+                                                    newActionService.bulkUpdateActions(validatedActions.getT2())));
+                                }))
                                 .thenReturn(importActionResultDTO);
                     });
         });
@@ -471,12 +528,8 @@ public class NewActionImportableServiceCEImpl implements ImportableServiceCE<New
                 mappedImportableResourcesDTO.getRefactoringNameReference().keySet();
 
         for (NewAction newAction : importedNewActionList) {
-            String oldNameAction = newAction.getUnpublishedAction().getName(),
-                    newNameAction = newAction.getUnpublishedAction().getName();
-            int i = 1;
-            while (refactoringNames.contains(newNameAction)) {
-                newNameAction = oldNameAction + i++;
-            }
+            String oldNameAction = newAction.getUnpublishedAction().getName();
+            String newNameAction = generateUniqueNameForImport(oldNameAction, refactoringNames);
             String oldId = newAction.getId().split("_")[1];
             newAction.setId(newNameAction + "_" + oldId);
 
@@ -587,15 +640,15 @@ public class NewActionImportableServiceCEImpl implements ImportableServiceCE<New
 
     private void updateDatasourceInAction(
             NewAction newAction, MappedImportableResourcesDTO mappedImportableResourcesDTO, Datasource datasource) {
-        if (!StringUtils.isEmpty(
-                newAction.getUnpublishedAction().getDatasource().getId())) {
+        if (StringUtils.hasText(newAction.getUnpublishedAction().getDatasource().getId())) {
             final String datasourceId =
                     newAction.getUnpublishedAction().getDatasource().getId();
-            datasource = mappedImportableResourcesDTO.getDatasourceDryRunQueries().values().stream()
-                    .flatMap(List::stream)
-                    .filter(ds -> ds.getId().equals(datasourceId))
-                    .findFirst()
-                    .orElse(datasource);
+            Map<String, Datasource> datasourceMap = mappedImportableResourcesDTO.getIdToDatasourceMap();
+
+            if (datasourceMap.containsKey(datasourceId)) {
+                datasource = datasourceMap.get(datasourceId);
+            }
+
             datasource.setIsAutoGenerated(false);
             newAction.setWorkspaceId(datasource.getWorkspaceId());
         }

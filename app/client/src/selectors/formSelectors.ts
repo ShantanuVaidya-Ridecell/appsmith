@@ -1,7 +1,8 @@
 import { getFormValues, isValid, getFormInitialValues } from "redux-form";
-import type { AppState } from "ee/reducers";
+import type { DefaultRootState } from "react-redux";
 import type { ActionData } from "ee/reducers/entityReducers/actionsReducer";
 import type {
+  ConditionalOutput,
   DynamicValues,
   FormEvalOutput,
   FormEvaluationState,
@@ -24,7 +25,10 @@ export interface GetFormData {
   valid: boolean;
 }
 
-export const getFormData = (state: AppState, formName: string): GetFormData => {
+export const getFormData = (
+  state: DefaultRootState,
+  formName: string,
+): GetFormData => {
   const initialValues = getFormInitialValues(formName)(state);
   const values = getFormValues(formName)(state);
   const valid = isValid(formName)(state);
@@ -32,19 +36,37 @@ export const getFormData = (state: AppState, formName: string): GetFormData => {
   return { initialValues, values, valid };
 };
 
-export const getApiName = (state: AppState, id: string) => {
+export const getApiName = (state: DefaultRootState, id: string) => {
   return state.entities.actions.find(
     (action: ActionData) => action.config.id === id,
   )?.config.name;
 };
 
-export const getFormEvaluationState = (state: AppState): FormEvaluationState =>
-  state.evaluations.formEvaluation;
+export const getFormEvaluationState = (
+  state: DefaultRootState,
+): FormEvaluationState => state.evaluations.formEvaluation;
+
+export const getFormConfigConditionalOutput = (
+  state: DefaultRootState,
+  // TODO: Fix this the next time the file is edited
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  config: any,
+): ConditionalOutput => {
+  const baseActionId = getActionIdFromURL();
+  const action = getActionByBaseId(state, baseActionId as string);
+  const actionId = action?.id ?? "";
+  const conditionalOutput = extractConditionalOutput(
+    config,
+    state.evaluations.triggers[actionId],
+  );
+
+  return conditionalOutput;
+};
 
 // Selector to return the fetched values of the form components, only called for components that
 // have the fetchOptionsDynamically option set to true
 export const getDynamicFetchedValues = (
-  state: AppState,
+  state: DefaultRootState,
   // TODO: Fix this the next time the file is edited
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   config: any,
@@ -63,7 +85,7 @@ export const getDynamicFetchedValues = (
 };
 
 export const getDynamicTriggers = (
-  state: AppState,
+  state: DefaultRootState,
   actionId: string,
 ): FormEvalOutput | undefined => {
   const allTriggers = state.evaluations.triggers[actionId];
@@ -87,9 +109,9 @@ interface ConfigErrorProps {
 
 export const getConfigErrors = createSelector(
   getDataTree,
-  (state: AppState, props: ConfigErrorProps) =>
+  (state: DefaultRootState, props: ConfigErrorProps) =>
     getFormValues(props.formName)(state),
-  (_: AppState, props: ConfigErrorProps) => props.configProperty,
+  (_: DefaultRootState, props: ConfigErrorProps) => props.configProperty,
   (dataTree: DataTree, formValues: Partial<Action>, configProperty: string) => {
     // action that corresponds to this form control
     // TODO: Fix this the next time the file is edited

@@ -11,16 +11,15 @@ import {
   ReduxActionTypes,
 } from "ee/constants/ReduxActionConstants";
 import type { APP_MODE } from "entities/App";
-import { call, put, spawn } from "redux-saga/effects";
+import { call, put, select } from "redux-saga/effects";
 import type { DeployConsolidatedApi } from "sagas/InitSagas";
-import {
-  failFastApiCalls,
-  reportSWStatus,
-  waitForWidgetConfigBuild,
-} from "sagas/InitSagas";
+import { failFastApiCalls, waitForWidgetConfigBuild } from "sagas/InitSagas";
 import type { AppEnginePayload } from ".";
 import AppEngine, { ActionsNotFoundError } from ".";
-import { fetchJSLibraries } from "actions/JSLibraryActions";
+import {
+  fetchJSLibraries,
+  deferLoadingJSLibraries,
+} from "actions/JSLibraryActions";
 import { waitForFetchUserSuccess } from "ee/sagas/userSagas";
 import { fetchJSCollectionsForView } from "actions/jsActionActions";
 import {
@@ -29,6 +28,9 @@ import {
 } from "actions/appThemingActions";
 import type { Span } from "instrumentation/types";
 import { endSpan, startNestedSpan } from "instrumentation/generateTraces";
+import { getIsFirstPageLoad } from "selectors/evaluationSelectors";
+import { updateBranchParam } from "git/helpers/updateBranchParam";
+import type { DefaultRootState } from "react-redux";
 
 export default class AppViewerEngine extends AppEngine {
   constructor(mode: APP_MODE) {
@@ -41,8 +43,23 @@ export default class AppViewerEngine extends AppEngine {
     this.completeChore = this.completeChore.bind(this);
   }
 
-  *loadGit() {
-    return;
+  *loadGit(applicationId: string, rootSpan: Span) {
+    const loadGitSpan = startNestedSpan("AppViewerEngine.loadGit", rootSpan);
+
+    // Extract branch from application's gitApplicationMetadata (populated from consolidated API response)
+    // Inline selector to avoid cyclic dependency with applicationSelectors
+    const branchName: string | undefined = yield select(
+      (state: DefaultRootState) =>
+        state.ui.applications.currentApplication?.gitApplicationMetadata
+          ?.branchName,
+    );
+
+    // Update URL with branch parameter if branch exists
+    if (branchName) {
+      updateBranchParam(branchName);
+    }
+
+    endSpan(loadGitSpan);
   }
 
   *completeChore(rootSpan: Span) {
@@ -55,7 +72,6 @@ export default class AppViewerEngine extends AppEngine {
     yield put({
       type: ReduxActionTypes.INITIALIZE_PAGE_VIEWER_SUCCESS,
     });
-    yield spawn(reportSWStatus);
 
     endSpan(completeChoreSpan);
   }
@@ -120,9 +136,18 @@ export default class AppViewerEngine extends AppEngine {
       ReduxActionErrorTypes.SETUP_PUBLISHED_PAGE_ERROR,
     ];
 
-    initActionsCalls.push(fetchJSLibraries(applicationId, customJSLibraries));
-    successActionEffects.push(ReduxActionTypes.FETCH_JS_LIBRARIES_SUCCESS);
-    failureActionEffects.push(ReduxActionErrorTypes.FETCH_JS_LIBRARIES_FAILED);
+    const isFirstPageLoad = yield select(getIsFirstPageLoad);
+
+    if (isFirstPageLoad) {
+      // we are deferring the loading of JS libraries
+      yield put(deferLoadingJSLibraries(applicationId, customJSLibraries));
+    } else {
+      initActionsCalls.push(fetchJSLibraries(applicationId, customJSLibraries));
+      successActionEffects.push(ReduxActionTypes.FETCH_JS_LIBRARIES_SUCCESS);
+      failureActionEffects.push(
+        ReduxActionErrorTypes.FETCH_JS_LIBRARIES_FAILED,
+      );
+    }
 
     const resultOfPrimaryCalls: boolean = yield failFastApiCalls(
       initActionsCalls,

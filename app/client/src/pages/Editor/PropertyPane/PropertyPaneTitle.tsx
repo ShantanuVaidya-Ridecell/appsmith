@@ -11,7 +11,7 @@ import {
 import type { TooltipPlacement } from "@appsmith/ads";
 import { Tooltip, Button } from "@appsmith/ads";
 import { updateWidgetName } from "actions/propertyPaneActions";
-import type { AppState } from "ee/reducers";
+import type { DefaultRootState } from "react-redux";
 import { getExistingWidgetNames } from "sagas/selectors";
 import { removeSpecialChars } from "utils/helpers";
 import { useToggleEditWidgetName } from "utils/hooks/dragResizeHooks";
@@ -23,6 +23,10 @@ import {
   getIsCurrentWidgetRecentlyAdded,
   getPropertyPaneWidth,
 } from "selectors/propertyPaneSelectors";
+import {
+  createMessage,
+  PROPERTY_PANE_TITLE_RENAME_DISABLED,
+} from "ee/constants/messages";
 
 interface PropertyPaneTitleProps {
   title: string;
@@ -31,17 +35,16 @@ interface PropertyPaneTitleProps {
   updatePropertyTitle?: (title: string) => void;
   onBackClick?: () => void;
   isPanelTitle?: boolean;
+  isRenameDisabled?: boolean;
   actions: Array<{
-    // TODO: Fix this the next time the file is edited
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    tooltipContent: any;
+    tooltipContent: string;
     icon: ReactElement;
     tooltipPosition?: TooltipPlacement;
   }>;
 }
 
 const StyledEditableContainer = styled.div`
-  max-width: calc(100% - 52px);
+  max-width: calc(100% - 78px);
   flex-grow: 1;
   border-radius: var(--ads-v2-border-radius);
   border: 1px solid transparent;
@@ -61,7 +64,8 @@ const PropertyPaneTitle = memo(function PropertyPaneTitle(
   const dispatch = useDispatch();
   const containerRef = useRef<HTMLDivElement>(null);
   const updating = useSelector(
-    (state: AppState) => state.ui.editor.loadingStates.updatingWidgetName,
+    (state: DefaultRootState) =>
+      state.ui.editor.loadingStates.updatingWidgetName,
   );
   const isCurrentWidgetRecentlyAdded = useSelector(
     getIsCurrentWidgetRecentlyAdded,
@@ -187,30 +191,44 @@ const PropertyPaneTitle = memo(function PropertyPaneTitle(
         className="flex-grow"
         onKeyDown={handleTabKeyDown}
       >
-        <EditableText
-          className="flex-grow text-lg font-semibold t--property-pane-title"
-          defaultValue={name}
-          editInteractionKind={EditInteractionKind.SINGLE}
-          fill
-          hideEditIcon
-          isEditingDefault={isEditingDefault}
-          onBlur={!props.isPanelTitle ? updateTitle : undefined}
-          onBlurEverytime={handleOnBlurEverytime}
-          onTextChanged={!props.isPanelTitle ? undefined : updateNewTitle}
-          placeholder={props.title}
-          savingState={updating ? SavingState.STARTED : SavingState.NOT_STARTED}
-          underline
-          valueTransform={!props.isPanelTitle ? removeSpecialChars : undefined}
-          wrapperRef={containerRef}
-        />
+        {props.isRenameDisabled ? (
+          <div className="flex-grow text-lg font-semibold t--property-pane-title">
+            <Tooltip
+              content={createMessage(PROPERTY_PANE_TITLE_RENAME_DISABLED)}
+            >
+              <div>{name}</div>
+            </Tooltip>
+          </div>
+        ) : (
+          <EditableText
+            className="flex-grow text-lg font-semibold t--property-pane-title"
+            defaultValue={name}
+            editInteractionKind={EditInteractionKind.SINGLE}
+            fill
+            hideEditIcon
+            isEditingDefault={isEditingDefault}
+            onBlur={!props.isPanelTitle ? updateTitle : undefined}
+            onBlurEverytime={handleOnBlurEverytime}
+            onTextChanged={!props.isPanelTitle ? undefined : updateNewTitle}
+            placeholder={props.title}
+            savingState={
+              updating ? SavingState.STARTED : SavingState.NOT_STARTED
+            }
+            underline
+            valueTransform={
+              !props.isPanelTitle ? removeSpecialChars : undefined
+            }
+            wrapperRef={containerRef}
+          />
+        )}
       </StyledEditableContainer>
 
       {/* ACTIONS */}
       <div className="flex items-center space-x-1">
-        {props.actions.map((value, index) => (
+        {props.actions.map((value) => (
           <Tooltip
             content={value.tooltipContent}
-            key={index}
+            key={value.tooltipContent}
             placement={value.tooltipPosition}
           >
             {value.icon}

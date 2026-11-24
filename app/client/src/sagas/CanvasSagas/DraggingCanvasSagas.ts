@@ -4,7 +4,7 @@ import {
   ReduxActionTypes,
 } from "ee/constants/ReduxActionConstants";
 import AnalyticsUtil from "ee/utils/AnalyticsUtil";
-import { BlueprintOperationTypes } from "WidgetProvider/constants";
+import { BlueprintOperationTypes } from "WidgetProvider/types";
 import { generateAutoHeightLayoutTreeAction } from "actions/autoHeightActions";
 import type { WidgetAddChild } from "actions/pageActions";
 import { updateAndSaveLayout } from "actions/pageActions";
@@ -25,8 +25,8 @@ import log from "loglevel";
 import type {
   CanvasWidgetsReduxState,
   FlattenedWidgetProps,
-} from "reducers/entityReducers/canvasWidgetsReducer";
-import type { MainCanvasReduxState } from "reducers/uiReducers/mainCanvasReducer";
+} from "ee/reducers/entityReducers/canvasWidgetsReducer";
+import type { MainCanvasReduxState } from "ee/reducers/uiReducers/mainCanvasReducer";
 import { all, call, put, select, takeLatest } from "redux-saga/effects";
 import { addAndMoveBuildingBlockToCanvasSaga } from "sagas/BuildingBlockSagas/BuildingBlockAdditionSagas";
 import { getUpdateDslAfterCreatingChild } from "sagas/WidgetAdditionSagas";

@@ -30,18 +30,23 @@ import com.appsmith.server.dtos.ApplicationPublishingMetaDTO;
 import com.appsmith.server.dtos.ClonePageMetaDTO;
 import com.appsmith.server.dtos.CustomJSLibContextDTO;
 import com.appsmith.server.dtos.PageDTO;
-import com.appsmith.server.dtos.PageNameIdDTO;
 import com.appsmith.server.dtos.PluginTypeAndCountDTO;
 import com.appsmith.server.exceptions.AppsmithError;
 import com.appsmith.server.exceptions.AppsmithException;
 import com.appsmith.server.helpers.CommonGitFileUtils;
 import com.appsmith.server.helpers.DSLMigrationUtils;
+import com.appsmith.server.helpers.DslUtils;
 import com.appsmith.server.helpers.GitUtils;
+import com.appsmith.server.helpers.LoadShifter;
+import com.appsmith.server.helpers.LogHelper;
 import com.appsmith.server.helpers.UserPermissionUtils;
+import com.appsmith.server.helpers.WidgetIdRegenerationResult;
 import com.appsmith.server.layouts.UpdateLayoutService;
+import com.appsmith.server.meta.validations.FileNameValidator;
 import com.appsmith.server.migrations.ApplicationVersion;
 import com.appsmith.server.newactions.base.NewActionService;
 import com.appsmith.server.newpages.base.NewPageService;
+import com.appsmith.server.postpublishhooks.base.PostPublishHookCoordinatorService;
 import com.appsmith.server.repositories.ActionCollectionRepository;
 import com.appsmith.server.repositories.ApplicationRepository;
 import com.appsmith.server.repositories.CacheableRepositoryHelper;
@@ -52,12 +57,14 @@ import com.appsmith.server.repositories.WorkspaceRepository;
 import com.appsmith.server.services.AnalyticsService;
 import com.appsmith.server.services.PermissionGroupService;
 import com.appsmith.server.services.SessionUserService;
+import com.appsmith.server.services.UserDataService;
 import com.appsmith.server.services.WorkspaceService;
 import com.appsmith.server.solutions.ActionPermission;
 import com.appsmith.server.solutions.ApplicationPermission;
 import com.appsmith.server.solutions.DatasourcePermission;
 import com.appsmith.server.solutions.PagePermission;
 import com.appsmith.server.solutions.WorkspacePermission;
+import com.appsmith.server.staticurl.StaticUrlService;
 import com.appsmith.server.themes.base.ThemeService;
 import com.google.common.base.Strings;
 import io.micrometer.observation.ObservationRegistry;
@@ -72,6 +79,8 @@ import org.springframework.util.StringUtils;
 import reactor.core.observability.micrometer.Micrometer;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
+import reactor.util.context.Context;
+import reactor.util.context.ContextView;
 import reactor.util.function.Tuple2;
 import reactor.util.function.Tuples;
 
@@ -83,6 +92,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -92,7 +102,7 @@ import static com.appsmith.server.acl.AclPermission.MANAGE_APPLICATIONS;
 import static com.appsmith.server.constants.CommonConstants.EVALUATION_VERSION;
 import static com.appsmith.server.helpers.ObservationUtils.getQualifiedSpanName;
 import static com.appsmith.server.helpers.ce.PolicyUtil.policyMapToSet;
-import static org.apache.commons.lang.ObjectUtils.defaultIfNull;
+import static org.apache.commons.lang3.ObjectUtils.defaultIfNull;
 
 @Slf4j
 @RequiredArgsConstructor
@@ -101,6 +111,7 @@ public class ApplicationPageServiceCEImpl implements ApplicationPageServiceCE {
 
     private final WorkspaceService workspaceService;
     private final ApplicationService applicationService;
+    private final StaticUrlService staticUrlService;
     private final SessionUserService sessionUserService;
     private final WorkspaceRepository workspaceRepository;
     private final UpdateLayoutService updateLayoutService;
@@ -132,12 +143,18 @@ public class ApplicationPageServiceCEImpl implements ApplicationPageServiceCE {
     private final ObservationRegistry observationRegistry;
     private final CacheableRepositoryHelper cacheableRepositoryHelper;
 
+    private final PostPublishHookCoordinatorService<Application> postApplicationPublishHookCoordinatorService;
+    private final UserDataService userDataService;
+
     @Override
     public Mono<PageDTO> createPage(PageDTO page) {
         if (page.getId() != null) {
             return Mono.error(new AppsmithException(AppsmithError.INVALID_PARAMETER, FieldName.ID));
         } else if (page.getName() == null) {
             return Mono.error(new AppsmithException(AppsmithError.INVALID_PARAMETER, FieldName.NAME));
+        } else if (!FileNameValidator.isValidFileName(page.getName())) {
+            return Mono.error(new AppsmithException(
+                    AppsmithError.GENERIC_BAD_REQUEST, FileNameValidator.INVALID_PAGE_NAME_MESSAGE));
         } else if (page.getApplicationId() == null) {
             return Mono.error(new AppsmithException(AppsmithError.INVALID_PARAMETER, FieldName.APPLICATION_ID));
         }
@@ -158,8 +175,9 @@ public class ApplicationPageServiceCEImpl implements ApplicationPageServiceCE {
             }
         }
 
-        Mono<Application> applicationMono = applicationService
-                .findById(page.getApplicationId(), applicationPermission.getPageCreatePermission())
+        Mono<Application> applicationMono = applicationPermission
+                .getPageCreatePermission()
+                .flatMap(permission -> applicationService.findById(page.getApplicationId(), permission))
                 .switchIfEmpty(Mono.error(new AppsmithException(
                         AppsmithError.NO_RESOURCE_FOUND, FieldName.APPLICATION, page.getApplicationId())))
                 .cache();
@@ -247,7 +265,7 @@ public class ApplicationPageServiceCEImpl implements ApplicationPageServiceCE {
 
     @Override
     public Mono<PageDTO> getPage(String pageId, boolean viewMode) {
-        AclPermission permission = pagePermission.getReadPermission();
+        AclPermission permission = getPagePermissionForMode(viewMode);
         return newPageService
                 .findPageById(pageId, permission, viewMode)
                 .map(newPage -> getDslEscapedPage(newPage))
@@ -270,6 +288,7 @@ public class ApplicationPageServiceCEImpl implements ApplicationPageServiceCE {
                     NewPage.Fields.publishedPage_icon,
                     NewPage.Fields.publishedPage_slug,
                     NewPage.Fields.publishedPage_customSlug,
+                    NewPage.Fields.publishedPage_uniqueSlug,
                     NewPage.Fields.publishedPage_isHidden,
                     NewPage.Fields.userPermissions,
                     NewPage.Fields.policies,
@@ -294,41 +313,51 @@ public class ApplicationPageServiceCEImpl implements ApplicationPageServiceCE {
 
     @Override
     public Mono<PageDTO> getPageDTOAfterMigratingDSL(NewPage newPage, boolean viewMode, boolean migrateDsl) {
-        return sendPageViewAnalyticsEvent(newPage, viewMode)
-                .then(getPage(newPage, viewMode))
-                .flatMap(pageDTO -> {
-                    if (migrateDsl) {
-                        // Call the DSL Utils for on demand migration of the page.
-                        // Based on view mode save the migrated DSL to the database
-                        // Migrate the DSL to the latest version if required
-                        if (pageDTO.getLayouts() != null) {
-                            return migrateAndUpdatePageDsl(newPage, pageDTO, viewMode);
-                        }
-                    }
-                    return Mono.just(pageDTO);
-                });
+        return getPage(newPage, viewMode).flatMap(pageDTO -> {
+            if (migrateDsl) {
+                // Call the DSL Utils for on demand migration of the page.
+                // Based on view mode save the migrated DSL to the database
+                // Migrate the DSL to the latest version if required
+                if (pageDTO.getLayouts() != null) {
+                    return migrateAndUpdatePageDsl(newPage, pageDTO, viewMode);
+                }
+            }
+            return Mono.just(pageDTO);
+        });
     }
 
     @Override
     public Mono<PageDTO> getPageAndMigrateDslByBranchAndBasePageId(
             String defaultPageId, String refName, boolean viewMode, boolean migrateDsl) {
         ApplicationMode applicationMode = viewMode ? ApplicationMode.PUBLISHED : ApplicationMode.EDIT;
-        // Fetch the page with read permission in both editor and in viewer.
         return newPageService
                 .findByRefTypeAndRefNameAndBasePageId(
-                        RefType.branch, refName, defaultPageId, pagePermission.getReadPermission(), null)
+                        RefType.branch, refName, defaultPageId, getPagePermissionForMode(viewMode), null)
                 .flatMap(newPage -> getPageDTOAfterMigratingDSL(newPage, viewMode, migrateDsl)
                         .name(getQualifiedSpanName(MIGRATE_DSL, applicationMode))
-                        .tap(Micrometer.observation(observationRegistry)));
+                        .tap(Micrometer.observation(observationRegistry))
+                        .flatMap(pageDTO ->
+                                sendPageViewAnalyticsEvent(newPage, viewMode).thenReturn(pageDTO)));
     }
 
     @Override
     public Mono<PageDTO> getPageAndMigrateDslByBranchedPageId(
             String branchedPageId, boolean viewMode, boolean migrateDsl) {
-        // Fetch the page with read permission in both editor and in viewer.
         return newPageService
-                .findById(branchedPageId, pagePermission.getReadPermission())
-                .flatMap(newPage -> getPageDTOAfterMigratingDSL(newPage, viewMode, migrateDsl));
+                .findById(branchedPageId, getPagePermissionForMode(viewMode))
+                .switchIfEmpty(Mono.error(
+                        new AppsmithException(AppsmithError.ACL_NO_RESOURCE_FOUND, FieldName.PAGE, branchedPageId)))
+                .flatMap(newPage -> getPageDTOAfterMigratingDSL(newPage, viewMode, migrateDsl)
+                        .flatMap(pageDTO ->
+                                sendPageViewAnalyticsEvent(newPage, viewMode).thenReturn(pageDTO)));
+    }
+
+    /**
+     * The page permission a read in the given mode requires: the read permission for the published copy in view
+     * mode, the edit permission for the draft copy in editor mode.
+     */
+    protected AclPermission getPagePermissionForMode(boolean viewMode) {
+        return viewMode ? pagePermission.getReadPermission() : pagePermission.getEditPermission();
     }
 
     private Mono<PageDTO> migrateAndUpdatePageDsl(NewPage newPage, PageDTO page, boolean viewMode) {
@@ -475,8 +504,9 @@ public class ApplicationPageServiceCEImpl implements ApplicationPageServiceCE {
     @Override
     public Mono<Application> setApplicationPolicies(Mono<User> userMono, String workspaceId, Application application) {
         return userMono.flatMap(user -> {
-            Mono<Workspace> workspaceMono = workspaceRepository
-                    .findById(workspaceId, workspacePermission.getApplicationCreatePermission())
+            Mono<Workspace> workspaceMono = workspacePermission
+                    .getApplicationCreatePermission()
+                    .flatMap(permission -> workspaceRepository.findById(workspaceId, permission))
                     .switchIfEmpty(Mono.error(
                             new AppsmithException(AppsmithError.NO_RESOURCE_FOUND, FieldName.WORKSPACE, workspaceId)));
 
@@ -497,17 +527,33 @@ public class ApplicationPageServiceCEImpl implements ApplicationPageServiceCE {
     }
 
     /**
-     * This function performs a soft delete for the application along with it's associated pages and actions.
+     * Soft-deletes the application (and Git branch apps) in the database, then returns success without
+     * waiting on local Git filesystem cleanup. Local repo removal runs best-effort in the background so
+     * a slow disk wipe cannot cancel the HTTP response or analytics/audit that depend on this Mono.
      *
      * @param id The application id to delete
      * @return The modified application object with the deleted flag set
      */
     @Override
     public Mono<Application> deleteApplication(String id) {
+        return deleteApplicationFromDb(id)
+                .flatMap(application -> Mono.deferContextual(parentCtx -> {
+                    scheduleLocalGitRepositoryCleanup(application, parentCtx);
+                    return Mono.just(application);
+                }));
+    }
+
+    /**
+     * Soft-archives the application and every Git branch application that shares its base id.
+     * Does not touch the local Git filesystem — call {@link #cleanupLocalGitRepository(Application)}
+     * (or {@link #scheduleLocalGitRepositoryCleanup}) separately.
+     */
+    protected Mono<Application> deleteApplicationFromDb(String id) {
         log.debug("Archiving application with id: {}", id);
 
-        Mono<Application> applicationMono = applicationRepository
-                .findById(id, applicationPermission.getDeletePermission())
+        Mono<Application> applicationMono = applicationPermission
+                .getDeletePermission()
+                .flatMap(permission -> applicationRepository.findById(id, permission))
                 .switchIfEmpty(
                         Mono.error(new AppsmithException(AppsmithError.NO_RESOURCE_FOUND, FieldName.APPLICATION, id)))
                 .cache();
@@ -521,29 +567,55 @@ public class ApplicationPageServiceCEImpl implements ApplicationPageServiceCE {
                 .flatMapMany(application -> {
                     GitArtifactMetadata gitData = application.getGitApplicationMetadata();
                     if (GitUtils.isArtifactConnectedToGit(application.getGitArtifactMetadata())) {
-                        return applicationService.findAllApplicationsByBaseApplicationId(
-                                gitData.getDefaultArtifactId(), applicationPermission.getDeletePermission());
+                        return applicationPermission
+                                .getDeletePermission()
+                                .flatMapMany(permission -> applicationService.findAllApplicationsByBaseApplicationId(
+                                        gitData.getDefaultArtifactId(), permission));
                     }
                     return Flux.fromIterable(List.of(application));
                 })
-                .flatMap(application -> {
-                    log.debug("Archiving application with id: {}", application.getId());
-                    return deleteApplicationByResource(application);
-                })
-                .then(applicationMono)
-                .flatMap(application -> {
-                    GitArtifactMetadata gitData = application.getGitApplicationMetadata();
-                    if (gitData != null
-                            && !StringUtils.isEmpty(gitData.getDefaultArtifactId())
-                            && !StringUtils.isEmpty(gitData.getRepoName())) {
-                        String repoName = gitData.getRepoName();
-                        Path repoPath =
-                                Paths.get(application.getWorkspaceId(), gitData.getDefaultArtifactId(), repoName);
-                        // Delete git repo from local
-                        return commonGitFileUtils.deleteLocalRepo(repoPath).then(Mono.just(application));
-                    }
-                    return Mono.just(application);
-                });
+                // Limit concurrency to avoid saturating the event loop during deletion of
+                // git-connected apps with many branches
+                .flatMap(
+                        application -> {
+                            log.debug("Archiving application with id: {}", application.getId());
+                            return deleteApplicationByResource(application);
+                        },
+                        2)
+                .then(applicationMono);
+    }
+
+    /**
+     * Removes the on-disk Git clone for a previously soft-deleted application, if one exists.
+     * Safe to call for non-Git apps (no-op).
+     */
+    protected Mono<Boolean> cleanupLocalGitRepository(Application application) {
+        GitArtifactMetadata gitData = application.getGitApplicationMetadata();
+        if (gitData == null
+                || !StringUtils.hasText(gitData.getDefaultArtifactId())
+                || !StringUtils.hasText(gitData.getRepoName())) {
+            return Mono.just(Boolean.TRUE);
+        }
+        Path repoPath = Paths.get(application.getWorkspaceId(), gitData.getDefaultArtifactId(), gitData.getRepoName());
+        return commonGitFileUtils.deleteLocalRepo(repoPath);
+    }
+
+    /**
+     * Fire-and-forget local Git cleanup so it is not cancelled when the HTTP subscriber disconnects.
+     * Uses {@link Mono#defer} so {@code deleteLocalRepo}'s synchronous filesystem work starts on the
+     * elastic scheduler, not on the delete-request thread. Copies parent Reactor context (minus mutable
+     * MDC) to preserve SecurityContext for any nested work.
+     */
+    protected void scheduleLocalGitRepositoryCleanup(Application application, ContextView parentCtx) {
+        Mono.defer(() -> cleanupLocalGitRepository(application))
+                .contextWrite(ctx -> Context.of(parentCtx).delete(LogHelper.CONTEXT_MAP))
+                .subscribeOn(LoadShifter.elasticScheduler)
+                .subscribe(
+                        null,
+                        error -> log.error(
+                                "Failed to delete local git repository for application {}",
+                                application.getId(),
+                                error));
     }
 
     @Override
@@ -554,14 +626,20 @@ public class ApplicationPageServiceCEImpl implements ApplicationPageServiceCE {
     }
 
     protected Mono<Application> deleteApplicationResources(Application application) {
-        return actionCollectionService
-                .archiveActionCollectionByApplicationId(application.getId(), actionPermission.getDeletePermission())
-                .then(newActionService.archiveActionsByApplicationId(
-                        application.getId(), actionPermission.getDeletePermission()))
-                .then(newPageService.archivePagesByApplicationId(
-                        application.getId(), pagePermission.getDeletePermission()))
+        Mono<AclPermission> actionPermissionMono =
+                actionPermission.getDeletePermission().cache();
+        Mono<AclPermission> pagePermissionMono = pagePermission.getDeletePermission();
+        String favoriteId = application.getBaseId();
+        return actionPermissionMono
+                .flatMap(actionDeletePermission -> actionCollectionService.archiveActionCollectionByApplicationId(
+                        application.getId(), actionDeletePermission))
+                .then(actionPermissionMono.flatMap(actionDeletePermission ->
+                        newActionService.archiveActionsByApplicationId(application.getId(), actionDeletePermission)))
+                .then(pagePermissionMono.flatMap(pageDeletePermission ->
+                        newPageService.archivePagesByApplicationId(application.getId(), pageDeletePermission)))
                 .then(themeService.archiveApplicationThemes(application))
-                .flatMap(applicationService::archive);
+                .then(userDataService.removeApplicationFromAllFavorites(favoriteId))
+                .then(applicationService.archive(application));
     }
 
     protected Mono<Application> sendAppDeleteAnalytics(Application deletedApplication) {
@@ -569,7 +647,16 @@ public class ApplicationPageServiceCEImpl implements ApplicationPageServiceCE {
                 Map.of(FieldName.APP_MODE, ApplicationMode.EDIT.toString(), FieldName.APPLICATION, deletedApplication);
         final Map<String, Object> data = Map.of(FieldName.EVENT_DATA, eventData);
 
-        return analyticsService.sendDeleteEvent(deletedApplication, data);
+        // Run analytics/audit-log on the elastic scheduler so it does not block the
+        // MongoDB NIO event-loop threads, and swallow errors to avoid failing the delete.
+        return analyticsService
+                .sendDeleteEvent(deletedApplication, data)
+                .subscribeOn(LoadShifter.elasticScheduler)
+                .onErrorResume(throwable -> {
+                    log.error(
+                            "Error sending delete analytics for application {}", deletedApplication.getId(), throwable);
+                    return Mono.just(deletedApplication);
+                });
     }
 
     @Override
@@ -605,7 +692,24 @@ public class ApplicationPageServiceCEImpl implements ApplicationPageServiceCE {
                             String id = new ObjectId().toString();
                             newLayout.setId(id);
                             newLayout.setMongoEscapedWidgetNames(layout.getMongoEscapedWidgetNames());
-                            newLayout.setDsl(layout.getDsl());
+                            // Regenerate widget ids so the cloned page does not collide with the
+                            // source page at application level. The regenerator preserves
+                            // referential integrity inside the DSL (e.g. parentId) and leaves
+                            // the root MainContainer id ("0") untouched, and returns the
+                            // oldId -> newId mapping so downstream cloners can translate
+                            // widget id references they hold outside the DSL (e.g.
+                            // ModuleInstance.widgetId).
+                            WidgetIdRegenerationResult regeneration = DslUtils.regenerateWidgetIds(layout.getDsl());
+                            newLayout.setDsl(regeneration.dsl());
+                            // First-seen wins when the same source widgetId appears across
+                            // multiple layouts of one page: each layout's DSL is regenerated
+                            // independently, so the same old id maps to a different new id per
+                            // layout. The meta map carries one slot per source id, so picking
+                            // the first occurrence keeps downstream resolution deterministic
+                            // instead of letting iteration order pick the winner.
+                            regeneration
+                                    .oldToNewWidgetIds()
+                                    .forEach(clonePageMetaDTO.getOldToNewWidgetIds()::putIfAbsent);
                             return newLayout;
                         })
                         .collectList()
@@ -617,27 +721,44 @@ public class ApplicationPageServiceCEImpl implements ApplicationPageServiceCE {
         return sourcePageMono
                 .flatMap(page -> {
                     clonePageMetaDTO.setBranchedSourcePageId(page.getId());
-                    Mono<ApplicationPagesDTO> pageNamesMono =
-                            newPageService.findApplicationPagesByBranchedApplicationIdAndViewMode(
-                                    page.getApplicationId(), false, false);
+
+                    List<String> pageFields = List.of(
+                            NewPage.Fields.id,
+                            NewPage.Fields.baseId,
+                            NewPage.Fields.applicationId,
+                            NewPage.Fields.refName,
+                            NewPage.Fields.refType,
+                            NewPage.Fields.branchName,
+                            NewPage.Fields.gitSyncId,
+                            NewPage.Fields.unpublishedPage_name,
+                            NewPage.Fields.unpublishedPage_slug,
+                            NewPage.Fields.unpublishedPage_customSlug,
+                            NewPage.Fields.unpublishedPage_uniqueSlug);
+
+                    Mono<List<NewPage>> editModePagesMono = newPageService
+                            .findNewPagesByApplicationId(
+                                    page.getApplicationId(), pagePermission.getReadPermission(), pageFields)
+                            .collectList();
 
                     Mono<Application> destinationApplicationMono = applicationService
                             .findById(applicationId, applicationPermission.getEditPermission())
                             .switchIfEmpty(Mono.error(new AppsmithException(
                                     AppsmithError.NO_RESOURCE_FOUND, FieldName.APPLICATION, applicationId)));
 
-                    return Mono.zip(pageNamesMono, destinationApplicationMono)
+                    return Mono.zip(editModePagesMono, destinationApplicationMono)
                             // If a new page name suffix is given,
                             // set a unique name for the cloned page and then create the page.
                             .flatMap(tuple -> {
-                                ApplicationPagesDTO pageNames = tuple.getT1();
+                                List<NewPage> editModePages = tuple.getT1();
                                 Application application = tuple.getT2();
 
                                 if (!Strings.isNullOrEmpty(newPageNameSuffix)) {
                                     String newPageName = page.getName() + newPageNameSuffix;
 
-                                    Set<String> names = pageNames.getPages().stream()
-                                            .map(PageNameIdDTO::getName)
+                                    Set<String> names = editModePages.stream()
+                                            .map(NewPage::getUnpublishedPage)
+                                            .filter(Objects::nonNull)
+                                            .map(PageDTO::getName)
                                             .collect(Collectors.toSet());
 
                                     int i = 0;
@@ -657,12 +778,26 @@ public class ApplicationPageServiceCEImpl implements ApplicationPageServiceCE {
                                 if (gitData != null) {
                                     page.setRefName(gitData.getRefName());
                                 }
-                                return newPageService.createDefault(page);
+
+                                return staticUrlService
+                                        .updateUniqueSlugBeforeClone(page, editModePages)
+                                        .flatMap(incomingPageDTO -> newPageService.createDefault(incomingPageDTO));
                             });
                 })
                 .flatMap(clonedPage -> {
                     clonePageMetaDTO.setClonedPageDTO(clonedPage);
-                    return clonePageDependentEntities(clonePageMetaDTO).then(updateClonedPageLayout(clonedPage));
+                    // Load the persisted page once so the cloners can hand it to createAction. Otherwise every
+                    // cloned action reads the page, DSL included, on its own.
+                    return pagePermission
+                            .getActionCreatePermission()
+                            .flatMap(permission -> newPageService.findById(clonedPage.getId(), permission))
+                            .switchIfEmpty(Mono.error(new AppsmithException(
+                                    AppsmithError.NO_RESOURCE_FOUND, FieldName.PAGE, clonedPage.getId())))
+                            .flatMap(clonedNewPage -> {
+                                clonePageMetaDTO.setClonedNewPage(clonedNewPage);
+                                return clonePageDependentEntities(clonePageMetaDTO);
+                            })
+                            .then(updateClonedPageLayout(clonedPage));
                 });
     }
 
@@ -904,12 +1039,19 @@ public class ApplicationPageServiceCEImpl implements ApplicationPageServiceCE {
 
     @Override
     public Mono<PageDTO> deleteUnpublishedPage(String id) {
-        return deleteUnpublishedPageEx(
-                id,
-                pagePermission.getDeletePermission(),
-                applicationPermission.getReadPermission(),
-                actionPermission.getDeletePermission(),
-                actionPermission.getDeletePermission());
+        return pagePermission
+                .getDeletePermission()
+                .zipWith(actionPermission.getDeletePermission())
+                .flatMap(tuple -> {
+                    AclPermission pageDeletePermission = tuple.getT1();
+                    AclPermission actionDeletePermission = tuple.getT2();
+                    return deleteUnpublishedPageEx(
+                            id,
+                            pageDeletePermission,
+                            applicationPermission.getReadPermission(),
+                            actionDeletePermission,
+                            actionDeletePermission);
+                });
     }
 
     private Mono<PageDTO> deleteUnpublishedPageEx(
@@ -1022,10 +1164,20 @@ public class ApplicationPageServiceCEImpl implements ApplicationPageServiceCE {
     @Override
     public Mono<Application> publishWithoutPermissionChecks(String applicationId, boolean isPublishedManually) {
         return publishAndGetMetadata(applicationId, isPublishedManually)
-                .flatMap(tuple2 -> {
-                    ApplicationPublishingMetaDTO metaDTO = tuple2.getT2();
-                    return sendApplicationPublishedEvent(metaDTO);
-                })
+                .flatMap(tuple -> Mono.deferContextual(parentCtx -> {
+                    // Orphan subscribe starts empty. Copy parent context so SecurityContext and
+                    // audit suppress flags from fork/import/Git reload still apply, but drop the
+                    // request MDC map so the background job does not share mutable logging state.
+                    postApplicationPublishHookCoordinatorService
+                            .executePostPublishHooks(applicationId)
+                            .contextWrite(ctx -> Context.of(parentCtx).delete(LogHelper.CONTEXT_MAP))
+                            .subscribeOn(LoadShifter.elasticScheduler)
+                            .subscribe(
+                                    null,
+                                    error -> log.error(
+                                            "Post-publish hooks failed for application {}", applicationId, error));
+                    return sendApplicationPublishedEvent(tuple.getT2());
+                }))
                 .elapsed()
                 .map(objects -> {
                     log.debug(
@@ -1090,9 +1242,6 @@ public class ApplicationPageServiceCEImpl implements ApplicationPageServiceCE {
 
                     Mono<Boolean> archivePageMono;
 
-                    Mono<Boolean> evictDeletedDefaultPageIdsMono =
-                            cacheableRepositoryHelper.evictCachedBasePageIds(new ArrayList<>(publishedPageIds));
-
                     if (!publishedPageIds.isEmpty()) {
                         archivePageMono = newPageService.archiveByIds(publishedPageIds);
                     } else {
@@ -1112,11 +1261,7 @@ public class ApplicationPageServiceCEImpl implements ApplicationPageServiceCE {
 
                     // Archive the deleted pages and save the application changes and then return the pages so that
                     // the pages can also be published; In addition invalidate the cache for the deleted page Ids
-                    return Mono.when(
-                                    archivePageMono,
-                                    publishPagesMono,
-                                    applicationService.save(application),
-                                    evictDeletedDefaultPageIdsMono)
+                    return Mono.when(archivePageMono, publishPagesMono, applicationService.save(application))
                             .thenReturn(pages);
                 })
                 .cache(); // caching as we'll need this to send analytics attributes after publishing the app
@@ -1176,7 +1321,7 @@ public class ApplicationPageServiceCEImpl implements ApplicationPageServiceCE {
                 publishingMetaDTO.getPublishedActionCollectionsListMono();
         Mono<Set<CustomJSLibContextDTO>> publishedJSLibDTOsMono = publishingMetaDTO.getUpdatedPublishedJSLibDTOsMono();
         String applicationId = publishingMetaDTO.getApplicationId();
-        boolean isPublishedManually = publishingMetaDTO.isPublishedManually();
+        boolean isPublishedManually = publishingMetaDTO.getIsPublishedManually();
 
         Mono<String> publicPermissionGroupIdMono =
                 permissionGroupService.getPublicPermissionGroupId().cache();
@@ -1218,7 +1363,7 @@ public class ApplicationPageServiceCEImpl implements ApplicationPageServiceCE {
                     extraProperties.put("jsLibsCount", objects.getT5().size());
                     extraProperties.put("appId", defaultIfNull(application.getId(), ""));
                     extraProperties.put("appName", defaultIfNull(application.getName(), ""));
-                    extraProperties.put("orgId", defaultIfNull(application.getWorkspaceId(), ""));
+                    extraProperties.put("workspaceId", defaultIfNull(application.getWorkspaceId(), ""));
                     extraProperties.put("isManual", defaultIfNull(isPublishedManually, ""));
                     extraProperties.put("publishedAt", defaultIfNull(application.getLastDeployedAt(), ""));
                     extraProperties.put("isPublic", isApplicationPublic);
@@ -1356,7 +1501,7 @@ public class ApplicationPageServiceCEImpl implements ApplicationPageServiceCE {
     }
 
     /**
-     * To send analytics event for page views
+     * Records a page view when that page is opened. Layout loads for the other pages in the editor do not call this.
      *
      * @param newPage  Page being accessed
      * @param viewMode Page is accessed in view mode or not
@@ -1478,12 +1623,14 @@ public class ApplicationPageServiceCEImpl implements ApplicationPageServiceCE {
                             return datasourceRepository.setUserPermissionsInObject(datasource);
                         }));
 
-        return UserPermissionUtils.validateDomainObjectPermissionsOrError(
+        return datasourcePermission
+                .getActionCreatePermission()
+                .flatMap(actionCreatePermission -> UserPermissionUtils.validateDomainObjectPermissionsOrError(
                         datasourceFlux,
                         FieldName.DATASOURCE,
                         permissionGroupService.getSessionUserPermissionGroupIds(),
-                        datasourcePermission.getActionCreatePermission(),
-                        AppsmithError.APPLICATION_NOT_CLONED_MISSING_PERMISSIONS)
+                        actionCreatePermission,
+                        AppsmithError.APPLICATION_NOT_CLONED_MISSING_PERMISSIONS))
                 .thenReturn(Boolean.TRUE);
     }
 }

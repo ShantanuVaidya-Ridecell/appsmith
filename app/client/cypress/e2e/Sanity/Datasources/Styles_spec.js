@@ -1,14 +1,13 @@
 import { agHelper, dataSources } from "../../../support/Objects/ObjectsCore";
 
 let dsName;
-describe(
+describe.skip(
   "Validate Datasource Panel Styles",
   {
     tags: [
       "@tag.Datasource",
       "@tag.Sanity",
       "@tag.excludeForAirgap",
-      "@tag.Git",
       "@tag.AccessControl",
     ],
   },

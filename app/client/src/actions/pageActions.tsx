@@ -17,11 +17,10 @@ import type {
 } from "api/PageApi";
 import type { UrlDataState } from "reducers/entityReducers/appReducer";
 import type { APP_MODE } from "entities/App";
-import type { CanvasWidgetsReduxState } from "reducers/entityReducers/canvasWidgetsReducer";
+import type { CanvasWidgetsReduxState } from "ee/reducers/entityReducers/canvasWidgetsReducer";
 import type { ENTITY_TYPE } from "ee/entities/AppsmithConsole/utils";
 import type { Replayable } from "entities/Replay/ReplayEntity/ReplayEditor";
-import * as Sentry from "@sentry/react";
-import type { DSLWidget } from "../WidgetProvider/constants";
+import type { DSLWidget } from "WidgetProvider/types";
 import type {
   LayoutOnLoadActionErrors,
   PageAction,
@@ -30,6 +29,9 @@ import { ReplayOperation } from "entities/Replay/ReplayEntity/ReplayOperations";
 import type { PACKAGE_PULL_STATUS } from "ee/constants/ModuleConstants";
 import type { ApiResponse } from "api/ApiResponses";
 import type { EvaluationReduxAction } from "./EvaluationReduxActionTypes";
+import { appsmithTelemetry } from "instrumentation";
+import type { NavigateToAnotherPagePayload } from "sagas/ActionExecution/NavigateActionSaga/types";
+import type { Path } from "history";
 
 export interface FetchPageListPayload {
   applicationId: string;
@@ -73,6 +75,7 @@ export interface FetchPublishedPageActionPayload {
 export interface FetchPublishedPageResourcesPayload {
   pageId: string;
   basePageId: string;
+  branch: string;
 }
 
 export const fetchPublishedPageAction = (
@@ -206,12 +209,12 @@ export const createPageAction = (
   applicationId: string,
   pageName: string,
   layouts: Partial<PageLayout>[],
-  orgId: string,
+  workspaceId: string,
   instanceId?: string,
 ) => {
   AnalyticsUtil.logEvent("CREATE_PAGE", {
     pageName,
-    orgId,
+    workspaceId,
     instanceId,
   });
 
@@ -228,12 +231,12 @@ export const createPageAction = (
 export const createNewPageFromEntities = (
   applicationId: string,
   pageName: string,
-  orgId: string,
+  workspaceId: string,
   instanceId?: string,
 ) => {
   AnalyticsUtil.logEvent("CREATE_PAGE", {
     pageName,
-    orgId,
+    workspaceId,
     instanceId,
   });
 
@@ -298,12 +301,14 @@ export const clonePageSuccess = ({
 // In future we can reuse this for fetching other page level resources in published mode
 export const fetchPublishedPageResources = ({
   basePageId,
+  branch,
   pageId,
 }: FetchPublishedPageResourcesPayload): ReduxAction<FetchPublishedPageResourcesPayload> => ({
   type: ReduxActionTypes.FETCH_PUBLISHED_PAGE_RESOURCES_INIT,
   payload: {
     pageId,
     basePageId,
+    branch,
   },
 });
 
@@ -319,12 +324,12 @@ export interface UpdatePageActionPayload {
 export const updatePageAction = (
   payload: UpdatePageActionPayload,
 ): ReduxAction<UpdatePageActionPayload> => {
-  // Update page *needs* id to be there. We found certain scenarios
-  // where this was not happening and capturing the error to know gather
-  // more info: https://github.com/appsmithorg/appsmith/issues/16435
   if (!payload.id) {
-    Sentry.captureException(
+    appsmithTelemetry.captureException(
       new Error("Attempting to update page without page id"),
+      {
+        errorName: "PageActions_UpdatePage",
+      },
     );
   }
 
@@ -693,3 +698,30 @@ export const setupPublishedPage = (
     pageWithMigratedDsl,
   },
 });
+
+export const navigateToAnotherPage = (
+  payload: NavigateToAnotherPagePayload | Path,
+) => ({
+  type: ReduxActionTypes.NAVIGATE_TO_ANOTHER_PAGE,
+  payload,
+});
+
+export const persistPageSlug = (pageId: string, slug: string) => {
+  return {
+    type: ReduxActionTypes.PERSIST_PAGE_SLUG,
+    payload: {
+      pageId,
+      slug,
+    },
+  };
+};
+
+export const validatePageSlug = (pageId: string, slug: string) => {
+  return {
+    type: ReduxActionTypes.VALIDATE_PAGE_SLUG,
+    payload: {
+      pageId,
+      slug,
+    },
+  };
+};

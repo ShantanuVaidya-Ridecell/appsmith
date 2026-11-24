@@ -2,8 +2,10 @@ package com.appsmith.server.services;
 
 import com.appsmith.server.configurations.CommonConfig;
 import com.appsmith.server.configurations.EmailConfig;
+import com.appsmith.server.helpers.SecureBaseUrlResolver;
 import com.appsmith.server.helpers.UserServiceHelper;
 import com.appsmith.server.helpers.UserUtils;
+import com.appsmith.server.instanceconfigs.helpers.InstanceVariablesHelper;
 import com.appsmith.server.notifications.EmailSender;
 import com.appsmith.server.ratelimiting.RateLimitService;
 import com.appsmith.server.repositories.ApplicationRepository;
@@ -35,14 +37,17 @@ public class UserServiceImpl extends UserServiceCECompatibleImpl implements User
             CommonConfig commonConfig,
             EmailConfig emailConfig,
             UserDataService userDataService,
-            TenantService tenantService,
+            OrganizationService organizationService,
             PermissionGroupService permissionGroupService,
             UserUtils userUtils,
             EmailVerificationTokenRepository emailVerificationTokenRepository,
             EmailService emailService,
             RateLimitService rateLimitService,
             PACConfigurationService pacConfigurationService,
-            UserServiceHelper userServiceHelper) {
+            UserServiceHelper userServiceHelper,
+            InstanceVariablesHelper instanceVariablesHelper,
+            SecureBaseUrlResolver secureBaseUrlResolver,
+            CacheablePylonHelper cacheablePylonHelper) {
         super(
                 validator,
                 repository,
@@ -53,12 +58,15 @@ public class UserServiceImpl extends UserServiceCECompatibleImpl implements User
                 passwordEncoder,
                 commonConfig,
                 userDataService,
-                tenantService,
+                organizationService,
                 userUtils,
                 emailVerificationTokenRepository,
                 emailService,
                 rateLimitService,
                 pacConfigurationService,
-                userServiceHelper);
+                userServiceHelper,
+                instanceVariablesHelper,
+                secureBaseUrlResolver,
+                cacheablePylonHelper);
     }
 }

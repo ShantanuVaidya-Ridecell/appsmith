@@ -1,8 +1,10 @@
 package com.appsmith.server.services.ce_compatible;
 
+import com.appsmith.external.helpers.ObservationHelper;
 import com.appsmith.server.actioncollections.base.ActionCollectionService;
 import com.appsmith.server.applications.base.ApplicationService;
 import com.appsmith.server.datasources.base.DatasourceService;
+import com.appsmith.server.helpers.SecureBaseUrlResolver;
 import com.appsmith.server.jslibs.base.CustomJSLibService;
 import com.appsmith.server.newactions.base.NewActionService;
 import com.appsmith.server.newpages.base.NewPageService;
@@ -10,12 +12,13 @@ import com.appsmith.server.plugins.base.PluginService;
 import com.appsmith.server.repositories.CacheableRepositoryHelper;
 import com.appsmith.server.services.ApplicationPageService;
 import com.appsmith.server.services.MockDataService;
+import com.appsmith.server.services.OrganizationService;
 import com.appsmith.server.services.ProductAlertService;
 import com.appsmith.server.services.SessionUserService;
-import com.appsmith.server.services.TenantService;
 import com.appsmith.server.services.UserDataService;
 import com.appsmith.server.services.UserService;
 import com.appsmith.server.services.ce.ConsolidatedAPIServiceCEImpl;
+import com.appsmith.server.staticurl.StaticUrlService;
 import com.appsmith.server.themes.base.ThemeService;
 import io.micrometer.observation.ObservationRegistry;
 
@@ -25,7 +28,7 @@ public class ConsolidatedAPIServiceCECompatibleImpl extends ConsolidatedAPIServi
             SessionUserService sessionUserService,
             UserService userService,
             UserDataService userDataService,
-            TenantService tenantService,
+            OrganizationService organizationService,
             ProductAlertService productAlertService,
             NewPageService newPageService,
             NewActionService newActionService,
@@ -36,14 +39,17 @@ public class ConsolidatedAPIServiceCECompatibleImpl extends ConsolidatedAPIServi
             CustomJSLibService customJSLibService,
             PluginService pluginService,
             DatasourceService datasourceService,
+            StaticUrlService staticUrlService,
             MockDataService mockDataService,
             ObservationRegistry observationRegistry,
-            CacheableRepositoryHelper cacheableRepositoryHelper) {
+            CacheableRepositoryHelper cacheableRepositoryHelper,
+            ObservationHelper observationHelper,
+            SecureBaseUrlResolver secureBaseUrlResolver) {
         super(
                 sessionUserService,
                 userService,
                 userDataService,
-                tenantService,
+                organizationService,
                 productAlertService,
                 newPageService,
                 newActionService,
@@ -54,8 +60,11 @@ public class ConsolidatedAPIServiceCECompatibleImpl extends ConsolidatedAPIServi
                 customJSLibService,
                 pluginService,
                 datasourceService,
+                staticUrlService,
                 mockDataService,
                 observationRegistry,
-                cacheableRepositoryHelper);
+                cacheableRepositoryHelper,
+                observationHelper,
+                secureBaseUrlResolver);
     }
 }

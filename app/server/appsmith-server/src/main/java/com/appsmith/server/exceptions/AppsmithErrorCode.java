@@ -38,6 +38,7 @@ public enum AppsmithErrorCode {
     HEALTHCHECK_TIMEOUT("AE-APP-4080", "Connection timeout during health check"),
     DUPLICATE_KEY("AE-APP-4091", "Duplicate key"),
     DUPLICATE_KEY_OBJECT_CREATION("AE-APP-4092", "Duplicate key during object creation"),
+    STALE_LAYOUT_UPDATE("AE-APP-4096", "Layout changed since it was read"),
     INTERNAL_SERVER_ERROR("AE-APP-5000", "Internal server error"),
     REPOSITORY_SAVE_FAILED("AE-APP-5001", "Repository save failed"),
     PLUGIN_INSTALLATION_FAILED_DOWNLOAD_ERROR("AE-APP-5002", "Plugin installation failed download error"),
@@ -64,6 +65,7 @@ public enum AppsmithErrorCode {
     GOOGLE_RECAPTCHA_TIMEOUT("AE-APP-5042", "Google recaptcha timeout"),
     MIGRATION_FAILED("AE-APP-5043", "Migration failed"),
     INVALID_PROPERTIES_CONFIGURATION("AE-APP-5044", "Property configuration is wrong or malformed"),
+    MISCONFIGURED_INSTANCE_BASE_URL("AE-APP-5048", "Instance base URL is not configured"),
     NAME_CLASH_NOT_ALLOWED_IN_REFACTOR("AE-AST-4009", "Name clash not allowed in refactor"),
     GENERIC_BAD_REQUEST("AE-BAD-4000", "Generic bad request"),
     MALFORMED_REQUEST("AE-BAD-4001", "Malformed request body"),
@@ -80,7 +82,10 @@ public enum AppsmithErrorCode {
     NO_CONFIGURATION_FOUND_IN_DATASOURCE("AE-DTS-4011", "No configuration found in datasource"),
     INVALID_DATASOURCE("AE-DTS-4013", "Invalid datasource"),
     INVALID_DATASOURCE_CONFIGURATION("AE-DTS-4015", "Invalid datasource configuration"),
+    DATASOURCE_CREDENTIALS_REQUIRED("AE-DTS-4016", "Datasource credentials required"),
     DATASOURCE_HAS_ACTIONS("AE-DTS-4030", "Datasource has actions"),
+    DEPRECATED_DATASOURCE_PLUGIN("AE-DTS-4031", "Datasource creation is blocked for a deprecated plugin"),
+    DEPRECATED_PLUGIN_QUERY_CREATION("AE-DTS-4032", "Query creation is blocked on a deprecated plugin's datasource"),
     APPLICATION_FORKING_NOT_ALLOWED("AE-FRK-4034", "Application forking not allowed"),
     INVALID_GIT_CONFIGURATION("AE-GIT-4031", "Invalid git configuration"),
     INVALID_GIT_SSH_CONFIGURATION("AE-GIT-4032", "Invalid git ssh configuration"),
@@ -95,6 +100,7 @@ public enum AppsmithErrorCode {
     GIT_UPSTREAM_CHANGES("AE-GIT-4048", "Git upstream changes"),
     INVALID_GIT_SSH_URL("AE-GIT-4050", "Invalid git ssh url"),
     REPOSITORY_NOT_FOUND("AE-GIT-4051", "Repository not found"),
+    GIT_DEFAULT_BRANCH_NOT_FOUND("AE-GIT-4052", "Git default branch not found"),
     GIT_FILE_SYSTEM_ERROR("AE-GIT-5013", "Git file system error"),
     GIT_EXECUTION_TIMEOUT("AE-GIT-5014", "Git execution timeout"),
     GIT_GENERIC_ERROR("AE-GIT-5016", "Git generic error"),
@@ -103,6 +109,8 @@ public enum AppsmithErrorCode {
     JSON_PROCESSING_ERROR("AE-JSN-4001", "Json processing error"),
     INCOMPATIBLE_IMPORTED_JSON("AE-JSN-4045", "Incompatible imported json"),
     GENERIC_JSON_IMPORT_ERROR("AE-JSN-4049", "Generic json import error"),
+    ARTIFACT_IMPORT_DUPLICATE_KEY_WRITE_ERROR(
+            "AE-JSN-5001", "Artifact import failed due to a duplicate key conflict during write operation"),
     INVALID_LOGIN_METHOD("AE-LGN-4000", "Invalid login method"),
     PLUGIN_NOT_INSTALLED("AE-PLG-4001", "Plugin not installed"),
     PLUGIN_ID_NOT_GIVEN("AE-PLG-4002", "Plugin id not given"),
@@ -123,12 +131,25 @@ public enum AppsmithErrorCode {
     USER_EMAIL_ALREADY_VERIFIED("AE-EMV-4095", "User email already verified"),
 
     EMAIL_VERIFICATION_TOKEN_EXPIRED("AE-EMV-4096", "Email Verification Token expired"),
-    TENANT_EMAIL_VERIFICATION_NOT_ENABLED("AE-EMV-4097", "Email Verification not enabled"),
+    EMAIL_VERIFICATION_NOT_ENABLED("AE-EMV-4097", "Email Verification not enabled"),
 
     INVALID_EMAIL_VERIFICATION("AE-EMV-4098", "Invalid email verification request"),
 
     INVALID_METHOD_LEVEL_ANNOTATION_USAGE("AE-APP-4094", "Invalid usage for custom annotation"),
     FEATURE_FLAG_MIGRATION_FAILURE("AE-APP-5045", "Feature flag based migration error"),
+    UNIQUE_SLUG_UNAVAILABLE("AE-APP-5007", "Slug is unavailable"),
+
+    // Git route related error codes
+    GIT_ROUTE_HANDLER_NOT_FOUND("AE-GIT-5005", "Git route handler not found"),
+    GIT_ROUTE_INVALID_FIELD_VALUE("AE-GIT-5006", "Git route invalid field value"),
+    GIT_ROUTE_CONTEXT_BUILD_ERROR("AE-GIT-5007", "Git route context build error"),
+    GIT_ROUTE_ARTIFACT_NOT_FOUND("AE-GIT-5008", "Git route artifact not found"),
+    GIT_ROUTE_INVALID_PRIVATE_KEY("AE-GIT-5009", "Git route invalid private key"),
+    GIT_ROUTE_METADATA_NOT_FOUND("AE-GIT-5010", "Git route metadata not found"),
+    GIT_ROUTE_FS_OPS_NOT_REQUIRED("AE-GIT-5011", "Git FS operation not required"),
+    GIT_ROUTE_REDIS_DOWNLOAD_FAILED("AE-GIT-5012", "Git redis download failed"),
+    GIT_ROUTE_FS_CLEAN_UP_REQUIRED("AE-GIT-5015", "Git FS clean up required"),
+
     DATASOURCE_CONNECTION_RATE_LIMIT_BLOCKING_FAILED(
             "AE-TMR-4031", "Rate limit exhausted, blocking the host name failed"),
     TRIGGER_PARAMETERS_EMPTY("AE-DS-4001", "Trigger parameters empty."),

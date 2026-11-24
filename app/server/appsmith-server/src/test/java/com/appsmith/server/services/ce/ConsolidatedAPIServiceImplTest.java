@@ -1,11 +1,13 @@
 package com.appsmith.server.services.ce;
 
+import com.appsmith.external.enums.FeatureFlagEnum;
 import com.appsmith.external.git.constants.ce.RefType;
 import com.appsmith.external.models.ActionDTO;
 import com.appsmith.external.models.Datasource;
 import com.appsmith.server.acl.AclPermission;
 import com.appsmith.server.actioncollections.base.ActionCollectionService;
 import com.appsmith.server.applications.base.ApplicationService;
+import com.appsmith.server.constants.FieldName;
 import com.appsmith.server.datasources.base.DatasourceService;
 import com.appsmith.server.domains.Application;
 import com.appsmith.server.domains.ApplicationMode;
@@ -13,8 +15,8 @@ import com.appsmith.server.domains.ApplicationPage;
 import com.appsmith.server.domains.CustomJSLib;
 import com.appsmith.server.domains.GitArtifactMetadata;
 import com.appsmith.server.domains.NewPage;
+import com.appsmith.server.domains.Organization;
 import com.appsmith.server.domains.Plugin;
-import com.appsmith.server.domains.Tenant;
 import com.appsmith.server.domains.Theme;
 import com.appsmith.server.domains.User;
 import com.appsmith.server.domains.UserData;
@@ -32,22 +34,25 @@ import com.appsmith.server.dtos.ResponseDTO;
 import com.appsmith.server.dtos.UserProfileDTO;
 import com.appsmith.server.exceptions.AppsmithError;
 import com.appsmith.server.exceptions.AppsmithException;
+import com.appsmith.server.helpers.SecureBaseUrlResolver;
 import com.appsmith.server.jslibs.base.CustomJSLibService;
 import com.appsmith.server.newactions.base.NewActionService;
 import com.appsmith.server.newpages.base.NewPageService;
 import com.appsmith.server.plugins.base.PluginService;
 import com.appsmith.server.repositories.ApplicationRepository;
-import com.appsmith.server.repositories.CacheableRepositoryHelper;
 import com.appsmith.server.repositories.NewPageRepository;
 import com.appsmith.server.services.ApplicationPageService;
 import com.appsmith.server.services.ConsolidatedAPIService;
+import com.appsmith.server.services.FeatureFlagService;
 import com.appsmith.server.services.MockDataService;
+import com.appsmith.server.services.OrganizationService;
 import com.appsmith.server.services.ProductAlertService;
 import com.appsmith.server.services.SessionUserService;
-import com.appsmith.server.services.TenantService;
 import com.appsmith.server.services.UserDataService;
 import com.appsmith.server.services.UserService;
 import com.appsmith.server.themes.base.ThemeService;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -77,6 +82,8 @@ import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 @SpringBootTest
@@ -96,10 +103,27 @@ public class ConsolidatedAPIServiceImplTest {
     UserDataService mockUserDataService;
 
     @MockBean
-    TenantService mockTenantService;
+    OrganizationService mockOrganizationService;
 
     @MockBean
     ProductAlertService mockProductAlertService;
+
+    /**
+     * GHSA-j9gf-vw2f-9hrw — the consolidated-api now calls
+     * {@link SecureBaseUrlResolver#isBaseUrlConfigurationHealthy()} alongside the org-config
+     * fetch. Mock it here so the test class doesn't escape into the real EE resolver chain
+     * (which transitively pulls in FeatureFlagService → OrganizationService and would NPE
+     * since OrganizationService is itself a @MockBean returning null for unstubbed methods).
+     */
+    @MockBean
+    SecureBaseUrlResolver mockSecureBaseUrlResolver;
+
+    @BeforeEach
+    void stubSecureBaseUrlResolver() {
+        // Default to healthy=true. Existing tests don't care about the admin-banner state;
+        // dedicated tests for the banner signal stub their own override on this mock.
+        when(mockSecureBaseUrlResolver.isBaseUrlConfigurationHealthy()).thenReturn(Mono.just(true));
+    }
 
     @SpyBean
     NewPageService spyNewPageService;
@@ -137,8 +161,8 @@ public class ConsolidatedAPIServiceImplTest {
     @SpyBean
     NewPageRepository mockNewPageRepository;
 
-    @Autowired
-    CacheableRepositoryHelper cacheableRepositoryHelper;
+    @SpyBean
+    FeatureFlagService featureFlagService;
 
     @Test
     public void testErrorWhenModeIsNullAndPageIdAvailable() {
@@ -163,14 +187,16 @@ public class ConsolidatedAPIServiceImplTest {
         sampleFeatureFlagMap.put("sampleFeatureFlag", true);
         when(mockUserDataService.getFeatureFlagsForCurrentUser()).thenReturn(Mono.just(sampleFeatureFlagMap));
 
-        Tenant sampleTenant = new Tenant();
-        sampleTenant.setDisplayName("sampleTenant");
-        when(mockTenantService.getTenantConfiguration()).thenReturn(Mono.just(sampleTenant));
+        Organization sampleOrganization = new Organization();
+        sampleOrganization.setDisplayName("sampleOrganization");
+        when(mockOrganizationService.getOrganizationConfiguration()).thenReturn(Mono.just(sampleOrganization));
 
         ProductAlertResponseDTO sampleProductAlertResponseDTO = new ProductAlertResponseDTO();
         sampleProductAlertResponseDTO.setTitle("sampleProductAlert");
         when(mockProductAlertService.getSingleApplicableMessage())
                 .thenReturn(Mono.just(List.of(sampleProductAlertResponseDTO)));
+
+        doReturn(Mono.just(Boolean.TRUE)).when(featureFlagService).check(FeatureFlagEnum.license_static_url_enabled);
 
         Mono<ConsolidatedAPIResponseDTO> consolidatedInfoForPageLoad =
                 consolidatedAPIService.getConsolidatedInfoForPageLoad(
@@ -185,11 +211,11 @@ public class ConsolidatedAPIServiceImplTest {
                                     .getData()
                                     .getName());
 
-                    assertNotNull(consolidatedAPIResponseDTO.getTenantConfig());
+                    assertNotNull(consolidatedAPIResponseDTO.getOrganizationConfig());
                     assertEquals(
-                            "sampleTenant",
+                            "sampleOrganization",
                             consolidatedAPIResponseDTO
-                                    .getTenantConfig()
+                                    .getOrganizationConfig()
                                     .getData()
                                     .getDisplayName());
 
@@ -223,9 +249,9 @@ public class ConsolidatedAPIServiceImplTest {
         sampleFeatureFlagMap.put("sampleFeatureFlag", true);
         when(mockUserDataService.getFeatureFlagsForCurrentUser()).thenReturn(Mono.just(sampleFeatureFlagMap));
 
-        Tenant sampleTenant = new Tenant();
-        sampleTenant.setDisplayName("sampleTenant");
-        when(mockTenantService.getTenantConfiguration()).thenReturn(Mono.just(sampleTenant));
+        Organization sampleOrganization = new Organization();
+        sampleOrganization.setDisplayName("sampleOrganization");
+        when(mockOrganizationService.getOrganizationConfiguration()).thenReturn(Mono.just(sampleOrganization));
 
         ProductAlertResponseDTO sampleProductAlertResponseDTO = new ProductAlertResponseDTO();
         sampleProductAlertResponseDTO.setTitle("sampleProductAlert");
@@ -259,8 +285,7 @@ public class ConsolidatedAPIServiceImplTest {
 
         Theme sampleTheme = new Theme();
         sampleTheme.setName("sampleTheme");
-        doReturn(Mono.just(sampleTheme)).when(spyThemeService).getApplicationTheme(anyString(), any());
-        doReturn(Flux.just(sampleTheme)).when(spyThemeService).getApplicationThemes(anyString());
+        doReturn(Mono.just(sampleTheme)).when(spyThemeService).getApplicationTheme(any(Application.class), any());
 
         CustomJSLib sampleCustomJSLib = new CustomJSLib();
         sampleCustomJSLib.setName("sampleJSLib");
@@ -312,11 +337,11 @@ public class ConsolidatedAPIServiceImplTest {
                                     .getData()
                                     .getName());
 
-                    assertNotNull(consolidatedAPIResponseDTO.getTenantConfig());
+                    assertNotNull(consolidatedAPIResponseDTO.getOrganizationConfig());
                     assertEquals(
-                            "sampleTenant",
+                            "sampleOrganization",
                             consolidatedAPIResponseDTO
-                                    .getTenantConfig()
+                                    .getOrganizationConfig()
                                     .getData()
                                     .getDisplayName());
 
@@ -339,16 +364,10 @@ public class ConsolidatedAPIServiceImplTest {
                                     .getData()
                                     .getName());
 
+                    // The application theme list is editor data: the published payload carries an empty list
                     assertNotNull(consolidatedAPIResponseDTO.getThemes());
                     assertEquals(
-                            1, consolidatedAPIResponseDTO.getThemes().getData().size());
-                    assertEquals(
-                            "sampleTheme",
-                            consolidatedAPIResponseDTO
-                                    .getThemes()
-                                    .getData()
-                                    .get(0)
-                                    .getName());
+                            0, consolidatedAPIResponseDTO.getThemes().getData().size());
 
                     assertNotNull(consolidatedAPIResponseDTO.getPublishedActionCollections());
                     assertEquals(
@@ -412,9 +431,9 @@ public class ConsolidatedAPIServiceImplTest {
         sampleFeatureFlagMap.put("sampleFeatureFlag", true);
         when(mockUserDataService.getFeatureFlagsForCurrentUser()).thenReturn(Mono.just(sampleFeatureFlagMap));
 
-        Tenant sampleTenant = new Tenant();
-        sampleTenant.setDisplayName("sampleTenant");
-        when(mockTenantService.getTenantConfiguration()).thenReturn(Mono.just(sampleTenant));
+        Organization sampleOrganization = new Organization();
+        sampleOrganization.setDisplayName("sampleOrganization");
+        when(mockOrganizationService.getOrganizationConfiguration()).thenReturn(Mono.just(sampleOrganization));
 
         ProductAlertResponseDTO sampleProductAlertResponseDTO = new ProductAlertResponseDTO();
         sampleProductAlertResponseDTO.setTitle("sampleProductAlert");
@@ -450,8 +469,8 @@ public class ConsolidatedAPIServiceImplTest {
 
         Theme sampleTheme = new Theme();
         sampleTheme.setName("sampleTheme");
-        doReturn(Mono.just(sampleTheme)).when(spyThemeService).getApplicationTheme(anyString(), any());
-        doReturn(Flux.just(sampleTheme)).when(spyThemeService).getApplicationThemes(anyString());
+        doReturn(Mono.just(sampleTheme)).when(spyThemeService).getApplicationTheme(any(Application.class), any());
+        doReturn(Flux.just(sampleTheme)).when(spyThemeService).getApplicationThemes(any(Application.class));
 
         CustomJSLib sampleCustomJSLib = new CustomJSLib();
         sampleCustomJSLib.setName("sampleJSLib");
@@ -538,11 +557,11 @@ public class ConsolidatedAPIServiceImplTest {
                                     .getData()
                                     .getName());
 
-                    assertNotNull(consolidatedAPIResponseDTO.getTenantConfig());
+                    assertNotNull(consolidatedAPIResponseDTO.getOrganizationConfig());
                     assertEquals(
-                            "sampleTenant",
+                            "sampleOrganization",
                             consolidatedAPIResponseDTO
-                                    .getTenantConfig()
+                                    .getOrganizationConfig()
                                     .getData()
                                     .getDisplayName());
 
@@ -731,14 +750,16 @@ public class ConsolidatedAPIServiceImplTest {
         sampleFeatureFlagMap.put("sampleFeatureFlag", true);
         when(mockUserDataService.getFeatureFlagsForCurrentUser()).thenReturn(Mono.just(sampleFeatureFlagMap));
 
-        Tenant sampleTenant = new Tenant();
-        sampleTenant.setDisplayName("sampleTenant");
-        when(mockTenantService.getTenantConfiguration()).thenReturn(Mono.just(sampleTenant));
+        Organization sampleOrganization = new Organization();
+        sampleOrganization.setDisplayName("sampleOrganization");
+        when(mockOrganizationService.getOrganizationConfiguration()).thenReturn(Mono.just(sampleOrganization));
 
         ProductAlertResponseDTO sampleProductAlertResponseDTO = new ProductAlertResponseDTO();
         sampleProductAlertResponseDTO.setTitle("sampleProductAlert");
         when(mockProductAlertService.getSingleApplicableMessage())
                 .thenReturn(Mono.just(List.of(sampleProductAlertResponseDTO)));
+
+        doReturn(Mono.just(Boolean.TRUE)).when(featureFlagService).check(FeatureFlagEnum.license_static_url_enabled);
 
         Mockito.doReturn(Mono.empty())
                 .when(mockNewPageRepository)
@@ -760,11 +781,11 @@ public class ConsolidatedAPIServiceImplTest {
                                     .getData()
                                     .getName());
 
-                    assertNotNull(consolidatedAPIResponseDTO.getTenantConfig());
+                    assertNotNull(consolidatedAPIResponseDTO.getOrganizationConfig());
                     assertEquals(
-                            "sampleTenant",
+                            "sampleOrganization",
                             consolidatedAPIResponseDTO
-                                    .getTenantConfig()
+                                    .getOrganizationConfig()
                                     .getData()
                                     .getDisplayName());
 
@@ -903,9 +924,9 @@ public class ConsolidatedAPIServiceImplTest {
         sampleFeatureFlagMap.put("sampleFeatureFlag", true);
         when(mockUserDataService.getFeatureFlagsForCurrentUser()).thenReturn(Mono.just(sampleFeatureFlagMap));
 
-        Tenant sampleTenant = new Tenant();
-        sampleTenant.setDisplayName("sampleTenant");
-        when(mockTenantService.getTenantConfiguration()).thenReturn(Mono.just(sampleTenant));
+        Organization sampleOrganization = new Organization();
+        sampleOrganization.setDisplayName("sampleOrganization");
+        when(mockOrganizationService.getOrganizationConfiguration()).thenReturn(Mono.just(sampleOrganization));
 
         ProductAlertResponseDTO sampleProductAlertResponseDTO = new ProductAlertResponseDTO();
         sampleProductAlertResponseDTO.setTitle("sampleProductAlert");
@@ -925,9 +946,17 @@ public class ConsolidatedAPIServiceImplTest {
         mockNewPage.setApplicationId("mockApplicationId");
         mockNewPage.setId("mockPageId");
 
+        // First call with branch - throws error (non-git app, page not found with branch)
+        doReturn(Mono.error(
+                        new AppsmithException(AppsmithError.NO_RESOURCE_FOUND, FieldName.PAGE, "mockPageId, branch")))
+                .when(spyNewPageService)
+                .findByRefTypeAndRefNameAndBasePageIdAndApplicationMode(
+                        eq(RefType.branch), eq("branch"), eq("mockPageId"), any());
+
+        // Fallback call without branch - returns the page
         doReturn(Mono.just(mockNewPage))
                 .when(spyNewPageService)
-                .findByRefTypeAndRefNameAndBasePageId(any(), eq(null), eq("mockPageId"), any(), any());
+                .findByRefTypeAndRefNameAndBasePageIdAndApplicationMode(eq(null), eq(null), eq("mockPageId"), any());
 
         doReturn(Mono.just(List.of(mockNewPage)))
                 .when(spyApplicationPageService)
@@ -939,8 +968,7 @@ public class ConsolidatedAPIServiceImplTest {
 
         Theme sampleTheme = new Theme();
         sampleTheme.setName("sampleTheme");
-        doReturn(Mono.just(sampleTheme)).when(spyThemeService).getApplicationTheme(anyString(), any());
-        doReturn(Flux.just(sampleTheme)).when(spyThemeService).getApplicationThemes(anyString());
+        doReturn(Mono.just(sampleTheme)).when(spyThemeService).getApplicationTheme(any(Application.class), any());
 
         CustomJSLib sampleCustomJSLib = new CustomJSLib();
         sampleCustomJSLib.setName("sampleJSLib");
@@ -992,11 +1020,11 @@ public class ConsolidatedAPIServiceImplTest {
                                     .getData()
                                     .getName());
 
-                    assertNotNull(consolidatedAPIResponseDTO.getTenantConfig());
+                    assertNotNull(consolidatedAPIResponseDTO.getOrganizationConfig());
                     assertEquals(
-                            "sampleTenant",
+                            "sampleOrganization",
                             consolidatedAPIResponseDTO
-                                    .getTenantConfig()
+                                    .getOrganizationConfig()
                                     .getData()
                                     .getDisplayName());
 
@@ -1019,16 +1047,10 @@ public class ConsolidatedAPIServiceImplTest {
                                     .getData()
                                     .getName());
 
+                    // The application theme list is editor data: the published payload carries an empty list
                     assertNotNull(consolidatedAPIResponseDTO.getThemes());
                     assertEquals(
-                            1, consolidatedAPIResponseDTO.getThemes().getData().size());
-                    assertEquals(
-                            "sampleTheme",
-                            consolidatedAPIResponseDTO
-                                    .getThemes()
-                                    .getData()
-                                    .get(0)
-                                    .getName());
+                            0, consolidatedAPIResponseDTO.getThemes().getData().size());
 
                     assertNotNull(consolidatedAPIResponseDTO.getPublishedActionCollections());
                     assertEquals(
@@ -1095,9 +1117,9 @@ public class ConsolidatedAPIServiceImplTest {
         when(mockUserDataService.updateLastUsedResourceAndWorkspaceList(any(), any(), any()))
                 .thenReturn(Mono.just(new UserData()));
 
-        Tenant sampleTenant = new Tenant();
-        sampleTenant.setDisplayName("sampleTenant");
-        when(mockTenantService.getTenantConfiguration()).thenReturn(Mono.just(sampleTenant));
+        Organization sampleOrganization = new Organization();
+        sampleOrganization.setDisplayName("sampleOrganization");
+        when(mockOrganizationService.getOrganizationConfiguration()).thenReturn(Mono.just(sampleOrganization));
 
         ProductAlertResponseDTO sampleProductAlertResponseDTO = new ProductAlertResponseDTO();
         sampleProductAlertResponseDTO.setTitle("sampleProductAlert");
@@ -1112,6 +1134,7 @@ public class ConsolidatedAPIServiceImplTest {
         baseMetadata.setRefName("master");
         baseMetadata.setDefaultBranchName("newDefaultBranch");
         baseMetadata.setDefaultApplicationId("mockBaseId");
+        baseMetadata.setRemoteUrl("remoteUrl");
         mockApplicationBaseBranch.setGitArtifactMetadata(baseMetadata);
         mockApplicationBaseBranch.setId("mockId");
 
@@ -1125,6 +1148,7 @@ public class ConsolidatedAPIServiceImplTest {
 
         Application mockDefaultApplication = new Application();
         GitArtifactMetadata defaultMetadata = new GitArtifactMetadata();
+        defaultMetadata.setRemoteUrl("remoteUrl");
         defaultMetadata.setRefName("newDefaultBranch");
         defaultMetadata.setDefaultApplicationId("mockBaseId");
         mockDefaultApplication.setGitArtifactMetadata(defaultMetadata);
@@ -1138,6 +1162,7 @@ public class ConsolidatedAPIServiceImplTest {
 
         NewPage basePage = new NewPage();
         basePage.setApplicationId("mockBaseId");
+        basePage.setBaseId("basePageId"); // Set baseId for branch switching logic
 
         PageDTO unpublishedPage = new PageDTO();
         NewPage defaultAppDefaultPage = new NewPage();
@@ -1145,13 +1170,16 @@ public class ConsolidatedAPIServiceImplTest {
         defaultAppDefaultPage.setApplicationId("defaultApplicationId");
         defaultAppDefaultPage.setUnpublishedPage(unpublishedPage);
 
+        // Initial page search with null refName - returns page on master branch
         doReturn(Mono.just(basePage))
                 .when(spyNewPageService)
-                .findByRefTypeAndRefNameAndBasePageId(any(), eq(null), anyString(), any(), any());
+                .findByRefTypeAndRefNameAndBasePageIdAndApplicationMode(eq(null), eq(null), eq("pageId"), any());
 
+        // After branch switch, search for page in newDefaultBranch
         doReturn(Mono.just(defaultAppDefaultPage))
                 .when(spyNewPageService)
-                .findByRefTypeAndRefNameAndBasePageId(any(), anyString(), anyString(), any(), any());
+                .findByRefTypeAndRefNameAndBasePageIdAndApplicationMode(
+                        eq(RefType.branch), eq("newDefaultBranch"), eq("basePageId"), any());
 
         doReturn(Mono.just(List.of(defaultAppDefaultPage)))
                 .when(spyApplicationPageService)
@@ -1163,8 +1191,8 @@ public class ConsolidatedAPIServiceImplTest {
 
         Theme sampleTheme = new Theme();
         sampleTheme.setName("sampleTheme");
-        doReturn(Mono.just(sampleTheme)).when(spyThemeService).getApplicationTheme(anyString(), any());
-        doReturn(Flux.just(sampleTheme)).when(spyThemeService).getApplicationThemes(anyString());
+        doReturn(Mono.just(sampleTheme)).when(spyThemeService).getApplicationTheme(any(Application.class), any());
+        doReturn(Flux.just(sampleTheme)).when(spyThemeService).getApplicationThemes(any(Application.class));
 
         CustomJSLib sampleCustomJSLib = new CustomJSLib();
         sampleCustomJSLib.setName("sampleJSLib");
@@ -1250,11 +1278,11 @@ public class ConsolidatedAPIServiceImplTest {
                                     .getData()
                                     .getName());
 
-                    assertNotNull(consolidatedAPIResponseDTO.getTenantConfig());
+                    assertNotNull(consolidatedAPIResponseDTO.getOrganizationConfig());
                     assertEquals(
-                            "sampleTenant",
+                            "sampleOrganization",
                             consolidatedAPIResponseDTO
-                                    .getTenantConfig()
+                                    .getOrganizationConfig()
                                     .getData()
                                     .getDisplayName());
 
@@ -1425,8 +1453,16 @@ public class ConsolidatedAPIServiceImplTest {
                 .verifyComplete();
     }
 
+    /**
+     * Tests the scenario where a page from a feature branch is accessed without providing a refName.
+     * The new routing logic should:
+     * 1. Find the page using the provided ID
+     * 2. Discover it belongs to a git app on a feature branch
+     * 3. Route to the default branch since no refName was specified
+     * 4. Return an error if the page doesn't exist in the default branch
+     */
     @Test
-    public void testPageLoadWhenPageFromFeatureBranchAndCacheableRepositoryReturnsBaseApplicationId() {
+    public void testPageLoadWhenPageFromFeatureBranchWithoutRefName_shouldRouteToDefaultBranch() {
         User sampleUser = new User();
         when(mockSessionUserService.getCurrentUser()).thenReturn(Mono.just(sampleUser));
 
@@ -1438,12 +1474,9 @@ public class ConsolidatedAPIServiceImplTest {
         sampleFeatureFlagMap.put("sampleFeatureFlag", true);
         when(mockUserDataService.getFeatureFlagsForCurrentUser()).thenReturn(Mono.just(sampleFeatureFlagMap));
 
-        when(mockUserDataService.updateLastUsedResourceAndWorkspaceList(any(), any(), any()))
-                .thenReturn(Mono.just(new UserData()));
-
-        Tenant sampleTenant = new Tenant();
-        sampleTenant.setDisplayName("sampleTenant");
-        when(mockTenantService.getTenantConfiguration()).thenReturn(Mono.just(sampleTenant));
+        Organization sampleOrganization = new Organization();
+        sampleOrganization.setDisplayName("sampleOrganization");
+        when(mockOrganizationService.getOrganizationConfiguration()).thenReturn(Mono.just(sampleOrganization));
 
         ProductAlertResponseDTO sampleProductAlertResponseDTO = new ProductAlertResponseDTO();
         sampleProductAlertResponseDTO.setTitle("sampleProductAlert");
@@ -1452,44 +1485,35 @@ public class ConsolidatedAPIServiceImplTest {
 
         final String WORKSPACE_ID = "sampleWorkspaceId";
         final String DEFAULT_APPLICATION_ID = "defaultApplicationId";
-        final String BASE_APPLICATION_ID = "baseApplicationId";
         final String FEATURE_APPLICATION_ID = "featureApplicationId";
+        final String FEATURE_BRANCH = "featureBranch";
         final String DEFAULT_BRANCH = "defaultBranch";
-        final String BASE_BRANCH = "baseBranch";
         final String FEATURE_PAGE_ID = "featurePageId";
+        final String BASE_PAGE_ID = "basePageId";
+        final String REMOTE_URL = "remoteUrl";
 
-        ApplicationPagesDTO sampleApplicationPagesDTO = new ApplicationPagesDTO();
-        sampleApplicationPagesDTO.setWorkspaceId(WORKSPACE_ID);
+        // Feature branch application metadata
+        GitArtifactMetadata featureMetadata = new GitArtifactMetadata();
+        featureMetadata.setRefName(FEATURE_BRANCH);
+        featureMetadata.setDefaultBranchName(DEFAULT_BRANCH);
+        featureMetadata.setDefaultArtifactId(DEFAULT_APPLICATION_ID);
+        featureMetadata.setRemoteUrl(REMOTE_URL);
 
-        // base metadata
-        GitArtifactMetadata baseMetadata = new GitArtifactMetadata();
-        baseMetadata.setRefName(BASE_BRANCH);
-        baseMetadata.setDefaultBranchName(DEFAULT_BRANCH);
-        baseMetadata.setDefaultApplicationId(DEFAULT_APPLICATION_ID);
+        Application featureBranchApplication = new Application();
+        featureBranchApplication.setGitArtifactMetadata(featureMetadata);
+        featureBranchApplication.setWorkspaceId(WORKSPACE_ID);
+        featureBranchApplication.setId(FEATURE_APPLICATION_ID);
 
-        Application baseBranchApplication = new Application();
-        baseBranchApplication.setGitArtifactMetadata(baseMetadata);
-        baseBranchApplication.setWorkspaceId(WORKSPACE_ID);
-        baseBranchApplication.setId(BASE_APPLICATION_ID);
-
-        // caching the base application id for the test case.
-        cacheableRepositoryHelper
-                .fetchBaseApplicationId(FEATURE_PAGE_ID, BASE_APPLICATION_ID)
-                .block();
-
-        doReturn(Mono.just(baseBranchApplication))
-                .when(spyApplicationService)
-                .findByBaseIdBranchNameAndApplicationMode(eq(BASE_APPLICATION_ID), eq(null), any());
-
+        // Default branch application
         ApplicationPage defaultApplicationPage = new ApplicationPage();
         defaultApplicationPage.setIsDefault(true);
         defaultApplicationPage.setId("defaultPageId");
 
-        // default metadata
         GitArtifactMetadata defaultMetadata = new GitArtifactMetadata();
         defaultMetadata.setRefName(DEFAULT_BRANCH);
         defaultMetadata.setDefaultBranchName(DEFAULT_BRANCH);
-        defaultMetadata.setDefaultApplicationId(DEFAULT_APPLICATION_ID);
+        defaultMetadata.setDefaultArtifactId(DEFAULT_APPLICATION_ID);
+        defaultMetadata.setRemoteUrl(REMOTE_URL);
 
         Application defaultBranchApplication = new Application();
         defaultBranchApplication.setGitArtifactMetadata(defaultMetadata);
@@ -1497,99 +1521,34 @@ public class ConsolidatedAPIServiceImplTest {
         defaultBranchApplication.setId(DEFAULT_APPLICATION_ID);
         defaultBranchApplication.setPages(List.of(defaultApplicationPage));
 
-        doReturn(Mono.just(defaultBranchApplication))
-                .when(spyApplicationService)
-                .findByBaseIdBranchNameAndApplicationMode(eq(BASE_APPLICATION_ID), eq(DEFAULT_BRANCH), any());
-
+        // Page from feature branch
         NewPage featureBranchPage = new NewPage();
         featureBranchPage.setId(FEATURE_PAGE_ID);
         featureBranchPage.setApplicationId(FEATURE_APPLICATION_ID);
-        featureBranchPage.setUnpublishedPage(new PageDTO());
+        featureBranchPage.setBaseId(BASE_PAGE_ID); // Set baseId for branch switching
+        featureBranchPage.setPublishedPage(new PageDTO());
 
+        // Step 1: Page search without refName finds the feature branch page
         doReturn(Mono.just(featureBranchPage))
                 .when(spyNewPageService)
-                .findByRefTypeAndRefNameAndBasePageIdAndApplicationMode(any(), eq(null), eq(FEATURE_PAGE_ID), any());
+                .findByRefTypeAndRefNameAndBasePageIdAndApplicationMode(eq(null), eq(null), eq(FEATURE_PAGE_ID), any());
 
-        doReturn(Mono.just(new PageDTO()))
-                .when(spyApplicationPageService)
-                .getPageAndMigrateDslByBranchedPageId(anyString(), anyBoolean(), anyBoolean());
+        // Step 2: Find application from the feature branch page
+        doReturn(Mono.just(featureBranchApplication))
+                .when(spyApplicationService)
+                .findByBranchedApplicationIdAndApplicationMode(eq(FEATURE_APPLICATION_ID), any());
 
-        Theme sampleTheme = new Theme();
-        sampleTheme.setName("sampleTheme");
-        doReturn(Mono.just(sampleTheme)).when(spyThemeService).getApplicationTheme(anyString(), any());
-        doReturn(Flux.just(sampleTheme)).when(spyThemeService).getApplicationThemes(anyString());
+        // Step 3: Find application in default branch (for branch switching)
+        doReturn(Mono.just(defaultBranchApplication))
+                .when(spyApplicationService)
+                .findByBaseIdBranchNameAndApplicationMode(eq(DEFAULT_APPLICATION_ID), eq(DEFAULT_BRANCH), any());
 
-        CustomJSLib sampleCustomJSLib = new CustomJSLib();
-        sampleCustomJSLib.setName("sampleJSLib");
-        doReturn(Mono.just(List.of(sampleCustomJSLib)))
-                .when(spyCustomJSLibService)
-                .getAllJSLibsInContext(anyString(), any(), anyBoolean());
-
-        PageDTO samplePageDTO = new PageDTO();
-        samplePageDTO.setName("samplePageDTO");
-        doReturn(Mono.just(samplePageDTO))
-                .doReturn(Mono.just(samplePageDTO))
-                .when(spyApplicationPageService)
-                .getPageAndMigrateDslByBranchedPageId(anyString(), anyBoolean(), anyBoolean());
-
-        doReturn(Mono.just(samplePageDTO))
-                .doReturn(Mono.just(samplePageDTO))
-                .when(spyApplicationPageService)
-                .getPageDTOAfterMigratingDSL(any(), anyBoolean(), anyBoolean());
-
-        doReturn(Mono.just(samplePageDTO))
-                .doReturn(Mono.just(samplePageDTO))
-                .when(spyApplicationPageService)
-                .getPageDTOAfterMigratingDSL(any(), anyBoolean(), anyBoolean());
-
-        ActionDTO sampleActionDTO = new ActionDTO();
-        sampleActionDTO.setName("sampleActionDTO");
-        sampleActionDTO.setUpdatedAt(Instant.now());
-        doReturn(Flux.just(sampleActionDTO)).when(spyNewActionService).getUnpublishedActions(any(), anyBoolean());
-
-        ActionCollectionDTO sampleActionCollectionDTO = new ActionCollectionDTO();
-        sampleActionCollectionDTO.setName("sampleActionCollectionDTO");
-        doReturn(Flux.just(sampleActionCollectionDTO))
-                .when(spyActionCollectionService)
-                .getPopulatedActionCollectionsByViewMode(any(), anyBoolean());
-
-        PageNameIdDTO samplePageNameIdDTO = new PageNameIdDTO();
-        samplePageNameIdDTO.setName("samplePageNameIdDTO");
-        sampleApplicationPagesDTO.setPages(List.of(samplePageNameIdDTO));
-
-        Plugin samplePlugin = new Plugin();
-        samplePlugin.setName("samplePlugin");
-        samplePlugin.setId("samplePluginId");
-        samplePlugin.setPackageName("sample-plugin");
-        Plugin sampleRestApiPlugin = new Plugin();
-        sampleRestApiPlugin.setName("sampleRestApiPlugin");
-        sampleRestApiPlugin.setId("sampleRestApiPluginId");
-        sampleRestApiPlugin.setPackageName(REST_API_PLUGIN);
-        Plugin sampleGraphqlPlugin = new Plugin();
-        sampleGraphqlPlugin.setName("sampleGraphqlPlugin");
-        sampleGraphqlPlugin.setId("sampleGraphqlPluginId");
-        sampleGraphqlPlugin.setPackageName(GRAPHQL_PLUGIN);
-        Plugin sampleAiPlugin = new Plugin();
-        sampleAiPlugin.setName("sampleAiPlugin");
-        sampleAiPlugin.setId("sampleAiPluginId");
-        sampleAiPlugin.setPackageName(APPSMITH_AI_PLUGIN);
-        when(mockPluginService.getInWorkspace(anyString()))
-                .thenReturn(Flux.just(samplePlugin, sampleRestApiPlugin, sampleGraphqlPlugin, sampleAiPlugin));
-
-        Datasource sampleDatasource = new Datasource();
-        sampleDatasource.setName("sampleDatasource");
-        sampleDatasource.setPluginId("samplePluginId");
-        when(mockDatasourceService.getAllWithStorages(any())).thenReturn(Flux.just(sampleDatasource));
-
-        Map<String, Map<?, ?>> sampleFormConfig = new HashMap<>();
-        sampleFormConfig.put("key", Map.of());
-        when(mockPluginService.getFormConfig(anyString())).thenReturn(Mono.just(sampleFormConfig));
-
-        MockDataSet sampleMockDataSet = new MockDataSet();
-        sampleMockDataSet.setName("sampleMockDataSet");
-        MockDataDTO sampleMockDataDTO = new MockDataDTO();
-        sampleMockDataDTO.setMockdbs(List.of(sampleMockDataSet));
-        when(mockMockDataService.getMockDataSet()).thenReturn(Mono.just(sampleMockDataDTO));
+        // Step 4: Page NOT found in default branch - throws error (simulates page doesn't exist in default branch)
+        doReturn(Mono.error(new AppsmithException(
+                        AppsmithError.NO_RESOURCE_FOUND, FieldName.PAGE, BASE_PAGE_ID + ", " + DEFAULT_BRANCH)))
+                .when(spyNewPageService)
+                .findByRefTypeAndRefNameAndBasePageIdAndApplicationMode(
+                        eq(RefType.branch), eq(DEFAULT_BRANCH), eq(BASE_PAGE_ID), any());
 
         Mono<ConsolidatedAPIResponseDTO> consolidatedInfoForPageLoad =
                 consolidatedAPIService.getConsolidatedInfoForPageLoad(
@@ -1601,24 +1560,129 @@ public class ConsolidatedAPIServiceImplTest {
                     ResponseDTO<ApplicationPagesDTO> pages = consolidatedAPIResponseDTO.getPages();
                     ResponseDTO<PageDTO> pageWithMigratedDsl = consolidatedAPIResponseDTO.getPageWithMigratedDsl();
 
+                    // Verify error responses - page not found in default branch
                     assertNull(pages.getData());
                     assertNotNull(pages.getResponseMeta());
                     assertNotNull(pages.getResponseMeta().getError());
-
                     assertThat(pages.getResponseMeta().getError().getCode())
                             .isEqualTo(AppsmithError.NO_RESOURCE_FOUND.getAppErrorCode());
-                    assertThat(pages.getResponseMeta().getError().getMessage())
-                            .isEqualTo("Unable to find page featurePageId, defaultBranch");
 
                     assertNull(pageWithMigratedDsl.getData());
                     assertNotNull(pageWithMigratedDsl.getResponseMeta());
                     assertNotNull(pageWithMigratedDsl.getResponseMeta().getError());
-
                     assertThat(pageWithMigratedDsl.getResponseMeta().getError().getCode())
                             .isEqualTo(AppsmithError.NO_RESOURCE_FOUND.getAppErrorCode());
-                    assertThat(pageWithMigratedDsl.getResponseMeta().getError().getMessage())
-                            .isEqualTo("Unable to find page featurePageId, defaultBranch");
                 })
                 .verifyComplete();
+    }
+
+    /**
+     * The application theme list is editor data. The published payload carries an empty list and the theme
+     * service is never asked to list themes in PUBLISHED mode. See GHSA-x2jf-gfvj-wfg2.
+     */
+    @Test
+    @DisplayName(
+            "Published consolidated payload carries an empty theme list without listing themes (GHSA-x2jf-gfvj-wfg2)")
+    void should_returnEmptyThemeListWithoutListingThemes_when_modeIsPublished() {
+        // Given
+        User sampleUser = new User();
+        when(mockSessionUserService.getCurrentUser()).thenReturn(Mono.just(sampleUser));
+
+        UserProfileDTO sampleUserProfileDTO = new UserProfileDTO();
+        sampleUserProfileDTO.setName("sampleUserProfileDTO");
+        when(mockUserService.buildUserProfileDTO(any())).thenReturn(Mono.just(sampleUserProfileDTO));
+
+        Map<String, Boolean> sampleFeatureFlagMap = new HashMap<>();
+        sampleFeatureFlagMap.put("sampleFeatureFlag", true);
+        when(mockUserDataService.getFeatureFlagsForCurrentUser()).thenReturn(Mono.just(sampleFeatureFlagMap));
+
+        Organization sampleOrganization = new Organization();
+        sampleOrganization.setDisplayName("sampleOrganization");
+        when(mockOrganizationService.getOrganizationConfiguration()).thenReturn(Mono.just(sampleOrganization));
+
+        ProductAlertResponseDTO sampleProductAlertResponseDTO = new ProductAlertResponseDTO();
+        sampleProductAlertResponseDTO.setTitle("sampleProductAlert");
+        when(mockProductAlertService.getSingleApplicableMessage())
+                .thenReturn(Mono.just(List.of(sampleProductAlertResponseDTO)));
+
+        ApplicationPagesDTO sampleApplicationPagesDTO = new ApplicationPagesDTO();
+        sampleApplicationPagesDTO.setWorkspaceId("sampleWorkspaceId");
+
+        Application mockApplication = new Application();
+        mockApplication.setId("mockApplicationId");
+        doReturn(Mono.just(mockApplication))
+                .when(spyApplicationService)
+                .findByBranchedApplicationIdAndApplicationMode(anyString(), any());
+
+        NewPage mockNewPage = new NewPage();
+        mockNewPage.setApplicationId("mockApplicationId");
+        mockNewPage.setId("mockPageId");
+        mockNewPage.setBranchName("branch");
+        doReturn(Mono.just(mockNewPage))
+                .when(spyNewPageService)
+                .findByRefTypeAndRefNameAndBasePageId(any(), anyString(), anyString(), any(), any());
+
+        doReturn(Mono.just(List.of(mockNewPage)))
+                .when(spyApplicationPageService)
+                .getPagesBasedOnApplicationMode(any(), any());
+
+        doReturn(Mono.just(sampleApplicationPagesDTO))
+                .when(spyNewPageService)
+                .createApplicationPagesDTO(any(), any(), anyBoolean(), anyBoolean());
+
+        Theme currentTheme = new Theme();
+        currentTheme.setName("currentTheme");
+        doReturn(Mono.just(currentTheme)).when(spyThemeService).getApplicationTheme(any(Application.class), any());
+
+        Theme namedTheme = new Theme();
+        namedTheme.setName("namedTheme");
+        namedTheme.setApplicationId("mockApplicationId");
+        doReturn(Flux.just(namedTheme)).when(spyThemeService).getApplicationThemes(any(Application.class));
+
+        CustomJSLib sampleCustomJSLib = new CustomJSLib();
+        sampleCustomJSLib.setName("sampleJSLib");
+        doReturn(Mono.just(List.of(sampleCustomJSLib)))
+                .when(spyCustomJSLibService)
+                .getAllJSLibsInContext(anyString(), any(), anyBoolean());
+
+        PageDTO samplePageDTO = new PageDTO();
+        samplePageDTO.setName("samplePageDTO");
+        doReturn(Mono.just(samplePageDTO))
+                .when(spyApplicationPageService)
+                .getPageAndMigrateDslByBranchedPageId(anyString(), anyBoolean(), anyBoolean());
+
+        ActionViewDTO sampleActionViewDTO = new ActionViewDTO();
+        sampleActionViewDTO.setName("sampleActionViewDTO");
+        doReturn(Flux.just(sampleActionViewDTO)).when(spyNewActionService).getActionsForViewModeByPageId(anyString());
+
+        ActionCollectionViewDTO sampleActionCollectionViewDTO = new ActionCollectionViewDTO();
+        sampleActionCollectionViewDTO.setName("sampleActionCollectionViewDTO");
+        doReturn(Flux.just(sampleActionCollectionViewDTO))
+                .when(spyActionCollectionService)
+                .getActionCollectionsForViewMode(anyString());
+
+        // When
+        Mono<ConsolidatedAPIResponseDTO> consolidatedInfoForPageLoad =
+                consolidatedAPIService.getConsolidatedInfoForPageLoad(
+                        "pageId123", null, RefType.branch, "branch", ApplicationMode.PUBLISHED);
+
+        // Then
+        StepVerifier.create(consolidatedInfoForPageLoad)
+                .assertNext(consolidatedAPIResponseDTO -> {
+                    assertThat(consolidatedAPIResponseDTO
+                                    .getCurrentTheme()
+                                    .getData()
+                                    .getName())
+                            .isEqualTo("currentTheme");
+                    assertThat(consolidatedAPIResponseDTO.getThemes()).isNotNull();
+                    assertThat(consolidatedAPIResponseDTO
+                                    .getThemes()
+                                    .getResponseMeta()
+                                    .getStatus())
+                            .isEqualTo(200);
+                    assertThat(consolidatedAPIResponseDTO.getThemes().getData()).isEmpty();
+                })
+                .verifyComplete();
+        verify(spyThemeService, never()).getApplicationThemes(any(Application.class));
     }
 }

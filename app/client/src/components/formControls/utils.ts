@@ -9,7 +9,6 @@ import type { FormConfigType, HiddenType } from "./BaseControl";
 import type { Diff } from "deep-diff";
 import { diff } from "deep-diff";
 import { MongoDefaultActionConfig } from "constants/DatasourceEditorConstants";
-import type { Action } from "@sentry/react/dist/types";
 import { klona } from "klona/full";
 import type { FeatureFlags } from "ee/entities/FeatureFlag";
 import _ from "lodash";
@@ -423,7 +422,10 @@ export const getConfigInitialValues = (
   // TODO: Fix this the next time the file is edited
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const parseConfig = (section: any): any => {
-    if ("initialValue" in section) {
+    if (
+      "initialValue" in section &&
+      section.configProperty !== "runBehaviour"
+    ) {
       if (section.controlType === "KEYVALUE_ARRAY") {
         section.initialValue.forEach(
           (initialValue: string | number, index: number) => {
@@ -749,8 +751,8 @@ export const updateEvaluatedSectionConfig = (
 };
 
 export function fixActionPayloadForMongoQuery(
-  action?: Action,
-): Action | undefined {
+  action?: unknown,
+): unknown | undefined {
   if (!action) return action;
 
   /* eslint-disable */
@@ -782,7 +784,6 @@ export function fixActionPayloadForMongoQuery(
           }
           // @ts-expect-error: Types are not available
           value = actionObjectDiff[i]?.rhs;
-          // @ts-expect-error: Types are not available
           set(action, path, value);
         }
       }

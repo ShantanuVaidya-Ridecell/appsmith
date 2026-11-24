@@ -1,7 +1,7 @@
 import type { WidgetAddChild } from "actions/pageActions";
 import type { ReduxAction } from "actions/ReduxActionTypes";
 import type { WidgetDraggingUpdateParams } from "layoutSystems/common/canvasArenas/ArenaTypes";
-import type { FlattenedWidgetProps } from "reducers/entityReducers/canvasWidgetsReducer";
+import type { FlattenedWidgetProps } from "ee/reducers/entityReducers/canvasWidgetsReducer";
 import { PaginationType, type Action } from "entities/Action";
 import { PluginType } from "entities/Plugin";
 
@@ -129,7 +129,7 @@ export const newlyCreatedActions: Action[] = [
         },
       ],
     },
-    executeOnLoad: true,
+    runBehaviour: "ON_PAGE_LOAD",
     dynamicBindingPathList: [
       {
         key: "body",
@@ -152,5 +152,8 @@ export const newlyCreatedActions: Action[] = [
       "execute:actions",
       "manage:actions",
     ],
+    isDirtyMap: {
+      SCHEMA_GENERATION: false,
+    },
   },
 ];

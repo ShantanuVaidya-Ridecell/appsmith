@@ -21,7 +21,7 @@ import { AuthenticationStatus, AuthType } from "entities/Datasource";
 import { get, isArray } from "lodash";
 import store from "store";
 import { getPlugin } from "ee/selectors/entitiesSelector";
-import type { AppState } from "ee/reducers";
+import type { DefaultRootState } from "react-redux";
 import {
   DATASOURCES_ALLOWED_FOR_PREVIEW_MODE,
   MOCK_DB_TABLE_NAMES,
@@ -68,6 +68,17 @@ export function getPropertyControlFocusElement(
     const [, propertyInputElement] = element.children;
 
     if (propertyInputElement) {
+      // A disabled control with `showValueWhenDisabled` renders only its
+      // read-only value. That block is this child itself, so the search of
+      // its descendants below would not find it.
+      if (
+        propertyInputElement.matches(
+          '[data-testid="t--property-control-disabled-value"]',
+        )
+      ) {
+        return propertyInputElement as HTMLElement;
+      }
+
       const uiInputElement = propertyInputElement.querySelector(
         'button:not([tabindex="-1"]), input, [tabindex]:not([tabindex="-1"])',
       ) as HTMLElement | undefined;
@@ -168,6 +179,10 @@ export function isGoogleSheetPluginDS(pluginPackageName?: string) {
   return pluginPackageName === PluginPackageName.GOOGLE_SHEETS;
 }
 
+export function isMongoDBPluginDS(pluginPackageName?: string) {
+  return pluginPackageName === PluginPackageName.MONGO;
+}
+
 /**
  * Returns datasource property value from datasource?.datasourceConfiguration?.properties
  * @param datasource Datasource
@@ -241,7 +256,7 @@ export function getFormDiffPaths(initialValues: any, currentValues: any) {
  * @returns string
  */
 export function getSQLPluginsMockTableName(pluginId: string) {
-  const state: AppState = store.getState();
+  const state: DefaultRootState = store.getState();
   const plugin: Plugin | undefined = getPlugin(state, pluginId);
 
   switch (plugin?.name) {

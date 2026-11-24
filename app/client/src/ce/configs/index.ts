@@ -1,5 +1,23 @@
 import type { AppsmithUIConfigs } from "./types";
 
+declare global {
+  interface Window {
+    // Pylon chat widget (https://docs.usepylon.com/pylon-docs/chat-widget/javascript-api)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    Pylon: any;
+    pylon?: {
+      chat_settings: {
+        app_id: string;
+        email?: string;
+        email_hash?: string;
+        name?: string;
+        avatar_url?: string;
+        account_external_id?: string;
+      };
+    };
+  }
+}
+
 export interface INJECTED_CONFIGS {
   sentry: {
     dsn: string;
@@ -8,6 +26,9 @@ export interface INJECTED_CONFIGS {
   };
   smartLook: {
     id: string;
+  };
+  betterbugs: {
+    apiKey: string;
   };
   segment: {
     apiKey: string;
@@ -33,11 +54,13 @@ export interface INJECTED_CONFIGS {
     releaseDate: string;
     edition: string;
   };
-  intercomAppID: string;
+  pylonAppID: string;
   mailEnabled: boolean;
   googleRecaptchaSiteKey: string;
   supportEmail: string;
   disableIframeWidgetSandbox: boolean;
+  disableHelpIcon: boolean;
+  defaultHtmlLang: string;
   pricingUrl: string;
   customerPortalUrl: string;
 }
@@ -60,6 +83,9 @@ export const getConfigsFromEnvVars = (): INJECTED_CONFIGS => {
     },
     smartLook: {
       id: process.env.REACT_APP_SMART_LOOK_ID || "",
+    },
+    betterbugs: {
+      apiKey: process.env.REACT_APP_BETTERBUGS_API_KEY || "",
     },
     segment: {
       apiKey: process.env.REACT_APP_SEGMENT_KEY || "",
@@ -93,7 +119,10 @@ export const getConfigsFromEnvVars = (): INJECTED_CONFIGS => {
       releaseDate: "",
       edition: process.env.REACT_APP_VERSION_EDITION || "",
     },
-    intercomAppID: process.env.REACT_APP_INTERCOM_APP_ID || "",
+    pylonAppID:
+      process.env.REACT_APP_PYLON_APP_ID ||
+      process.env.REACT_APP_INTERCOM_APP_ID ||
+      "",
     mailEnabled: process.env.REACT_APP_MAIL_ENABLED
       ? process.env.REACT_APP_MAIL_ENABLED.length > 0
       : false,
@@ -105,6 +134,10 @@ export const getConfigsFromEnvVars = (): INJECTED_CONFIGS => {
       .APPSMITH_DISABLE_IFRAME_WIDGET_SANDBOX
       ? process.env.APPSMITH_DISABLE_IFRAME_WIDGET_SANDBOX.length > 0
       : false,
+    disableHelpIcon: process.env.APPSMITH_DISABLE_HELP_ICON
+      ? process.env.APPSMITH_DISABLE_HELP_ICON.length > 0
+      : false,
+    defaultHtmlLang: process.env.APPSMITH_DEFAULT_HTML_LANG || "",
     pricingUrl: process.env.REACT_APP_PRICING_URL || "",
     customerPortalUrl: process.env.REACT_APP_CUSTOMER_PORTAL_URL || "",
   };
@@ -172,6 +205,11 @@ export const getAppsmithConfigs = (): AppsmithUIConfigs => {
     APPSMITH_FEATURE_CONFIGS?.smartLook.id,
   );
 
+  const betterbugs = getConfig(
+    ENV_CONFIG.betterbugs.apiKey,
+    APPSMITH_FEATURE_CONFIGS?.betterbugs?.apiKey,
+  );
+
   const segmentCEKey = getConfig(
     ENV_CONFIG.segment.ceKey,
     APPSMITH_FEATURE_CONFIGS?.segment.ceKey,
@@ -193,6 +231,10 @@ export const getAppsmithConfigs = (): AppsmithUIConfigs => {
       enabled: smartLook.enabled,
       id: smartLook.value,
     },
+    betterbugs: {
+      enabled: betterbugs.enabled,
+      apiKey: betterbugs.value,
+    },
     segment: {
       enabled: segment.enabled,
       apiKey: segment.value,
@@ -213,7 +255,7 @@ export const getAppsmithConfigs = (): AppsmithUIConfigs => {
       apiKey: googleRecaptchaSiteKey.value,
     },
     mixpanel: {
-      enabled: segment.enabled,
+      enabled: segment.enabled && mixpanel.enabled,
       apiKey: mixpanel.value,
     },
     cloudHosting:
@@ -231,8 +273,8 @@ export const getAppsmithConfigs = (): AppsmithUIConfigs => {
         APPSMITH_FEATURE_CONFIGS?.appVersion?.edition ||
         "",
     },
-    intercomAppID:
-      ENV_CONFIG.intercomAppID || APPSMITH_FEATURE_CONFIGS?.intercomAppID || "",
+    pylonAppID:
+      ENV_CONFIG.pylonAppID || APPSMITH_FEATURE_CONFIGS?.pylonAppID || "",
     mailEnabled:
       ENV_CONFIG.mailEnabled || APPSMITH_FEATURE_CONFIGS?.mailEnabled || false,
     appsmithSupportEmail: ENV_CONFIG.supportEmail,
@@ -240,6 +282,13 @@ export const getAppsmithConfigs = (): AppsmithUIConfigs => {
       ENV_CONFIG.disableIframeWidgetSandbox ||
       APPSMITH_FEATURE_CONFIGS?.disableIframeWidgetSandbox ||
       false,
+    disableHelpIcon: !!(
+      ENV_CONFIG.disableHelpIcon || APPSMITH_FEATURE_CONFIGS?.disableHelpIcon
+    ),
+    defaultHtmlLang:
+      ENV_CONFIG.defaultHtmlLang ||
+      APPSMITH_FEATURE_CONFIGS?.defaultHtmlLang ||
+      "",
     pricingUrl:
       ENV_CONFIG.pricingUrl || APPSMITH_FEATURE_CONFIGS?.pricingUrl || "",
     customerPortalUrl:

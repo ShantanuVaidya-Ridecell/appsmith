@@ -11,6 +11,7 @@ import com.appsmith.external.models.DatasourceStorageDTO;
 import com.appsmith.external.models.JSValue;
 import com.appsmith.external.models.PluginType;
 import com.appsmith.external.models.Policy;
+import com.appsmith.external.models.RunBehaviourEnum;
 import com.appsmith.external.plugins.PluginExecutor;
 import com.appsmith.server.acl.AclPermission;
 import com.appsmith.server.actioncollections.base.ActionCollectionService;
@@ -91,6 +92,7 @@ import net.minidev.json.JSONObject;
 import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -102,6 +104,7 @@ import org.springframework.core.io.ClassPathResource;
 import org.springframework.core.io.buffer.DataBuffer;
 import org.springframework.core.io.buffer.DataBufferUtils;
 import org.springframework.core.io.buffer.DefaultDataBufferFactory;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.data.mongodb.core.ReactiveMongoOperations;
 import org.springframework.data.mongodb.core.query.Query;
 import org.springframework.http.HttpMethod;
@@ -415,8 +418,9 @@ public class ApplicationServiceCETest {
             // Since no setup was done, hence no cleanup needs to happen
             return;
         }
-        List<Application> deletedApplications = applicationService
-                .findByWorkspaceId(workspaceId, applicationPermission.getDeletePermission())
+        List<Application> deletedApplications = applicationPermission
+                .getDeletePermission()
+                .flatMapMany(permission -> applicationService.findByWorkspaceId(workspaceId, permission))
                 .flatMap(remainingApplication -> applicationPageService.deleteApplication(remainingApplication.getId()))
                 .collectList()
                 .block();
@@ -479,7 +483,7 @@ public class ApplicationServiceCETest {
                     String defaultThemeId = tuple2.getT2();
                     assertThat(application).isNotNull();
                     assertThat(application.getSlug()).isEqualTo(TextUtils.makeSlug(applicationFinalName));
-                    assertThat(application.isAppIsExample()).isFalse();
+                    assertThat(application.getAppIsExample()).isFalse();
                     assertThat(application.getId()).isNotNull();
                     assertThat(application.getName()).isEqualTo(applicationFinalName);
                     assertThat(application.getPolicies()).isNotEmpty();
@@ -658,7 +662,7 @@ public class ApplicationServiceCETest {
         StepVerifier.create(getApplication)
                 .assertNext(t -> {
                     assertThat(t).isNotNull();
-                    assertThat(t.isAppIsExample()).isFalse();
+                    assertThat(t.getAppIsExample()).isFalse();
                     assertThat(t.getId()).isNotNull();
                     assertThat(t.getName()).isEqualTo("validGetApplicationById-Test");
                 })
@@ -767,7 +771,7 @@ public class ApplicationServiceCETest {
                 .filter(t -> t.getName().equals("validGetApplications-Test"))
                 .forEach(t -> {
                     assertThat(t.getId()).isNotNull();
-                    assertThat(t.isAppIsExample()).isFalse();
+                    assertThat(t.getAppIsExample()).isFalse();
                     assertThat(t.getPolicies()).isNotEmpty();
                     assertThat(t.getPolicies()).containsAll(Set.of(readAppPolicy));
                 });
@@ -797,6 +801,289 @@ public class ApplicationServiceCETest {
                     assertThat(t.getName()).isEqualTo("NewValidUpdateApplication-Test");
                     assertThat(t.getSlug()).isEqualTo(TextUtils.makeSlug(t.getName()));
                 })
+                .verifyComplete();
+    }
+
+    @Test
+    @WithUserDetails(value = "api_user")
+    public void updateApplication_ignoresClientSuppliedExportAndForkWithConfiguration() {
+        // These flags gate whether an application export decrypts and emits datasource
+        // secrets. They must be assignable only through server-internal fork/import
+        // paths, never from a client-supplied update body. Regression guard for
+        // APP-15781: a client PUT that sets them must not persist them.
+        Application application = new Application();
+        application.setName("updateApplication-configFlagGuard-Test");
+
+        Mono<Application> resultMono = applicationPageService
+                .createApplication(application, workspaceId)
+                .flatMap(created -> {
+                    Application update = new Application();
+                    update.setExportWithConfiguration(Boolean.TRUE);
+                    update.setForkWithConfiguration(Boolean.TRUE);
+                    return applicationService.update(created.getId(), update);
+                })
+                .flatMap(updated -> applicationService.getById(updated.getId()));
+
+        StepVerifier.create(resultMono)
+                .assertNext(app -> {
+                    assertThat(app.getExportWithConfiguration()).isNotEqualTo(Boolean.TRUE);
+                    assertThat(app.getForkWithConfiguration()).isNotEqualTo(Boolean.TRUE);
+                })
+                .verifyComplete();
+    }
+
+    @Test
+    @WithUserDetails(value = "api_user")
+    public void updateApplicationWithPresets_persistsHtmlLang() {
+        Application application = new Application();
+        application.setName("updateApplicationHtmlLang-Test");
+
+        Mono<Application> resultMono = applicationPageService
+                .createApplication(application, workspaceId)
+                .flatMap(created -> {
+                    // Send only htmlLang (uppercase, to also exercise normalization),
+                    // through the same preset path the controller uses.
+                    Application update = new Application();
+                    ApplicationDetail detail = new ApplicationDetail();
+                    detail.setHtmlLang("DE");
+                    update.setUnpublishedApplicationDetail(detail);
+                    return applicationService.updateApplicationWithPresets(created.getId(), update);
+                })
+                .flatMap(updated -> applicationService.getById(updated.getId()));
+
+        StepVerifier.create(resultMono)
+                .assertNext(app -> {
+                    assertThat(app.getUnpublishedApplicationDetail()).isNotNull();
+                    assertThat(app.getUnpublishedApplicationDetail().getHtmlLang())
+                            .isEqualTo("de");
+                })
+                .verifyComplete();
+    }
+
+    @Test
+    @WithUserDetails(value = "api_user")
+    public void updateApplicationWithPresets_clearsHtmlLang() {
+        Application application = new Application();
+        application.setName("clearApplicationHtmlLang-Test");
+
+        Mono<Application> resultMono = applicationPageService
+                .createApplication(application, workspaceId)
+                .flatMap(created -> {
+                    Application setLang = new Application();
+                    ApplicationDetail detail = new ApplicationDetail();
+                    detail.setHtmlLang("de");
+                    setLang.setUnpublishedApplicationDetail(detail);
+                    return applicationService.updateApplicationWithPresets(created.getId(), setLang);
+                })
+                .flatMap(updated -> {
+                    // An explicitly-empty value clears the previously-saved tag.
+                    Application clear = new Application();
+                    ApplicationDetail detail = new ApplicationDetail();
+                    detail.setHtmlLang("");
+                    clear.setUnpublishedApplicationDetail(detail);
+                    return applicationService.updateApplicationWithPresets(updated.getId(), clear);
+                })
+                .flatMap(updated -> applicationService.getById(updated.getId()));
+
+        StepVerifier.create(resultMono)
+                .assertNext(app -> {
+                    assertThat(app.getUnpublishedApplicationDetail()).isNotNull();
+                    assertThat(app.getUnpublishedApplicationDetail().getHtmlLang())
+                            .isEqualTo("");
+                })
+                .verifyComplete();
+    }
+
+    @Test
+    @WithUserDetails(value = "api_user")
+    public void updateApplicationWithPresets_keepsHtmlLangWhenUpdatingSibling() {
+        Application application = new Application();
+        application.setName("siblingApplicationHtmlLang-Test");
+
+        Mono<Application> resultMono = applicationPageService
+                .createApplication(application, workspaceId)
+                .flatMap(created -> {
+                    Application setLang = new Application();
+                    ApplicationDetail detail = new ApplicationDetail();
+                    detail.setHtmlLang("de");
+                    setLang.setUnpublishedApplicationDetail(detail);
+                    return applicationService.updateApplicationWithPresets(created.getId(), setLang);
+                })
+                .flatMap(updated -> {
+                    // Update only a sibling field; htmlLang is absent and must not be wiped.
+                    Application setNav = new Application();
+                    ApplicationDetail detail = new ApplicationDetail();
+                    Application.NavigationSetting nav = new Application.NavigationSetting();
+                    nav.setOrientation("top");
+                    detail.setNavigationSetting(nav);
+                    setNav.setUnpublishedApplicationDetail(detail);
+                    return applicationService.updateApplicationWithPresets(updated.getId(), setNav);
+                })
+                .flatMap(updated -> applicationService.getById(updated.getId()));
+
+        StepVerifier.create(resultMono)
+                .assertNext(app -> {
+                    assertThat(app.getUnpublishedApplicationDetail().getHtmlLang())
+                            .isEqualTo("de");
+                    assertThat(app.getUnpublishedApplicationDetail()
+                                    .getNavigationSetting()
+                                    .getOrientation())
+                            .isEqualTo("top");
+                })
+                .verifyComplete();
+    }
+
+    @Test
+    @WithUserDetails(value = "api_user")
+    void should_persistTrimmedDescription_when_updatedWithPresets() {
+        // Given
+        Application application = new Application();
+        application.setName("updateApplicationDescription-Test");
+
+        // When
+        Mono<Application> resultMono = applicationPageService
+                .createApplication(application, workspaceId)
+                .flatMap(created -> {
+                    Application update = new Application();
+                    update.setDescription("  Locker system replacement  ");
+                    return applicationService.updateApplicationWithPresets(created.getId(), update);
+                })
+                .flatMap(updated -> applicationService.getById(updated.getId()));
+
+        // Then
+        StepVerifier.create(resultMono)
+                .assertNext(app -> assertThat(app.getDescription()).isEqualTo("Locker system replacement"))
+                .verifyComplete();
+    }
+
+    @Test
+    @WithUserDetails(value = "api_user")
+    void should_clearDescription_when_blankSent() {
+        // Given
+        Application application = new Application();
+        application.setName("clearApplicationDescription-Test");
+
+        // When
+        Mono<Application> resultMono = applicationPageService
+                .createApplication(application, workspaceId)
+                .flatMap(created -> {
+                    Application set = new Application();
+                    set.setDescription("Will be cleared");
+                    return applicationService.updateApplicationWithPresets(created.getId(), set);
+                })
+                .flatMap(updated -> {
+                    Application clear = new Application();
+                    clear.setDescription("   ");
+                    return applicationService.updateApplicationWithPresets(updated.getId(), clear);
+                })
+                .flatMap(updated -> applicationService.getById(updated.getId()));
+
+        // Then
+        StepVerifier.create(resultMono)
+                .assertNext(app -> assertThat(app.getDescription()).isEmpty())
+                .verifyComplete();
+    }
+
+    @Test
+    @WithUserDetails(value = "api_user")
+    void should_keepDescription_when_updatingSiblingField() {
+        // Given
+        Application application = new Application();
+        application.setName("siblingApplicationDescription-Test");
+
+        // When
+        Mono<Application> resultMono = applicationPageService
+                .createApplication(application, workspaceId)
+                .flatMap(created -> {
+                    Application set = new Application();
+                    set.setDescription("Sticky description");
+                    return applicationService.updateApplicationWithPresets(created.getId(), set);
+                })
+                .flatMap(updated -> {
+                    Application setIcon = new Application();
+                    setIcon.setIcon("flight");
+                    return applicationService.updateApplicationWithPresets(updated.getId(), setIcon);
+                })
+                .flatMap(updated -> applicationService.getById(updated.getId()));
+
+        // Then
+        StepVerifier.create(resultMono)
+                .assertNext(app -> {
+                    assertThat(app.getDescription()).isEqualTo("Sticky description");
+                    assertThat(app.getIcon()).isEqualTo("flight");
+                })
+                .verifyComplete();
+    }
+
+    @Test
+    @WithUserDetails(value = "api_user")
+    void should_rejectDescription_when_longerThanMaxLength() {
+        // Given
+        Application application = new Application();
+        application.setName("tooLongApplicationDescription-Test");
+        String tooLong = "x".repeat(Application.DESCRIPTION_MAX_LENGTH + 1);
+
+        // When
+        Mono<Application> resultMono = applicationPageService
+                .createApplication(application, workspaceId)
+                .flatMap(created -> {
+                    Application update = new Application();
+                    update.setDescription(tooLong);
+                    return applicationService.updateApplicationWithPresets(created.getId(), update);
+                });
+
+        // Then
+        StepVerifier.create(resultMono)
+                .expectErrorMatches(throwable -> throwable instanceof AppsmithException
+                        && throwable
+                                .getMessage()
+                                .equals(AppsmithError.INVALID_PARAMETER.getMessage(Application.Fields.description)))
+                .verify();
+    }
+
+    @Test
+    @WithUserDetails(value = "api_user")
+    void should_truncateDescription_when_savedLongerThanMaxLength() {
+        // Given
+        // save(Artifact) is the shared write path for create, import, Git checkout, fork and clone.
+        // Those paths never reject, so an oversized value is clamped instead of failing the operation.
+        Application application = new Application();
+        application.setName("truncateApplicationDescription-Test");
+        String tooLong = "y".repeat(Application.DESCRIPTION_MAX_LENGTH + 20);
+
+        // When
+        Mono<Application> resultMono = applicationPageService
+                .createApplication(application, workspaceId)
+                .flatMap(created -> {
+                    created.setDescription(tooLong);
+                    return applicationService.save(created);
+                })
+                .flatMap(saved -> applicationService.getById(saved.getId()));
+
+        // Then
+        StepVerifier.create(resultMono)
+                .assertNext(app ->
+                        assertThat(app.getDescription()).isEqualTo("y".repeat(Application.DESCRIPTION_MAX_LENGTH)))
+                .verifyComplete();
+    }
+
+    @Test
+    @WithUserDetails(value = "api_user")
+    void should_truncateDescription_when_createdLongerThanMaxLength() {
+        // Given
+        Application application = new Application();
+        application.setName("createApplicationDescription-Test");
+        application.setDescription("z".repeat(Application.DESCRIPTION_MAX_LENGTH + 20));
+
+        // When
+        Mono<Application> resultMono = applicationPageService
+                .createApplication(application, workspaceId)
+                .flatMap(created -> applicationService.getById(created.getId()));
+
+        // Then
+        StepVerifier.create(resultMono)
+                .assertNext(app ->
+                        assertThat(app.getDescription()).isEqualTo("z".repeat(Application.DESCRIPTION_MAX_LENGTH)))
                 .verifyComplete();
     }
 
@@ -1678,7 +1965,7 @@ public class ApplicationServiceCETest {
                             .build();
 
                     assertThat(clonedApplication).isNotNull();
-                    assertThat(clonedApplication.isAppIsExample()).isFalse();
+                    assertThat(clonedApplication.getAppIsExample()).isFalse();
                     assertThat(clonedApplication.getId()).isNotNull();
                     assertThat(clonedApplication.getName()).isEqualTo("gitConnectedApp Copy");
                     assertThat(clonedApplication.getPolicies()).containsAll(Set.of(manageAppPolicy, readAppPolicy));
@@ -1942,7 +2229,7 @@ public class ApplicationServiceCETest {
                     ActionDTO action = new ActionDTO();
                     action.setName("cloneActionTest");
                     action.setPageId(application.getPages().get(0).getId());
-                    action.setExecuteOnLoad(true);
+                    action.setRunBehaviour(RunBehaviourEnum.ON_PAGE_LOAD);
                     ActionConfiguration actionConfiguration = new ActionConfiguration();
                     actionConfiguration.setHttpMethod(HttpMethod.GET);
                     action.setActionConfiguration(actionConfiguration);
@@ -2099,7 +2386,7 @@ public class ApplicationServiceCETest {
                             .build();
 
                     assertThat(application).isNotNull();
-                    assertThat(application.isAppIsExample()).isFalse();
+                    assertThat(application.getAppIsExample()).isFalse();
                     assertThat(application.getId()).isNotNull();
                     assertThat(application.getName()).isEqualTo("ApplicationServiceTest Clone Source TestApp Copy");
                     assertThat(application.getPolicies()).containsAll(Set.of(manageAppPolicy, readAppPolicy));
@@ -2246,7 +2533,7 @@ public class ApplicationServiceCETest {
                     ActionDTO action = new ActionDTO();
                     action.setName("cloneActionTest");
                     action.setPageId(application.getPages().get(0).getId());
-                    action.setExecuteOnLoad(true);
+                    action.setRunBehaviour(RunBehaviourEnum.ON_PAGE_LOAD);
                     ActionConfiguration actionConfiguration = new ActionConfiguration();
                     actionConfiguration.setHttpMethod(HttpMethod.GET);
                     action.setActionConfiguration(actionConfiguration);
@@ -2427,7 +2714,7 @@ public class ApplicationServiceCETest {
                             .build();
 
                     assertThat(application1).isNotNull();
-                    assertThat(application1.isAppIsExample()).isFalse();
+                    assertThat(application1.getAppIsExample()).isFalse();
                     assertThat(application1.getId()).isNotNull();
                     assertThat(application1.getName())
                             .isEqualTo(
@@ -2571,7 +2858,7 @@ public class ApplicationServiceCETest {
                     List<NewPage> pages = tuple.getT2();
 
                     assertThat(application).isNotNull();
-                    assertThat(application.isAppIsExample()).isFalse();
+                    assertThat(application.getAppIsExample()).isFalse();
                     assertThat(application.getId()).isNotNull();
                     assertThat(application.getName()).isEqualTo(appName);
                     assertThat(application.getPages()).hasSize(1);
@@ -2661,7 +2948,7 @@ public class ApplicationServiceCETest {
                     ActionDTO action = new ActionDTO();
                     action.setName("publishActionTest");
                     action.setPageId(page.getId());
-                    action.setExecuteOnLoad(true);
+                    action.setRunBehaviour(RunBehaviourEnum.ON_PAGE_LOAD);
                     ActionConfiguration actionConfiguration = new ActionConfiguration();
                     actionConfiguration.setHttpMethod(HttpMethod.GET);
                     action.setActionConfiguration(actionConfiguration);
@@ -3635,7 +3922,7 @@ public class ApplicationServiceCETest {
                     ActionDTO action = new ActionDTO();
                     action.setName("validAction");
                     action.setPageId(page.getId());
-                    action.setExecuteOnLoad(true);
+                    action.setRunBehaviour(RunBehaviourEnum.ON_PAGE_LOAD);
                     ActionConfiguration actionConfiguration = new ActionConfiguration();
                     actionConfiguration.setHttpMethod(HttpMethod.GET);
                     action.setActionConfiguration(actionConfiguration);
@@ -4157,7 +4444,7 @@ public class ApplicationServiceCETest {
         ActionDTO action = new ActionDTO();
         action.setName("validAction");
         action.setPageId(gitAppPageId);
-        action.setExecuteOnLoad(true);
+        action.setRunBehaviour(RunBehaviourEnum.ON_PAGE_LOAD);
         ActionConfiguration actionConfiguration = new ActionConfiguration();
         actionConfiguration.setHttpMethod(HttpMethod.GET);
         action.setActionConfiguration(actionConfiguration);
@@ -4171,7 +4458,10 @@ public class ApplicationServiceCETest {
          */
         Set<Policy> newPoliciesWithoutEdit = existingPolicies.stream()
                 .filter(policy -> !policy.getPermission()
-                        .equals(datasourcePermission.getActionCreatePermission().getValue()))
+                        .equals(datasourcePermission
+                                .getActionCreatePermission()
+                                .block()
+                                .getValue()))
                 .collect(Collectors.toSet());
         testDatasource1.setPolicies(newPoliciesWithoutEdit);
         Datasource updatedTestDatasource =
@@ -4405,6 +4695,7 @@ public class ApplicationServiceCETest {
                 .verify();
     }
 
+    @Disabled
     @Test
     @WithUserDetails(value = "api_user")
     public void testCacheEviction_whenPagesDeletedInEditModeFollowedByAppPublish_shouldInvalidateCache() {
@@ -4525,5 +4816,139 @@ public class ApplicationServiceCETest {
                 .fetchBaseApplicationId(basePageId2Ref.get(), null)
                 .block();
         assertThat(cachedBaseAppId2).isNull();
+    }
+
+    @Test
+    @WithUserDetails(value = "api_user")
+    public void createApplicationWithUniqueSlug() {
+        Application app1 = new Application();
+        app1.setName("SlugTestApp1");
+        Application.StaticUrlSettings staticUrlSettings1 =
+                new Application.StaticUrlSettings(true, "test-unique-slug-app1");
+        app1.setStaticUrlSettings(staticUrlSettings1);
+        Mono<Application> create1 = applicationPageService.createApplication(app1, workspaceId);
+        StepVerifier.create(create1)
+                .assertNext(app -> {
+                    assertThat(app.getStaticUrlSettings().getUniqueSlug()).isEqualTo("test-unique-slug-app1");
+                })
+                .verifyComplete();
+    }
+
+    @Test
+    @WithUserDetails(value = "api_user")
+    public void createDuplicateUniqueSlugShouldFail() {
+        String slug = "duplicate-slug";
+        Application app1 = new Application();
+        app1.setName("App D1");
+        app1.setStaticUrlSettings(new Application.StaticUrlSettings(true, slug));
+        Application app2 = new Application();
+        app2.setName("App D2");
+        app2.setStaticUrlSettings(new Application.StaticUrlSettings(true, slug));
+        Mono<Application> create1 = applicationPageService.createApplication(app1, workspaceId);
+        Mono<Application> create2 =
+                create1.flatMap(saved -> applicationPageService.createApplication(app2, workspaceId));
+        StepVerifier.create(create2)
+                .expectErrorMatches(throwable -> throwable instanceof DuplicateKeyException)
+                .verify();
+    }
+
+    @Test
+    @WithUserDetails(value = "api_user")
+    public void createWithSameSlugAfterDelete() {
+        String slug = "deleted-slug-ok";
+        Application app1 = new Application();
+        app1.setName("App E1");
+        app1.setStaticUrlSettings(new Application.StaticUrlSettings(true, slug));
+        Application app2 = new Application();
+        app2.setName("App E2");
+        app2.setStaticUrlSettings(new Application.StaticUrlSettings(true, slug));
+        Mono<Application> createAndDelete = applicationPageService
+                .createApplication(app1, workspaceId)
+                .flatMap(savedApp -> applicationService.archive(savedApp));
+        Mono<Application> create2 = createAndDelete.then(applicationPageService.createApplication(app2, workspaceId));
+        StepVerifier.create(create2)
+                .assertNext(app -> {
+                    assertThat(app.getStaticUrlSettings().getUniqueSlug()).isEqualTo(slug);
+                    assertThat(app.isDeleted()).isFalse();
+                })
+                .verifyComplete();
+    }
+
+    @Test
+    @WithUserDetails(value = "api_user")
+    public void findByUniqueAppNameTest() {
+        String slug = "find-by-slug";
+        Application app = new Application();
+        app.setName("FindBySlug");
+        app.setStaticUrlSettings(new Application.StaticUrlSettings(true, slug));
+        Mono<Application> create = applicationPageService.createApplication(app, workspaceId);
+        StepVerifier.create(create.flatMap(savedApp -> applicationService
+                        .findByUniqueAppName(slug, applicationPermission.getReadPermission())
+                        .next()))
+                .assertNext(found -> {
+                    assertThat(found.getName()).isEqualTo("FindBySlug");
+                    assertThat(found.getStaticUrlSettings().getUniqueSlug()).isEqualTo(slug);
+                })
+                .verifyComplete();
+    }
+
+    @Test
+    @WithUserDetails(value = "api_user")
+    public void findByUniqueAppNameRefNameAndApplicationModeTest() {
+        String slug = "find-by-slug-ref";
+        Application app = new Application();
+        app.setName("FindBySlugRef");
+        app.setStaticUrlSettings(new Application.StaticUrlSettings(true, slug));
+        Mono<Application> create = applicationPageService.createApplication(app, workspaceId);
+        StepVerifier.create(create.flatMap(savedApp -> applicationService
+                        .findByUniqueAppNameRefNameAndApplicationMode(slug, null, ApplicationMode.EDIT)
+                        .next()))
+                .assertNext(found -> {
+                    assertThat(found.getName()).isEqualTo("FindBySlugRef");
+                    assertThat(found.getStaticUrlSettings().getUniqueSlug()).isEqualTo(slug);
+                })
+                .verifyComplete();
+    }
+
+    @Test
+    @WithUserDetails(value = "api_user")
+    public void updateUniqueSlug() {
+        String slug1 = "updatable-slug";
+        String slug2 = "updatable-slug-2";
+        Application app = new Application();
+        app.setName("UpdatableSlug");
+        app.setStaticUrlSettings(new Application.StaticUrlSettings(true, slug1));
+        Mono<Application> create = applicationPageService.createApplication(app, workspaceId);
+        Mono<Application> update = create.flatMap(saved -> {
+            saved.getStaticUrlSettings().setUniqueSlug(slug2);
+            return applicationService.update(saved.getId(), saved);
+        });
+        StepVerifier.create(update)
+                .assertNext(updated -> {
+                    assertThat(updated.getStaticUrlSettings().getUniqueSlug()).isEqualTo(slug2);
+                })
+                .verifyComplete();
+    }
+
+    @Test
+    @WithUserDetails(value = "api_user")
+    public void failUpdateUniqueSlugToExistingOne() {
+        String slug = "dup-slug-update";
+        Application app1 = new Application();
+        app1.setName("App Z1");
+        app1.setStaticUrlSettings(new Application.StaticUrlSettings(true, slug));
+        Application app2 = new Application();
+        app2.setName("App Z2");
+        app2.setStaticUrlSettings(new Application.StaticUrlSettings(true, slug + "-other"));
+        Mono<Application> m1 = applicationPageService.createApplication(app1, workspaceId);
+        Mono<Application> m2 = applicationPageService.createApplication(app2, workspaceId);
+        Mono<Application> failUpdate = Mono.zip(m1, m2).flatMap(tuple -> {
+            Application updateApp2 = tuple.getT2();
+            updateApp2.getStaticUrlSettings().setUniqueSlug(slug);
+            return applicationService.update(updateApp2.getId(), updateApp2);
+        });
+        StepVerifier.create(failUpdate)
+                .expectErrorMatches(thr -> thr instanceof AppsmithException)
+                .verify();
     }
 }

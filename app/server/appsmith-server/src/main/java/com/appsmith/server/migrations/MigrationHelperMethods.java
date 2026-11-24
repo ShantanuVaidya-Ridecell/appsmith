@@ -24,7 +24,7 @@ import com.appsmith.server.helpers.CollectionUtils;
 import com.appsmith.server.repositories.CacheableRepositoryHelper;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import net.minidev.json.JSONObject;
-import org.apache.commons.lang.StringUtils;
+import org.apache.commons.lang3.StringUtils;
 import org.springframework.data.mongodb.core.MongoTemplate;
 import org.springframework.data.mongodb.core.query.Criteria;
 import org.springframework.data.mongodb.core.query.Query;
@@ -224,7 +224,7 @@ public class MigrationHelperMethods {
             if (user != null) {
                 // blocking call for cache eviction to ensure its subscribed immediately before proceeding further.
                 cacheableRepositoryHelper
-                        .evictPermissionGroupsUser(user.getEmail(), user.getTenantId())
+                        .evictPermissionGroupsUser(user.getEmail(), user.getOrganizationId())
                         .block();
             }
         });
@@ -730,8 +730,8 @@ public class MigrationHelperMethods {
         convertToFormDataObject(f, "bucket", formData.get("bucket"));
         convertToFormDataObject(f, "smartSubstitution", formData.get("smartSubstitution"));
         switch ((String) command) {
-                // No case for delete single and multiple since they only had bucket that needed
-                // migration
+            // No case for delete single and multiple since they only had bucket that needed
+            // migration
             case "LIST":
                 final Map listMap = (Map) formData.get("list");
                 if (listMap == null) {
@@ -1364,6 +1364,25 @@ public class MigrationHelperMethods {
         } else {
             datasourceConfiguration.setUrl("");
             actionDatasource.setDatasourceConfiguration(datasourceConfiguration);
+        }
+    }
+
+    public static void addRunBehaviourToApplicationJson(ApplicationJson applicationJson) {
+        List<NewAction> actionList = applicationJson.getActionList();
+        if (CollectionUtils.isNullOrEmpty(actionList)) {
+            return;
+        }
+
+        for (NewAction action : actionList) {
+            if (action.getUnpublishedAction() != null) {
+                ActionDTO actionDTO = action.getUnpublishedAction();
+                actionDTO.setRunBehaviour(actionDTO.getRunBehaviour());
+            }
+
+            if (action.getPublishedAction() != null) {
+                ActionDTO actionDTO = action.getPublishedAction();
+                actionDTO.setRunBehaviour(actionDTO.getRunBehaviour());
+            }
         }
     }
 }

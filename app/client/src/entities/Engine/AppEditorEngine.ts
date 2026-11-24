@@ -15,13 +15,9 @@ import {
   ReduxActionTypes,
 } from "ee/constants/ReduxActionConstants";
 import type { APP_MODE } from "entities/App";
-import { call, fork, put, select, spawn } from "redux-saga/effects";
+import { call, fork, put, select } from "redux-saga/effects";
 import type { EditConsolidatedApi } from "sagas/InitSagas";
-import {
-  failFastApiCalls,
-  reportSWStatus,
-  waitForWidgetConfigBuild,
-} from "sagas/InitSagas";
+import { failFastApiCalls, waitForWidgetConfigBuild } from "sagas/InitSagas";
 import { isGitPersistBranchEnabledSelector } from "selectors/gitSyncSelectors";
 import AnalyticsUtil from "ee/utils/AnalyticsUtil";
 // import history from "utils/history";
@@ -56,7 +52,6 @@ import type { Span } from "instrumentation/types";
 import { endSpan, startNestedSpan } from "instrumentation/generateTraces";
 import { getCurrentUser } from "selectors/usersSelectors";
 import type { User } from "constants/userConstants";
-import log from "loglevel";
 import { gitArtifactActions } from "git/store/gitArtifactSlice";
 import { restoreRecentEntitiesRequest } from "actions/globalSearchActions";
 import {
@@ -74,7 +69,8 @@ import {
   selectGitApplicationCurrentBranch,
   selectGitModEnabled,
 } from "selectors/gitModSelectors";
-import { applicationArtifact } from "git/artifact-helpers/application";
+import { applicationArtifact } from "git-artifact-helpers/application";
+import log from "loglevel";
 
 export default class AppEditorEngine extends AppEngine {
   constructor(mode: APP_MODE) {
@@ -227,8 +223,15 @@ export default class AppEditorEngine extends AppEngine {
 
     if (!isAirgappedInstance) {
       initActions.push(fetchMockDatasources(mockDatasources));
-      successActions.push(ReduxActionTypes.FETCH_MOCK_DATASOURCES_SUCCESS);
-      errorActions.push(ReduxActionErrorTypes.FETCH_MOCK_DATASOURCES_ERROR);
+      /*
+       * We don't want to restrict the users using the app even if the mock datasources api fails and
+       * the user is not on the airgap instance.
+       * One of those edge cases could be if the user disconnect from the internet but the mock datasources plugins
+       * are returned from the consolidated api. Hence, we want to be independent of mock datasources api response.
+       *
+       * successActions.push(ReduxActionTypes.FETCH_MOCK_DATASOURCES_SUCCESS);
+       * errorActions.push(ReduxActionErrorTypes.FETCH_MOCK_DATASOURCES_ERROR);
+       */
     }
 
     const initActionCalls: boolean = yield call(
@@ -285,9 +288,8 @@ export default class AppEditorEngine extends AppEngine {
     const currentApplication: ApplicationPayload = yield select(
       getCurrentApplication,
     );
-    const currentBranch: string | undefined = yield select(
-      selectGitApplicationCurrentBranch,
-    );
+    const currentBranch: string | undefined =
+      currentApplication?.gitApplicationMetadata?.branchName;
 
     const isGitPersistBranchEnabled: boolean = yield select(
       isGitPersistBranchEnabledSelector,
@@ -363,7 +365,6 @@ export default class AppEditorEngine extends AppEngine {
     });
 
     yield call(waitForWidgetConfigBuild);
-    yield spawn(reportSWStatus);
 
     yield put({
       type: ReduxActionTypes.INITIALIZE_EDITOR_SUCCESS,

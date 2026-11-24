@@ -6,11 +6,15 @@ import type { WidgetProps, WidgetState } from "widgets/BaseWidget";
 import BaseWidget from "widgets/BaseWidget";
 import JSONFormComponent from "../component";
 import { contentConfig, styleConfig } from "./propertyConfig";
-import type { DerivedPropertiesMap } from "WidgetProvider/factory";
+import type { DerivedPropertiesMap } from "WidgetProvider/factory/types";
 import type { ExecuteTriggerPayload } from "constants/AppsmithActionConstants/ActionConstants";
 import { EventType } from "constants/AppsmithActionConstants/ActionConstants";
 import type { FieldState, FieldThemeStylesheet, Schema } from "../constants";
-import { ActionUpdateDependency, ROOT_SCHEMA_KEY } from "../constants";
+import {
+  ActionUpdateDependency,
+  MAX_ALLOWED_FIELDS,
+  ROOT_SCHEMA_KEY,
+} from "../constants";
 import {
   ComputedSchemaStatus,
   computeSchema,
@@ -40,8 +44,8 @@ import type {
   AutocompletionDefinitions,
   PropertyUpdates,
   SnipingModeProperty,
-} from "WidgetProvider/constants";
-import { BlueprintOperationTypes } from "WidgetProvider/constants";
+} from "WidgetProvider/types";
+import { BlueprintOperationTypes } from "WidgetProvider/types";
 import { ButtonVariantTypes } from "components/constants";
 import { Colors } from "constants/Colors";
 import { FILL_WIDGET_MIN_WIDTH } from "constants/minWidthConstants";
@@ -102,6 +106,7 @@ export interface JSONFormWidgetProps extends WidgetProps {
   submitButtonLabel: string;
   submitButtonStyles: ButtonStyleProps;
   title: string;
+  titleTextColor?: string;
   childStylesheet: FieldThemeStylesheet;
 }
 
@@ -517,7 +522,12 @@ class JSONFormWidget extends BaseWidget<
       this.updateFormData(formData);
     }
 
-    const { schema } = this.constructAndSaveSchemaIfRequired(prevProps);
+    const hasMaxFieldsChanged =
+      prevProps.maxAllowedFields !== this.props.maxAllowedFields;
+    const { schema } = this.constructAndSaveSchemaIfRequired(
+      prevProps,
+      hasMaxFieldsChanged,
+    );
 
     this.debouncedParseAndSaveFieldState(
       this.state.metaInternalFieldState,
@@ -560,12 +570,16 @@ class JSONFormWidget extends BaseWidget<
    * we would get stale/previous data from the __evaluations__ object.
    * So it will always stay 1 step behind the actual value.
    */
-  constructAndSaveSchemaIfRequired = (prevProps?: JSONFormWidgetProps) => {
-    if (!this.props.autoGenerateForm)
+  constructAndSaveSchemaIfRequired = (
+    prevProps?: JSONFormWidgetProps,
+    hasMaxFieldsChanged?: boolean,
+  ) => {
+    if (!hasMaxFieldsChanged && !this.props.autoGenerateForm) {
       return {
         status: ComputedSchemaStatus.UNCHANGED,
         schema: this.props?.schema || {},
       };
+    }
 
     const prevSourceData = this.getPreviousSourceData(prevProps);
     const currSourceData = this.props?.sourceData;
@@ -577,6 +591,8 @@ class JSONFormWidget extends BaseWidget<
       prevSourceData,
       widgetName: this.props.widgetName,
       fieldThemeStylesheets: this.props.childStylesheet,
+      maxAllowedFields: this.props.maxAllowedFields,
+      hasMaxFieldsChanged,
     });
     const {
       dynamicPropertyPathList,
@@ -835,6 +851,7 @@ class JSONFormWidget extends BaseWidget<
         getFormData={this.getFormData}
         isSubmitting={this.state.isSubmitting}
         isWidgetMounting={this.isWidgetMounting}
+        maxAllowedFields={this.props.maxAllowedFields || MAX_ALLOWED_FIELDS}
         onConnectData={this.onConnectData}
         onFormValidityUpdate={this.onFormValidityUpdate}
         onSubmit={this.onSubmit}
@@ -854,6 +871,7 @@ class JSONFormWidget extends BaseWidget<
         submitButtonLabel={this.props.submitButtonLabel}
         submitButtonStyles={this.props.submitButtonStyles}
         title={this.props.title}
+        titleTextColor={this.props.titleTextColor}
         unregisterResetObserver={this.unregisterResetObserver}
         updateFormData={this.updateFormData}
         updateWidgetMetaProperty={this.onUpdateWidgetMetaProperty}

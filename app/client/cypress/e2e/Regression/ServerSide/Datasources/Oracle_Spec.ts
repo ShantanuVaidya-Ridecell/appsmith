@@ -25,7 +25,7 @@ let pluginActionForm = new PluginActionForm();
 
 describe(
   "Validate Oracle DS",
-  { tags: ["@tag.Datasource", "@tag.Git", "@tag.AccessControl"] },
+  { tags: ["@tag.Datasource", "@tag.AccessControl"] },
   () => {
     let dataSourceName: string, guid: any, query: string, selectQuery: string;
 
@@ -446,7 +446,7 @@ describe(
         subAction: "Page1",
         toastToValidate: "copied to page",
       });
-      agHelper.GetNAssertContains(locators._queryName, "Query1Copy");
+      agHelper.GetNAssertContains(locators._activeEntityTab, "Query1Copy");
       dataSources.runQueryAndVerifyResponseViews({ count: 2 });
       PageList.AddNewPage();
       EditorNavigation.SelectEntityByName("Page1", EntityType.Page);
@@ -456,7 +456,7 @@ describe(
         toastToValidate: "moved to page",
       });
       agHelper.WaitUntilAllToastsDisappear();
-      agHelper.GetNAssertContains(locators._queryName, "Query1Copy");
+      agHelper.GetNAssertContains(locators._activeEntityTab, "Query1Copy");
       dataSources.runQueryAndVerifyResponseViews({ count: 2 });
       agHelper.ActionContextMenuWithInPane({
         action: "Delete",
@@ -467,7 +467,7 @@ describe(
     });
 
     it("7. Tc #2365  - Query settings tab validations", () => {
-      apiPage.ToggleOnPageLoadRun(false); // All above cases validated for onpage load run with confirmation dialog set to false
+      apiPage.ToggleOnPageLoadRun("Manual"); // All above cases validated for onpage load run with confirmation dialog set to false
       pluginActionForm.toolbar.toggleSettings();
       apiPage.ToggleConfirmBeforeRunning(true);
       deployMode.DeployApp();

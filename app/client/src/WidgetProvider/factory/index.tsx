@@ -14,16 +14,18 @@ import type {
   WidgetConfigProps,
   WidgetDefaultProps,
   WidgetMethods,
-} from "WidgetProvider/constants";
+} from "WidgetProvider/types";
 import {
   addPropertyConfigIds,
   addSearchConfigToPanelConfig,
+  addTabOrderToPropertyPaneConfig,
   convertFunctionsToString,
   enhancePropertyPaneConfig,
   generatePropertyPaneSearchConfig,
   getDefaultOnCanvasUIConfig,
   PropertyPaneConfigTypes,
 } from "./helpers";
+import { addCustomStylingSection } from "ee/WidgetProvider/factory/customStylingSection";
 import { FILL_WIDGET_MIN_WIDTH } from "constants/minWidthConstants";
 import type BaseWidget from "widgets/BaseWidget";
 import { flow } from "lodash";
@@ -35,26 +37,21 @@ import {
 import type { RegisteredWidgetFeatures } from "../../utils/WidgetFeatures";
 import type { SetterConfig } from "entities/AppTheming";
 import { freeze, memoize } from "./decorators";
-import produce from "immer";
-import type { CanvasWidgetsReduxState } from "reducers/entityReducers/canvasWidgetsReducer";
+import { create } from "mutative";
+import type { CanvasWidgetsReduxState } from "ee/reducers/entityReducers/canvasWidgetsReducer";
 import type {
   CopiedWidgetData,
   PasteDestinationInfo,
 } from "layoutSystems/anvil/utils/paste/types";
 import { call } from "redux-saga/effects";
-import type { DerivedPropertiesMap } from "./types";
+import type {
+  DerivedPropertiesMap,
+  WidgetCreationException,
+  WidgetType,
+  WidgetTypeConfigMap,
+} from "./types";
 
-// exporting it as well so that existing imports are not affected
-// TODO: remove this once all imports are updated
-export type { DerivedPropertiesMap };
-
-// TODO: Fix this the next time the file is edited
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type WidgetDerivedPropertyType = any;
-
-export type WidgetType = (typeof WidgetFactory.widgetTypes)[number];
-
-class WidgetFactory {
+export class WidgetFactory {
   static widgetTypes: Record<string, string> = {};
 
   static widgetConfigMap: Map<
@@ -331,7 +328,13 @@ class WidgetFactory {
         convertFunctionsToString,
         addPropertyConfigIds,
       ]);
-      const enhancedPropertyPaneConfig = enhance(propertyPaneConfig, features);
+      const enhancedPropertyPaneConfig = enhance(
+        addCustomStylingSection(
+          type,
+          addTabOrderToPropertyPaneConfig(type, propertyPaneConfig),
+        ),
+        features,
+      );
 
       return enhancedPropertyPaneConfig;
     }
@@ -382,7 +385,7 @@ class WidgetFactory {
       ]);
 
       const enhancedPropertyPaneContentConfig = enhance(
-        propertyPaneContentConfig,
+        addTabOrderToPropertyPaneConfig(type, propertyPaneContentConfig),
         features,
         PropertyPaneConfigTypes.CONTENT,
         type,
@@ -418,7 +421,7 @@ class WidgetFactory {
 
             if (dynamicProperties && dynamicProperties.length) {
               addPropertyConfigIds(dynamicProperties, false);
-              section = produce(section, (draft) => {
+              section = create(section, (draft) => {
                 draft.children = [...dynamicProperties, ...section.children];
               });
             }
@@ -439,7 +442,11 @@ class WidgetFactory {
   ): readonly PropertyPaneConfig[] {
     const widget = WidgetFactory.widgetsMap.get(type);
 
-    const propertyPaneStyleConfig = widget?.getPropertyPaneStyleConfig();
+    // Runs even when the widget has no style config, so an edition can add one.
+    const propertyPaneStyleConfig = addCustomStylingSection(
+      type,
+      widget?.getPropertyPaneStyleConfig(),
+    );
 
     const features = widget?.getFeatures();
 
@@ -675,21 +682,6 @@ class WidgetFactory {
 
     return res;
   }
-}
-
-export type WidgetTypeConfigMap = Record<
-  string,
-  {
-    defaultProperties: Record<string, string>;
-    // TODO: Fix this the next time the file is edited
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    metaProperties: Record<string, any>;
-    derivedProperties: WidgetDerivedPropertyType;
-  }
->;
-
-export interface WidgetCreationException {
-  message: string;
 }
 
 export default WidgetFactory;

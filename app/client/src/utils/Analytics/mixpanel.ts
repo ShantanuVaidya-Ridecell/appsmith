@@ -44,7 +44,7 @@ class MixpanelSingleton {
       if (mixpanel.enabled) {
         this.mixpanel = loadedMixpanel;
         this.mixpanel.init(mixpanel.apiKey, {
-          record_sessions_percent: 100,
+          record_sessions_percent: 50,
           record_block_selector: mask ? ".mp-block" : "",
           record_mask_text_selector: mask ? ".as-mask" : "",
         });
@@ -61,13 +61,19 @@ class MixpanelSingleton {
   }
 
   public startRecording() {
-    if (this.mixpanel) {
+    if (
+      this.mixpanel &&
+      typeof this.mixpanel.start_session_recording === "function"
+    ) {
       this.mixpanel.start_session_recording();
     }
   }
 
   public stopRecording() {
-    if (this.mixpanel) {
+    if (
+      this.mixpanel &&
+      typeof this.mixpanel.stop_session_recording === "function"
+    ) {
       this.mixpanel.stop_session_recording();
     }
   }

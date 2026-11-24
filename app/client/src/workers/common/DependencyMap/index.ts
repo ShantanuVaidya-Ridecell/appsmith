@@ -12,7 +12,11 @@ import type {
   DataTreeEntityObject,
 } from "ee/entities/DataTree/types";
 import type { ConfigTree, DataTree } from "entities/DataTree/dataTreeTypes";
-import { getEntityId, getEvalErrorPath } from "utils/DynamicBindingUtils";
+import {
+  EvalErrorTypes,
+  getEntityId,
+  getEvalErrorPath,
+} from "utils/DynamicBindingUtils";
 import { convertArrayToObject, extractInfoFromBindings } from "./utils";
 import type DataTreeEvaluator from "workers/common/DataTreeEvaluator";
 import { get, isEmpty, set } from "lodash";
@@ -59,13 +63,23 @@ export async function createDependencyMap(
     );
   });
 
-  const dependencyMapCache =
-    await appComputationCache.getCachedComputationResult<
+  let dependencyMapCache: Record<string, string[]> | null = null;
+
+  try {
+    dependencyMapCache = await appComputationCache.getCachedComputationResult<
       Record<string, string[]>
     >({
       cacheProps,
       cacheName: EComputationCacheName.DEPENDENCY_MAP,
     });
+  } catch (error) {
+    dataTreeEvalRef.errors.push({
+      type: EvalErrorTypes.CACHE_ERROR,
+      message: (error as Error).message,
+      stack: (error as Error).stack,
+    });
+    dependencyMapCache = null;
+  }
 
   if (dependencyMapCache) {
     profileFn("createDependencyMap.addDependency", {}, webworkerSpans, () => {
@@ -104,11 +118,19 @@ export async function createDependencyMap(
     DependencyMapUtils.makeParentsDependOnChildren(dependencyMap);
 
     if (shouldCache) {
-      await appComputationCache.cacheComputationResult({
-        cacheProps,
-        cacheName: EComputationCacheName.DEPENDENCY_MAP,
-        computationResult: dependencyMap.dependencies,
-      });
+      try {
+        await appComputationCache.cacheComputationResult({
+          cacheProps,
+          cacheName: EComputationCacheName.DEPENDENCY_MAP,
+          computationResult: dependencyMap.dependencies,
+        });
+      } catch (error) {
+        dataTreeEvalRef.errors.push({
+          type: EvalErrorTypes.CACHE_ERROR,
+          message: (error as Error).message,
+          stack: (error as Error).stack,
+        });
+      }
     }
   }
 
@@ -306,6 +328,30 @@ export const updateDependencyMap = ({
             const entityConfig = configTree[entityName];
             const fullPropertyPath = dataTreeDiff.payload.propertyPath;
 
+            const entityDependencyMap = getEntityDependencies(
+              entity,
+              configTree[entityName],
+              allKeys,
+            );
+
+            if (!isEmpty(entityDependencyMap)) {
+              // The entity might already have some dependencies,
+              // so we just want to update those
+              Object.entries(entityDependencyMap).forEach(
+                ([path, pathDependencies]) => {
+                  const { errors: extractDependencyErrors, references } =
+                    extractInfoFromBindings(pathDependencies, allKeys);
+
+                  setDependenciesToDepedencyMapFn(path, references);
+
+                  didUpdateDependencyMap = true;
+                  dataTreeEvalErrors = dataTreeEvalErrors.concat(
+                    extractDependencyErrors,
+                  );
+                },
+              );
+            }
+
             const entityPathDependencies = getEntityPathDependencies(
               entity,
               entityConfig,
@@ -343,6 +389,7 @@ export const updateDependencyMap = ({
     dataTreeEvalRef.sortedDependencies = dataTreeEvalRef.sortDependencies(
       dependencyMap,
       translatedDiffs,
+      configTree,
     );
   }
 

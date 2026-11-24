@@ -1,5 +1,6 @@
 package com.appsmith.server.services.ce;
 
+import com.appsmith.external.enums.FeatureFlagEnum;
 import com.appsmith.server.constants.FieldName;
 import com.appsmith.server.domains.PermissionGroup;
 import com.appsmith.server.domains.User;
@@ -13,9 +14,10 @@ import com.appsmith.server.exceptions.AppsmithError;
 import com.appsmith.server.exceptions.AppsmithException;
 import com.appsmith.server.helpers.AppsmithComparators;
 import com.appsmith.server.repositories.UserRepository;
+import com.appsmith.server.services.FeatureFlagService;
+import com.appsmith.server.services.OrganizationService;
 import com.appsmith.server.services.PermissionGroupService;
 import com.appsmith.server.services.SessionUserService;
-import com.appsmith.server.services.TenantService;
 import com.appsmith.server.services.UserDataService;
 import com.appsmith.server.services.WorkspaceService;
 import com.appsmith.server.solutions.PermissionGroupPermission;
@@ -32,6 +34,7 @@ import reactor.util.function.Tuple2;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -41,6 +44,7 @@ import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 import static com.appsmith.server.helpers.ce.DomainSorter.sortDomainsBasedOnOrderedDomainIds;
+import static java.lang.Boolean.TRUE;
 
 @Slf4j
 @Service
@@ -50,9 +54,10 @@ public class UserWorkspaceServiceCEImpl implements UserWorkspaceServiceCE {
     private final UserRepository userRepository;
     private final UserDataService userDataService;
     private final PermissionGroupService permissionGroupService;
-    private final TenantService tenantService;
+    private final OrganizationService organizationService;
     private final WorkspacePermission workspacePermission;
     private final PermissionGroupPermission permissionGroupPermission;
+    private final FeatureFlagService featureFlagService;
 
     @Autowired
     public UserWorkspaceServiceCEImpl(
@@ -61,17 +66,19 @@ public class UserWorkspaceServiceCEImpl implements UserWorkspaceServiceCE {
             UserRepository userRepository,
             UserDataService userDataService,
             PermissionGroupService permissionGroupService,
-            TenantService tenantService,
+            OrganizationService organizationService,
             WorkspacePermission workspacePermission,
-            PermissionGroupPermission permissionGroupPermission) {
+            PermissionGroupPermission permissionGroupPermission,
+            FeatureFlagService featureFlagService) {
         this.sessionUserService = sessionUserService;
         this.workspaceService = workspaceService;
         this.userRepository = userRepository;
         this.userDataService = userDataService;
         this.permissionGroupService = permissionGroupService;
-        this.tenantService = tenantService;
+        this.organizationService = organizationService;
         this.workspacePermission = workspacePermission;
         this.permissionGroupPermission = permissionGroupPermission;
+        this.featureFlagService = featureFlagService;
     }
 
     @Override
@@ -147,9 +154,10 @@ public class UserWorkspaceServiceCEImpl implements UserWorkspaceServiceCE {
                 .cache();
 
         // Get the user
-        Mono<User> userMono = tenantService
-                .getDefaultTenantId()
-                .flatMap(tenantId -> userRepository.findByEmailAndTenantId(changeUserGroupDTO.getUsername(), tenantId))
+        Mono<User> userMono = organizationService
+                .getCurrentUserOrganizationId()
+                .flatMap(organizationId ->
+                        userRepository.findByEmailAndOrganizationId(changeUserGroupDTO.getUsername(), organizationId))
                 .switchIfEmpty(Mono.error(new AppsmithException(
                         AppsmithError.NO_RESOURCE_FOUND, FieldName.USER, changeUserGroupDTO.getUsername())))
                 .cache();
@@ -164,8 +172,11 @@ public class UserWorkspaceServiceCEImpl implements UserWorkspaceServiceCE {
                 .switchIfEmpty(Mono.error(new AppsmithException(
                         AppsmithError.ACTION_IS_NOT_AUTHORIZED, "Change permissionGroup of a member")))
                 .single()
-                .flatMap(permissionGroup -> {
-                    if (this.isLastAdminRoleEntity(permissionGroup)) {
+                .zipWhen(permissionGroup -> isLastAdminRoleEntity(permissionGroup))
+                .flatMap(tuple2 -> {
+                    PermissionGroup permissionGroup = tuple2.getT1();
+                    Boolean isLastAdminRoleEntity = tuple2.getT2();
+                    if (TRUE.equals(isLastAdminRoleEntity)) {
                         return Mono.error(new AppsmithException(AppsmithError.REMOVE_LAST_WORKSPACE_ADMIN_ERROR));
                     }
                     return Mono.just(permissionGroup);
@@ -191,13 +202,16 @@ public class UserWorkspaceServiceCEImpl implements UserWorkspaceServiceCE {
                     .build());
         }
 
-        // Get the new permission group
-        Mono<PermissionGroup> newDefaultPermissionGroupMono = permissionGroupService
+        // Get the new permission group — must belong to this workspace's default groups.
+        // Without this check, an attacker who holds ASSIGN_PERMISSION_GROUPS on a group
+        // from any workspace (e.g. their own workspace V) can supply that group ID here
+        // and bypass the workspace boundary entirely (GHSA-h5qf-426x-5mv5 / CWE-862).
+        Mono<PermissionGroup> newDefaultPermissionGroupMono = workspaceMono.flatMap(workspace -> permissionGroupService
                 .getById(changeUserGroupDTO.getNewPermissionGroupId(), permissionGroupPermission.getAssignPermission())
-                // If we cannot find the group, that means either newGroupId is not a default group or current user has
-                // no access to the group
+                .filter(permissionGroup ->
+                        workspace.getDefaultPermissionGroups().contains(permissionGroup.getId()))
                 .switchIfEmpty(Mono.error(new AppsmithException(
-                        AppsmithError.ACTION_IS_NOT_AUTHORIZED, "Change permissionGroup of a member")));
+                        AppsmithError.ACTION_IS_NOT_AUTHORIZED, "Change permissionGroup of a member"))));
 
         // Unassign old permission group, assign new permission group
         Mono<PermissionGroup> changePermissionGroupsMono = newDefaultPermissionGroupMono.flatMap(newPermissionGroup -> {
@@ -382,9 +396,9 @@ public class UserWorkspaceServiceCEImpl implements UserWorkspaceServiceCE {
     }
 
     @Override
-    public Boolean isLastAdminRoleEntity(PermissionGroup permissionGroup) {
-        return permissionGroup.getName().startsWith(FieldName.ADMINISTRATOR)
-                && permissionGroup.getAssignedToUserIds().size() == 1;
+    public Mono<Boolean> isLastAdminRoleEntity(PermissionGroup permissionGroup) {
+        return Mono.just(permissionGroup.getName().startsWith(FieldName.ADMINISTRATOR)
+                && permissionGroup.getAssignedToUserIds().size() == 1);
     }
 
     /**
@@ -393,7 +407,7 @@ public class UserWorkspaceServiceCEImpl implements UserWorkspaceServiceCE {
      * @return Mono of list of workspaces
      */
     @Override
-    public Mono<List<Workspace>> getUserWorkspacesByRecentlyUsedOrder(String hostname) {
+    public Mono<List<Workspace>> getUserWorkspacesByRecentlyUsedOrder() {
 
         Mono<List<String>> workspaceIdsMono = userDataService
                 .getForCurrentUser()
@@ -413,5 +427,40 @@ public class UserWorkspaceServiceCEImpl implements UserWorkspaceServiceCE {
                 .transform(domainFlux -> sortDomainsBasedOnOrderedDomainIds(domainFlux, workspaceIds))
                 // collect to list to keep the order of the workspaces
                 .collectList());
+    }
+
+    /*
+     * Returns a list of workspaces for the current user, sorted in alphabetical order.
+     *
+     * @return Mono containing the list of workspaces
+     */
+    @Override
+    public Mono<List<Workspace>> getUserWorkspacesInAlphabeticalOrder() {
+        return workspaceService
+                .getAll(workspacePermission.getReadPermission())
+                .sort(Comparator.comparing(workspace -> workspace.getName().toLowerCase()))
+                .collectList();
+    }
+
+    /**
+     * Returns a list of workspaces for the current user, sorted based on feature flag.
+     * If alphabetical ordering is enabled, returns workspaces in alphabetical order.
+     * Otherwise, returns workspaces in recently used order.
+     *
+     * @return Mono containing the list of workspaces
+     */
+    @Override
+    public Mono<List<Workspace>> getUserWorkspacesForHome() {
+        Mono<Boolean> isAlphabeticalOrderingEnabled =
+                featureFlagService.check(FeatureFlagEnum.release_alphabetical_ordering_enabled);
+        return isAlphabeticalOrderingEnabled.flatMap(isEnabled -> {
+            if (isEnabled) {
+                // If alphabetical ordering is enabled, then we need to sort the workspaces in alphabetical order
+                return getUserWorkspacesInAlphabeticalOrder();
+            } else {
+                // If alphabetical ordering is disabled, then we need to sort the workspaces in recently used order
+                return getUserWorkspacesByRecentlyUsedOrder();
+            }
+        });
     }
 }

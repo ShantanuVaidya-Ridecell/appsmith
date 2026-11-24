@@ -4,7 +4,7 @@ import org.springframework.web.reactive.function.client.ExchangeStrategies;
 
 public class AppsmithAiConstants {
     public static final String USECASE = "usecase";
-    public static final String AI_SERVER_HOST = "https://cs.appsmith.com/api/v1/proxy";
+    public static final String AI_PROXY_BASE_PATH = "/api/v1/proxy";
     public static final String ASSISTANT_PATH = "/assistant";
     public static final String QUERY_PATH = ASSISTANT_PATH + "/query";
     public static final String ASSOCIATE_PATH = ASSISTANT_PATH + "/files/datasource";
@@ -32,7 +32,7 @@ public class AppsmithAiConstants {
     public static final String ACTION_ID = "actionId";
     public static final String WORKSPACE_ID = "workspaceId";
     public static final String INSTANCE_ID = "instanceId";
-    public static final String TENANT_ID = "tenantId";
+    public static final String ORGANIZATION_ID = "tenantId";
     public static final String SOURCE_DETAILS = "sourceDetail";
 
     public static final String PERIOD_DELIMITER = ".";

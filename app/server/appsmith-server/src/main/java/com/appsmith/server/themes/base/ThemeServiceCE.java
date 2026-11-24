@@ -13,9 +13,31 @@ public interface ThemeServiceCE extends CrudService<Theme, String> {
 
     Mono<Theme> getApplicationTheme(String branchedApplicationId, ApplicationMode applicationMode);
 
+    /**
+     * Gets the current theme for an application when the Application object is already available.
+     * This avoids an additional database fetch for the application.
+     *
+     * @param application     The Application object
+     * @param applicationMode EDIT or PUBLISHED mode
+     * @return The current theme for the application
+     */
+    Mono<Theme> getApplicationTheme(Application application, ApplicationMode applicationMode);
+
     Flux<Theme> getApplicationThemes(String applicationId, String branchName);
 
     Flux<Theme> getApplicationThemes(String branchedApplicationId);
+
+    /**
+     * Gets all themes for an application when the Application object is already available.
+     * This avoids an additional database fetch for the application.
+     * <p>
+     * The application theme list is editor data. The caller must have resolved {@code application} with edit
+     * permission; this method performs no application-level permission check of its own.
+     *
+     * @param application The Application object, resolved with edit permission by the caller
+     * @return All themes associated with the application
+     */
+    Flux<Theme> getApplicationThemes(Application application);
 
     Flux<Theme> getSystemThemes();
 

@@ -7,14 +7,17 @@ import com.appsmith.external.models.CreatorContextType;
 import com.appsmith.external.models.Datasource;
 import com.appsmith.external.models.PluginType;
 import com.appsmith.external.models.Property;
+import com.appsmith.external.models.RunBehaviourEnum;
 import com.appsmith.server.acl.AclPermission;
 import com.appsmith.server.applications.base.ApplicationService;
 import com.appsmith.server.constants.FieldName;
 import com.appsmith.server.domains.Application;
 import com.appsmith.server.domains.Layout;
+import com.appsmith.server.domains.PermissionGroup;
 import com.appsmith.server.domains.Plugin;
 import com.appsmith.server.domains.User;
 import com.appsmith.server.domains.Workspace;
+import com.appsmith.server.dtos.InviteUsersDTO;
 import com.appsmith.server.dtos.LayoutDTO;
 import com.appsmith.server.dtos.PageDTO;
 import com.appsmith.server.exceptions.AppsmithError;
@@ -25,8 +28,10 @@ import com.appsmith.server.layouts.UpdateLayoutService;
 import com.appsmith.server.newactions.base.NewActionService;
 import com.appsmith.server.newpages.base.NewPageService;
 import com.appsmith.server.repositories.CacheableRepositoryHelper;
+import com.appsmith.server.repositories.PermissionGroupRepository;
 import com.appsmith.server.repositories.PluginRepository;
 import com.appsmith.server.solutions.ApplicationPermission;
+import com.appsmith.server.solutions.UserAndAccessManagementService;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
@@ -35,6 +40,7 @@ import net.minidev.json.JSONObject;
 import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -42,6 +48,10 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.boot.test.mock.mockito.SpyBean;
 import org.springframework.http.HttpMethod;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.context.ReactiveSecurityContextHolder;
+import org.springframework.security.core.context.SecurityContext;
+import org.springframework.security.core.context.SecurityContextImpl;
 import org.springframework.security.test.context.support.WithUserDetails;
 import org.springframework.test.annotation.DirtiesContext;
 import reactor.core.publisher.Flux;
@@ -55,6 +65,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
 
@@ -103,6 +114,12 @@ public class LayoutServiceTest {
 
     @Autowired
     CacheableRepositoryHelper cacheableRepositoryHelper;
+
+    @Autowired
+    PermissionGroupRepository permissionGroupRepository;
+
+    @Autowired
+    UserAndAccessManagementService userAndAccessManagementService;
 
     @MockBean
     PluginExecutorHelper pluginExecutorHelper;
@@ -153,8 +170,9 @@ public class LayoutServiceTest {
 
     @AfterEach
     public void cleanup() {
-        applicationService
-                .findByWorkspaceId(workspaceId, applicationPermission.getDeletePermission())
+        applicationPermission
+                .getDeletePermission()
+                .flatMapMany(permission -> applicationService.findByWorkspaceId(workspaceId, permission))
                 .flatMap(remainingApplication -> applicationPageService.deleteApplication(remainingApplication.getId()))
                 .collectList()
                 .block();
@@ -343,7 +361,7 @@ public class LayoutServiceTest {
                     action.getActionConfiguration().setHttpMethod(HttpMethod.POST);
                     action.setPageId(page1.getId());
                     action.setDatasource(datasource);
-                    action.setExecuteOnLoad(false);
+                    action.setRunBehaviour(RunBehaviourEnum.MANUAL);
                     action.setUserSetOnLoad(true);
                     monos.add(layoutActionService.createSingleAction(action, Boolean.FALSE));
 
@@ -524,16 +542,16 @@ public class LayoutServiceTest {
                             "some dynamic {{\"anIgnoredAction.data:\" + aGetAction.data}}",
                             "dynamicPost",
                             """
-                        some dynamic {{
-                        (function(ignoredAction1){
-                        \tlet a = ignoredAction1.data
-                        \tlet ignoredAction2 = { data: "nothing" }
-                        \tlet b = ignoredAction2.data
-                        \tlet c = "ignoredAction3.data"
-                        \t// ignoredAction4.data
-                        \treturn aPostAction.data
-                        })(anotherPostAction.data)}}
-                        """,
+                some dynamic {{
+                (function(ignoredAction1){
+                \tlet a = ignoredAction1.data
+                \tlet ignoredAction2 = { data: "nothing" }
+                \tlet b = ignoredAction2.data
+                \tlet c = "ignoredAction3.data"
+                \t// ignoredAction4.data
+                \treturn aPostAction.data
+                })(anotherPostAction.data)}}
+                """,
                             "dynamicPostWithAutoExec",
                             "some dynamic {{aPostActionWithAutoExec.data}}",
                             "dynamicDelete",
@@ -888,8 +906,10 @@ public class LayoutServiceTest {
 
         StepVerifier.create(actionDTOMono)
                 .assertNext(tuple -> {
-                    assertThat(tuple.getT1().getExecuteOnLoad()).isTrue();
-                    assertThat(tuple.getT2().getExecuteOnLoad()).isTrue();
+                    assertThat(tuple.getT1().getRunBehaviour()).isEqualTo(RunBehaviourEnum.ON_PAGE_LOAD);
+                    ;
+                    assertThat(tuple.getT2().getRunBehaviour()).isEqualTo(RunBehaviourEnum.ON_PAGE_LOAD);
+                    ;
                 })
                 .verifyComplete();
     }
@@ -1114,8 +1134,9 @@ public class LayoutServiceTest {
 
         StepVerifier.create(actionDTOMono)
                 .assertNext(tuple -> {
-                    assertThat(tuple.getT1().getExecuteOnLoad()).isTrue();
-                    assertThat(tuple.getT2().getExecuteOnLoad()).isNotEqualTo(Boolean.TRUE);
+                    assertThat(tuple.getT1().getRunBehaviour()).isEqualTo(RunBehaviourEnum.ON_PAGE_LOAD);
+                    ;
+                    assertThat(tuple.getT2().getRunBehaviour()).isNotEqualTo(RunBehaviourEnum.ON_PAGE_LOAD);
                 })
                 .verifyComplete();
     }
@@ -1212,8 +1233,8 @@ public class LayoutServiceTest {
 
         StepVerifier.create(actionDTOMono)
                 .assertNext(tuple -> {
-                    assertThat(tuple.getT1().getExecuteOnLoad()).isTrue();
-                    assertThat(tuple.getT2().getExecuteOnLoad()).isTrue();
+                    assertThat(tuple.getT1().getRunBehaviour()).isEqualTo(RunBehaviourEnum.ON_PAGE_LOAD);
+                    assertThat(tuple.getT2().getRunBehaviour()).isEqualTo(RunBehaviourEnum.ON_PAGE_LOAD);
                 })
                 .verifyComplete();
     }
@@ -1352,5 +1373,87 @@ public class LayoutServiceTest {
     @AfterEach
     public void purgePages() {
         newPageService.deleteAll().block();
+    }
+
+    SecurityContext workspaceViewerSecurityContext() {
+        Workspace currentWorkspace = workspaceService
+                .findById(workspaceId, AclPermission.READ_WORKSPACES)
+                .block();
+        assertThat(currentWorkspace).isNotNull();
+        List<PermissionGroup> defaultGroups = permissionGroupRepository
+                .findAllById(currentWorkspace.getDefaultPermissionGroups())
+                .collectList()
+                .block();
+        assertThat(defaultGroups).isNotNull();
+        PermissionGroup viewerGroup = defaultGroups.stream()
+                .filter(group -> group.getName().startsWith(FieldName.VIEWER))
+                .findFirst()
+                .orElseThrow();
+
+        InviteUsersDTO invite = new InviteUsersDTO();
+        invite.setPermissionGroupId(viewerGroup.getId());
+        invite.setUsernames(List.of("usertest@usertest.com"));
+        userAndAccessManagementService.inviteUsers(invite, "test").block();
+
+        User viewer = userService.findByEmail("usertest@usertest.com").block();
+        assertThat(viewer).isNotNull();
+        return new SecurityContextImpl(new UsernamePasswordAuthenticationToken(viewer, null, viewer.getAuthorities()));
+    }
+
+    PageDTO createPublishedPage(String uniquePrefix) {
+        Application app = new Application();
+        app.setName(uniquePrefix + "_app");
+        PageDTO testPage = new PageDTO();
+        testPage.setName(uniquePrefix + "_page");
+        PageDTO page = createPage(app, testPage).block();
+        assertThat(page).isNotNull();
+        applicationPageService.publish(page.getApplicationId(), true).block();
+        return page;
+    }
+
+    @Test
+    @WithUserDetails(value = "api_user")
+    @DisplayName("GHSA-j564-5cm6-xjgj")
+    void should_rejectEditorModeLayoutRead_when_callerIsWorkspaceViewer() {
+        // Given
+        PageDTO page = createPublishedPage("viewerEditorLayout_" + UUID.randomUUID());
+        String layoutId = page.getLayouts().get(0).getId();
+        SecurityContext viewer = workspaceViewerSecurityContext();
+
+        // When
+        Mono<Layout> editorRead = layoutService
+                .getLayout(page.getId(), layoutId, false)
+                .contextWrite(ReactiveSecurityContextHolder.withSecurityContext(Mono.just(viewer)));
+
+        // Then
+        StepVerifier.create(editorRead)
+                .expectErrorSatisfies(error -> assertThat(error)
+                        .isInstanceOf(AppsmithException.class)
+                        .hasMessage(AppsmithError.INVALID_PARAMETER.getMessage(
+                                FieldName.PAGE_ID + " or " + FieldName.LAYOUT_ID)))
+                .verify();
+    }
+
+    @Test
+    @WithUserDetails(value = "api_user")
+    @DisplayName("GHSA-j564-5cm6-xjgj")
+    void should_returnPublishedLayout_when_workspaceViewerReadsInViewMode() {
+        // Given
+        PageDTO page = createPublishedPage("viewerViewLayout_" + UUID.randomUUID());
+        String layoutId = page.getLayouts().get(0).getId();
+        SecurityContext viewer = workspaceViewerSecurityContext();
+
+        // When
+        Mono<Layout> viewRead = layoutService
+                .getLayout(page.getId(), layoutId, true)
+                .contextWrite(ReactiveSecurityContextHolder.withSecurityContext(Mono.just(viewer)));
+
+        // Then
+        StepVerifier.create(viewRead)
+                .assertNext(layout -> {
+                    assertThat(layout.getId()).isEqualTo(layoutId);
+                    assertThat(layout.getViewMode()).isTrue();
+                })
+                .verifyComplete();
     }
 }

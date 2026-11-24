@@ -16,6 +16,7 @@ export const PluginIDs: Record<PluginPackageName, string> = {
   [PluginPackageName.MS_SQL]: "65e58df296506a506bd706a5",
   [PluginPackageName.ORACLE]: "65e58df396506a506bd706bf",
   [PluginPackageName.WORKFLOW]: "<replace-me-with-default-plugin-id>", // this is added for the typing of PluginIDs to pass
+  [PluginPackageName.APPSMITH_AGENT]: "<replace-me-with-default-plugin-id>",
 };
 
 export default {
@@ -6952,9 +6953,30 @@ export default {
         id: 1,
         children: [
           {
-            label: "Run the API on page load",
-            configProperty: "executeOnLoad",
-            controlType: "SWITCH",
+            label: "Run behavior",
+            configProperty: "runBehaviour",
+            controlType: "DROP_DOWN",
+            initialValue: "MANUAL",
+            options: [
+              {
+                label: "Automatic",
+                subText:
+                  "Query runs on page load or when a variable it depends on changes",
+                value: "AUTOMATIC",
+              },
+              {
+                label: "On page load",
+                subText:
+                  "Query runs when the page loads or when manually triggered",
+                value: "ON_PAGE_LOAD",
+              },
+              {
+                label: "Manual",
+                subText:
+                  "Query only runs when called in an event or JS with .run()",
+                value: "MANUAL",
+              },
+            ],
           },
           {
             label: "Request confirmation before running this API",
@@ -7017,9 +7039,30 @@ export default {
         id: 1,
         children: [
           {
-            label: "Run the API on page load",
-            configProperty: "executeOnLoad",
-            controlType: "SWITCH",
+            label: "Run behavior",
+            configProperty: "runBehaviour",
+            controlType: "DROP_DOWN",
+            initialValue: "MANUAL",
+            options: [
+              {
+                label: "Automatic",
+                subText:
+                  "Query runs on page load or when a variable it depends on changes",
+                value: "AUTOMATIC",
+              },
+              {
+                label: "On page load",
+                subText:
+                  "Query runs when the page loads or when manually triggered",
+                value: "ON_PAGE_LOAD",
+              },
+              {
+                label: "Manual",
+                subText:
+                  "Query only runs when called in an event or JS with .run()",
+                value: "MANUAL",
+              },
+            ],
           },
           {
             label: "Request confirmation before running this API",
@@ -7082,9 +7125,30 @@ export default {
         id: 1,
         children: [
           {
-            label: "Run the query on page load",
-            configProperty: "executeOnLoad",
-            controlType: "SWITCH",
+            label: "Run behavior",
+            configProperty: "runBehaviour",
+            controlType: "DROP_DOWN",
+            initialValue: "MANUAL",
+            options: [
+              {
+                label: "Automatic",
+                subText:
+                  "Query runs on page load or when a variable it depends on changes",
+                value: "AUTOMATIC",
+              },
+              {
+                label: "On page load",
+                subText:
+                  "Query runs when the page loads or when manually triggered",
+                value: "ON_PAGE_LOAD",
+              },
+              {
+                label: "Manual",
+                subText:
+                  "Query only runs when called in an event or JS with .run()",
+                value: "MANUAL",
+              },
+            ],
           },
           {
             label: "Request confirmation before running this query",
@@ -7111,9 +7175,30 @@ export default {
         id: 1,
         children: [
           {
-            label: "Run the query on page load",
-            configProperty: "executeOnLoad",
-            controlType: "SWITCH",
+            label: "Run behavior",
+            configProperty: "runBehaviour",
+            controlType: "DROP_DOWN",
+            initialValue: "MANUAL",
+            options: [
+              {
+                label: "Automatic",
+                subText:
+                  "Query runs on page load or when a variable it depends on changes",
+                value: "AUTOMATIC",
+              },
+              {
+                label: "On page load",
+                subText:
+                  "Query runs when the page loads or when manually triggered",
+                value: "ON_PAGE_LOAD",
+              },
+              {
+                label: "Manual",
+                subText:
+                  "Query only runs when called in an event or JS with .run()",
+                value: "MANUAL",
+              },
+            ],
           },
           {
             label: "Request confirmation before running this query",

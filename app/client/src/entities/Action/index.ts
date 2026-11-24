@@ -10,6 +10,7 @@ import {
   type Plugin,
   type PluginName,
 } from "../Plugin";
+import type { ActionRunBehaviourType } from "PluginActionEditor/types/PluginActionTypes";
 
 export enum PaginationType {
   NONE = "NONE",
@@ -38,6 +39,7 @@ export enum ActionExecutionContext {
   PAGE_LOAD = "PAGE_LOAD",
   EVALUATION_ACTION_TRIGGER = "EVALUATION_ACTION_TRIGGER",
   REFRESH_ACTIONS_ON_ENV_CHANGE = "REFRESH_ACTIONS_ON_ENV_CHANGE",
+  PAGE_UNLOAD = "PAGE_UNLOAD",
 }
 
 export interface KeyValuePair {
@@ -124,6 +126,12 @@ export interface StoredDatasource {
   datasourceConfiguration?: { url?: string };
 }
 
+export interface VisualizationElements {
+  css: string;
+  js: string;
+  html: string;
+}
+
 export interface BaseAction {
   id: string;
   baseId: string;
@@ -133,7 +141,7 @@ export interface BaseAction {
   pageId: string;
   collectionId?: string;
   pluginId: string;
-  executeOnLoad: boolean;
+  runBehaviour: ActionRunBehaviourType;
   dynamicBindingPathList: DynamicPath[];
   isValid: boolean;
   invalids: string[];
@@ -157,6 +165,12 @@ export interface BaseAction {
   // will always be undefined for non js actions
   isMainJSCollection?: boolean;
   source?: ActionCreationSourceTypeEnum;
+  visualization?: {
+    result: VisualizationElements;
+  };
+  isDirtyMap?: {
+    SCHEMA_GENERATION: boolean;
+  };
 }
 
 interface BaseApiAction extends BaseAction {
@@ -273,6 +287,12 @@ export function getGraphQLPlugin(plugins: Plugin[]): Plugin | undefined {
 
 export function getAppsmithAIPlugin(plugins: Plugin[]): Plugin | undefined {
   return plugins.find((p) => p.packageName === PluginPackageName.APPSMITH_AI);
+}
+
+export function getAppsmithAgentPlugin(plugins: Plugin[]): Plugin | undefined {
+  return plugins.find(
+    (p) => p.packageName === PluginPackageName.APPSMITH_AGENT,
+  );
 }
 
 export function isGraphqlPlugin(plugin: Plugin | undefined) {

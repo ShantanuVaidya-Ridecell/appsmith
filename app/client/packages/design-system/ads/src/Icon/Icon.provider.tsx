@@ -8,6 +8,9 @@ const AddMoreIcon = importRemixIcon(
 const AddMoreFillIcon = importRemixIcon(
   async () => import("remixicon-react/AddCircleFillIcon"),
 );
+const ArrowGoForwardLineIcon = importRemixIcon(
+  async () => import("remixicon-react/ArrowGoForwardLineIcon"),
+);
 const ArrowGoBackLineIcon = importRemixIcon(
   async () => import("remixicon-react/ArrowGoBackLineIcon"),
 );
@@ -201,6 +204,12 @@ const RightArrowIcon2 = importRemixIcon(
 const RocketIcon = importRemixIcon(
   async () => import("remixicon-react/RocketLineIcon"),
 );
+const RocketDotIcon = importSvg(
+  async () => import("../__assets__/icons/ads/rocket-dot.svg"),
+);
+const RobotIcon = importRemixIcon(
+  async () => import("remixicon-react/RobotLineIcon"),
+);
 const Save2LineIcon = importRemixIcon(
   async () => import("remixicon-react/Save2LineIcon"),
 );
@@ -384,6 +393,9 @@ const QuestionLineIcon = importRemixIcon(
 const UserSharedLineIcon = importRemixIcon(
   async () => import("remixicon-react/UserSharedLineIcon"),
 );
+const UserStarLineIcon = importRemixIcon(
+  async () => import("remixicon-react/UserStarLineIcon"),
+);
 const UserReceived2LineIcon = importRemixIcon(
   async () => import("remixicon-react/UserReceived2LineIcon"),
 );
@@ -452,6 +464,9 @@ const ArrowUpSLineIcon = importRemixIcon(
 );
 const AccountBoxLineIcon = importRemixIcon(
   async () => import("remixicon-react/AccountBoxLineIcon"),
+);
+const AccountCircleLineIcon = importRemixIcon(
+  async () => import("remixicon-react/AccountCircleLineIcon"),
 );
 const AddLineIcon = importRemixIcon(
   async () => import("remixicon-react/AddLineIcon"),
@@ -574,6 +589,15 @@ const AppsLineIcon = importRemixIcon(
 
 const ProtectedIcon = importRemixIcon(
   async () => import("remixicon-react/ShieldKeyholeLineIcon"),
+);
+const ShieldUserLineIcon = importRemixIcon(
+  async () => import("remixicon-react/ShieldUserLineIcon"),
+);
+const EqualizerLineIcon = importRemixIcon(
+  async () => import("remixicon-react/EqualizerLineIcon"),
+);
+const PriceTagIcon = importRemixIcon(
+  async () => import("remixicon-react/PriceTag3LineIcon"),
 );
 
 const CornerDownLeftLineIcon = importSvg(
@@ -1123,6 +1147,32 @@ const SalesforceIcon = importSvg(
   async () => import("../__assets__/icons/ads/salesforce.svg"),
 );
 
+const StateInspectorIcon = importSvg(
+  async () => import("../__assets__/icons/ads/state-inspector.svg"),
+);
+
+const BoxIcon = importSvg(
+  async () => import("../__assets__/icons/ads/box.svg"),
+);
+const ConfluenceIcon = importSvg(
+  async () => import("../__assets__/icons/ads/confluence.svg"),
+);
+const DropboxIcon = importSvg(
+  async () => import("../__assets__/icons/ads/dropbox.svg"),
+);
+const FreshdeskIcon = importSvg(
+  async () => import("../__assets__/icons/ads/freshdesk.svg"),
+);
+const IntercomIcon = importSvg(
+  async () => import("../__assets__/icons/ads/intercom.svg"),
+);
+const OnedriveIcon = importSvg(
+  async () => import("../__assets__/icons/ads/onedrive.svg"),
+);
+const SharepointIcon = importSvg(
+  async () => import("../__assets__/icons/ads/sharepoint.svg"),
+);
+
 const MdFileIcon = importSvg(
   async () => import("../__assets__/icons/ads/md-file.svg"),
 );
@@ -1154,6 +1204,21 @@ const TsvFileIcon = importSvg(
 const XlsFileIcon = importSvg(
   async () => import("../__assets__/icons/ads/xls-file.svg"),
 );
+const Robot2LineIcon = importSvg(
+  async () => import("../__assets__/icons/ads/robot-2-line.svg"),
+);
+
+const SparklingFilledIcon = importSvg(
+  async () => import("../__assets__/icons/ads/sparkling-filled.svg"),
+);
+
+const AIChatIcon = importSvg(
+  async () => import("../__assets__/icons/ads/ai-chat.svg"),
+);
+
+const LightningLineIcon = importSvg(
+  async () => import("../__assets__/icons/ads/lightning-line.svg"),
+);
 
 import PlayIconPNG from "../__assets__/icons/control/play-icon.png";
 
@@ -1169,11 +1234,14 @@ function PlayIconPNGWrapper() {
 
 const ICON_LOOKUP = {
   "account-box-line": AccountBoxLineIcon,
+  "account-circle-line": AccountCircleLineIcon,
   "add-box-line": AddBoxLineIcon,
   "add-circle-control": AddCircleIcon,
   "add-line": AddLineIcon,
   "add-more": AddMoreIcon,
   "add-more-fill": AddMoreFillIcon,
+  "ai-chat": AIChatIcon,
+  "arrow-go-forward": ArrowGoForwardLineIcon,
   "alert-fill": AlertFillIcon,
   "alert-line": AlertLineIcon,
   "align-center": AlignCenter,
@@ -1276,6 +1344,7 @@ const ICON_LOOKUP = {
   "edit-white": EditWhiteIcon,
   "editor-v3": EditorV3Icon,
   "enter-line": CornerDownLeftLineIcon,
+  "equalizer-line": EqualizerLineIcon,
   "expand-less": ExpandLess,
   "expand-more": ExpandMore,
   "external-link-line": ExternalLinkIcon,
@@ -1438,6 +1507,7 @@ const ICON_LOOKUP = {
   "user-received-2-line": UserReceived2LineIcon,
   "user-settings-line": UserSettingsLineIcon,
   "user-shared-line": UserSharedLineIcon,
+  "user-star-line": UserStarLineIcon,
   "user-unfollow-line": UserUnfollowLineIcon,
   "vertical-align-bottom": VerticalBottom,
   "vertical-align-middle": VerticalMiddle,
@@ -1456,6 +1526,7 @@ const ICON_LOOKUP = {
   "widgets-v3": WidgetsV3Icon,
   "workflows-mono": WorkflowsMonochromeIcon,
   "protected-icon": ProtectedIcon,
+  pricetag: PriceTagIcon,
   billing: BillingIcon,
   binding: Binding,
   book: BookIcon,
@@ -1521,11 +1592,16 @@ const ICON_LOOKUP = {
   reaction: Reaction,
   refresh: RefreshLineIcon,
   rocket: RocketIcon,
+  "rocket-dot": RocketDotIcon,
+  robot: RobotIcon,
+  "robot-2": Robot2LineIcon,
+  "sparkling-filled": SparklingFilledIcon,
   save: Save2LineIcon,
   search: SearchIcon,
   setting: SettingIcon,
   share: ShareForwardIcon,
   shield: Shield,
+  "shield-user-line": ShieldUserLineIcon,
   shine: ShineIcon,
   slash: SlashIcon,
   snippet: Snippet,
@@ -1560,6 +1636,15 @@ const ICON_LOOKUP = {
   zendesk: ZendeskIcon,
   "google-drive": GoogleDriveIcon,
   salesforce: SalesforceIcon,
+  "state-inspector": StateInspectorIcon,
+  box: BoxIcon,
+  confluence: ConfluenceIcon,
+  dropbox: DropboxIcon,
+  freshdesk: FreshdeskIcon,
+  intercom: IntercomIcon,
+  onedrive: OnedriveIcon,
+  sharepoint: SharepointIcon,
+  "lightning-line": LightningLineIcon,
 };
 
 export const IconCollection = Object.keys(ICON_LOOKUP);

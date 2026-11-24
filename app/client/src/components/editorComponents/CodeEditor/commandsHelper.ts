@@ -8,7 +8,7 @@ import { generateQuickCommands } from "./generateQuickCommands";
 import type { Datasource } from "entities/Datasource";
 import AnalyticsUtil from "ee/utils/AnalyticsUtil";
 import log from "loglevel";
-import { ENTITY_TYPE } from "entities/DataTree/dataTreeFactory";
+import { ENTITY_TYPE } from "ee/entities/DataTree/types";
 import {
   checkIfCursorInsideBinding,
   shouldShowSlashCommandMenu,
@@ -18,7 +18,7 @@ import type { FeatureFlags } from "ee/entities/FeatureFlag";
 import type {
   EntityNavigationData,
   NavigationData,
-} from "selectors/navigationSelectors";
+} from "entities/DataTree/dataTreeTypes";
 import { getAIContext } from "ee/components/editorComponents/GPT/trigger";
 import type { Plugin } from "entities/Plugin";
 

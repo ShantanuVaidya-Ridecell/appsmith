@@ -5,7 +5,6 @@ import {
   ReduxActionErrorTypes,
   ReduxActionTypes,
 } from "ee/constants/ReduxActionConstants";
-import { getPersistentAppStore } from "constants/AppConstants";
 import type { APP_MODE } from "entities/App";
 import log from "loglevel";
 import { call, put, select } from "redux-saga/effects";
@@ -21,6 +20,8 @@ import { restoreIDEEditorViewMode } from "actions/ideActions";
 import type { Span } from "instrumentation/types";
 import { endSpan, startNestedSpan } from "instrumentation/generateTraces";
 import { selectGitApplicationCurrentBranch } from "selectors/gitModSelectors";
+import { getPersistentAppStore } from "constants/AppConstants";
+import AnalyticsUtil from "ee/utils/AnalyticsUtil";
 
 export interface AppEnginePayload {
   applicationId?: string;
@@ -28,6 +29,8 @@ export interface AppEnginePayload {
   branch?: string;
   mode: APP_MODE;
   shouldInitialiseUserDetails?: boolean;
+  staticApplicationSlug?: string;
+  staticPageSlug?: string;
 }
 
 export interface IAppEngine {
@@ -87,9 +90,20 @@ export default abstract class AppEngine {
     rootSpan: Span,
   ) {
     const loadAppDataSpan = startNestedSpan("AppEngine.loadAppData", rootSpan);
-    const { applicationId, basePageId, branch } = payload;
+    const {
+      applicationId,
+      basePageId,
+      branch,
+      staticApplicationSlug,
+      staticPageSlug,
+    } = payload;
     const { pages } = allResponses;
-    const page = pages.data?.pages?.find((page) => page.baseId === basePageId);
+
+    // For static URLs, look up page by staticPageSlug using uniqueSlug
+    const isStaticPageUrl = staticApplicationSlug && staticPageSlug;
+    const page = isStaticPageUrl
+      ? pages.data?.pages?.find((page) => page.uniqueSlug === staticPageSlug)
+      : pages.data?.pages?.find((page) => page.baseId === basePageId);
     const apiCalls: boolean = yield failFastApiCalls(
       [
         fetchApplication({
@@ -123,6 +137,7 @@ export default abstract class AppEngine {
         getPersistentAppStore(application.id, branch || currentBranch),
       ),
     );
+
     const defaultPageId: string = yield select(getDefaultPageId);
     const defaultPageBaseId: string = yield select(getDefaultBasePageId);
     const toLoadPageId: string = page?.id || defaultPageId;
@@ -146,6 +161,7 @@ export default abstract class AppEngine {
 
     yield put(updateBranchLocally(branch || ""));
     yield put(setAppMode(this._mode));
+    yield call(AnalyticsUtil.setAppMode, this._mode);
     yield put(restoreIDEEditorViewMode());
     yield put({ type: ReduxActionTypes.START_EVALUATION });
 

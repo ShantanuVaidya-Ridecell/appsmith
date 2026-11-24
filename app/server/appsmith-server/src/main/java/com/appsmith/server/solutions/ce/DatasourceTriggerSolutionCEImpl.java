@@ -18,7 +18,7 @@ import com.appsmith.server.services.AuthenticationValidator;
 import com.appsmith.server.services.ConfigService;
 import com.appsmith.server.services.DatasourceContextService;
 import com.appsmith.server.services.FeatureFlagService;
-import com.appsmith.server.services.TenantService;
+import com.appsmith.server.services.OrganizationService;
 import com.appsmith.server.solutions.DatasourcePermission;
 import com.appsmith.server.solutions.DatasourceStructureSolution;
 import com.appsmith.server.solutions.EnvironmentPermission;
@@ -54,14 +54,15 @@ public class DatasourceTriggerSolutionCEImpl implements DatasourceTriggerSolutio
     private final DatasourcePermission datasourcePermission;
     private final EnvironmentPermission environmentPermission;
     private final ConfigService configService;
-    private final TenantService tenantService;
+    private final OrganizationService organizationService;
     private final FeatureFlagService featureFlagService;
 
     public Mono<TriggerResultDTO> trigger(
             String datasourceId, String environmentId, TriggerRequestDTO triggerRequestDTO) {
 
         Mono<Datasource> datasourceMonoCached = datasourceService
-                .findById(datasourceId, datasourcePermission.getExecutePermission())
+                .findById(datasourceId, datasourcePermission.getReadPermission())
+                .switchIfEmpty(Mono.error(new AppsmithException(AppsmithError.UNAUTHORIZED_ACCESS)))
                 .cache();
 
         Mono<DatasourceStorage> datasourceStorageMonoCached = datasourceMonoCached
@@ -108,24 +109,32 @@ public class DatasourceTriggerSolutionCEImpl implements DatasourceTriggerSolutio
                     final PluginExecutor pluginExecutor = tuple.getT3();
                     final Datasource datasource = tuple.getT4();
 
-                    // TODO: Flags are needed here for google sheets integration to support shared drive behind a flag
-                    // Once thoroughly tested, this flag can be removed
-                    Map<String, Boolean> featureFlagMap = featureFlagService.getCachedTenantFeatureFlags() != null
-                            ? featureFlagService.getCachedTenantFeatureFlags().getFeatures()
-                            : Collections.emptyMap();
-
                     return datasourceContextService
                             .getDatasourceContext(datasourceStorage, plugin)
                             // Now that we have the context (connection details), execute the action.
                             // datasource remains unevaluated for datasource of DBAuth Type Authentication,
                             // However the context comes from evaluated datasource.
                             .flatMap(resourceContext -> populateTriggerRequestDto(triggerRequestDTO, datasource)
-                                    .flatMap(updatedTriggerRequestDTO -> ((PluginExecutor<Object>) pluginExecutor)
-                                            .triggerWithFlags(
-                                                    resourceContext.getConnection(),
-                                                    datasourceStorage.getDatasourceConfiguration(),
-                                                    updatedTriggerRequestDTO,
-                                                    featureFlagMap)));
+                                    .flatMap(updatedTriggerRequestDTO -> {
+                                        String organizationId = updatedTriggerRequestDTO.getOrganizationId();
+                                        // TODO: Flags are needed here for google sheets integration to support shared
+                                        // drive behind a flag
+                                        // Once thoroughly tested, this flag can be removed
+                                        Map<String, Boolean> featureFlagMap =
+                                                featureFlagService.getCachedOrganizationFeatureFlags(organizationId)
+                                                                != null
+                                                        ? featureFlagService
+                                                                .getCachedOrganizationFeatureFlags(organizationId)
+                                                                .getFeatures()
+                                                        : Collections.emptyMap();
+
+                                        return ((PluginExecutor<Object>) pluginExecutor)
+                                                .triggerWithFlags(
+                                                        resourceContext.getConnection(),
+                                                        datasourceStorage.getDatasourceConfiguration(),
+                                                        updatedTriggerRequestDTO,
+                                                        featureFlagMap);
+                                    }));
                 });
 
         // If the plugin hasn't implemented the trigger function, go for the default implementation
@@ -164,11 +173,11 @@ public class DatasourceTriggerSolutionCEImpl implements DatasourceTriggerSolutio
 
     private Mono<TriggerRequestDTO> populateTriggerRequestDto(
             TriggerRequestDTO triggerRequestDTO, Datasource datasource) {
-        return tenantService
-                .getDefaultTenantId()
+        return organizationService
+                .getCurrentUserOrganizationId()
                 .zipWith(configService.getInstanceId())
                 .map(tuple -> {
-                    triggerRequestDTO.setTenantId(tuple.getT1());
+                    triggerRequestDTO.setOrganizationId(tuple.getT1());
                     triggerRequestDTO.setInstanceId(tuple.getT2());
                     triggerRequestDTO.setWorkspaceId(datasource.getWorkspaceId());
                     return triggerRequestDTO;

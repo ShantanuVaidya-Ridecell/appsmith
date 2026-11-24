@@ -3,7 +3,8 @@ import type { LintOptions } from "jshint";
 import isEntityFunction from "./utils/isEntityFunction";
 import { noFloatingPromisesLintRule } from "./customRules/no-floating-promises";
 import { getLintRulesBasedOnContext } from "ee/utils/lintRulesHelpers";
-import type { IDEType } from "ee/entities/IDE/constants";
+
+import type { IDEType } from "ee/IDE/Interfaces/IDETypes";
 
 export enum LINTER_TYPE {
   "JSHINT" = "JSHint",
@@ -91,6 +92,12 @@ export const JS_OBJECT_START_STATEMENT = "export default";
 export const INVALID_JSOBJECT_START_STATEMENT = `JSObject must start with '${JS_OBJECT_START_STATEMENT}'`;
 export const INVALID_JSOBJECT_START_STATEMENT_ERROR_CODE =
   "INVALID_JSOBJECT_START_STATEMENT_ERROR_CODE";
+/**
+ * Opt-in for getKeyPositionInString to use indexOf instead of word-boundary
+ * regex. Used when a short originalBinding was cut mid-word and \b cannot match.
+ */
+export const LINT_BINDING_LITERAL_MATCH_ERROR_CODE =
+  "LINT_BINDING_LITERAL_MATCH_ERROR_CODE";
 // https://github.com/jshint/jshint/blob/d3d84ae1695359aef077ddb143f4be98001343b4/src/messages.js#L204
 export const IDENTIFIER_NOT_DEFINED_LINT_ERROR_CODE = "W117";
 
@@ -120,6 +127,17 @@ export const SUPPORTED_WEB_APIS = {
   console: true,
   crypto: true,
   fetch: true,
+  Intl: true,
+  Blob: true,
+  File: true,
+  FileReader: true,
+  FormData: true,
+  URL: true,
+  URLSearchParams: true,
+  TextEncoder: true,
+  TextDecoder: true,
+  atob: true,
+  btoa: true,
 };
 export enum CustomLintErrorCode {
   INVALID_ENTITY_PROPERTY = "INVALID_ENTITY_PROPERTY",

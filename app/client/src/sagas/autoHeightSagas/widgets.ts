@@ -8,10 +8,10 @@ import log from "loglevel";
 import type {
   CanvasWidgetsReduxState,
   UpdateWidgetsPayload,
-} from "reducers/entityReducers/canvasWidgetsReducer";
-import { put, select } from "redux-saga/effects";
+} from "ee/reducers/entityReducers/canvasWidgetsReducer";
+import { call, put, select } from "redux-saga/effects";
 import { getCanvasHeightOffset } from "utils/WidgetSizeUtils";
-import type { FlattenedWidgetProps } from "WidgetProvider/constants";
+import type { FlattenedWidgetProps } from "WidgetProvider/types";
 import {
   getWidgetMaxAutoHeight,
   getWidgetMinAutoHeight,
@@ -43,6 +43,7 @@ import type { TreeNode } from "utils/autoHeight/constants";
 import { directlyMutateDOMNodes } from "utils/autoHeight/mutateDOM";
 import { getAppMode } from "ee/selectors/entitiesSelector";
 import { APP_MODE } from "entities/App";
+import { loadAndRegisterOnlyCanvasWidgets } from "sagas/EvaluationsSaga";
 import {
   getDimensionMap,
   getIsAutoLayout,
@@ -77,6 +78,22 @@ import {
 export function* updateWidgetAutoHeightSaga(
   action?: ReduxAction<UpdateWidgetAutoHeightPayload>,
 ) {
+  // In the published app, widgets are registered lazily (see AppViewer), so
+  // height processing on page load can race registration. getCanvasHeightOffset
+  // silently returns 0 for unregistered widget types, which shrinks container
+  // widgets (Card, Tabs, etc.) to their bare canvas height. Ensure the used
+  // widget types are registered before computing; no-op once registered.
+  //
+  // loadAndRegisterOnlyCanvasWidgets rethrows (an unknown widget type in the
+  // DSL, or a chunk fetch that fails during a rolling upgrade). Swallow it:
+  // this saga is bound to takeEvery/debounce on hot auto-height actions, so an
+  // uncaught error would restart-loop the watcher and drop all height updates.
+  try {
+    yield call(loadAndRegisterOnlyCanvasWidgets);
+  } catch (error) {
+    log.error("Auto Height: widget registration failed, continuing", error);
+  }
+
   const start = performance.now();
   let shouldRecomputeContainers = false;
   let shouldEval = false;

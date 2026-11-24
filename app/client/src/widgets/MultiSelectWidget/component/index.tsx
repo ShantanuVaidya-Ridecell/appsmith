@@ -20,9 +20,13 @@ import { Classes } from "@blueprintjs/core";
 import { WidgetContainerDiff } from "widgets/WidgetUtils";
 import _ from "lodash";
 import { Colors } from "constants/Colors";
-import type { LabelPosition } from "components/constants";
+import {
+  type LabelPosition,
+  SELECT_DROPDOWN_LIST_ITEM_HEIGHT_PX,
+} from "components/constants";
 import LabelWithTooltip from "widgets/components/LabelWithTooltip";
 
+/** Renders the selected-state icon used for multi-select menu rows. */
 const menuItemSelectedIcon = (props: { isSelected: boolean }) => {
   return <StyledCheckbox checked={props.isSelected} />;
 };
@@ -48,6 +52,7 @@ export interface MultiSelectProps
   labelTextColor?: string;
   labelTextSize?: TextSize;
   labelStyle?: string;
+  isRequired?: boolean;
   compactMode: boolean;
   isValid: boolean;
   allowSelectAll?: boolean;
@@ -62,6 +67,7 @@ export interface MultiSelectProps
 
 const DEBOUNCE_TIMEOUT = 800;
 
+/** Multi-select widget view with required-label support and optional select-all behavior. */
 function MultiSelectComponent({
   allowSelectAll,
   compactMode,
@@ -69,6 +75,7 @@ function MultiSelectComponent({
   dropdownStyle,
   dropDownWidth,
   isDynamicHeightEnabled,
+  isRequired,
   isValid,
   labelAlignment,
   labelPosition,
@@ -200,6 +207,7 @@ function MultiSelectComponent({
           fontSize={labelTextSize}
           fontStyle={labelStyle}
           isDynamicHeightEnabled={isDynamicHeightEnabled}
+          isRequired={isRequired}
           loading={loading}
           position={labelPosition}
           text={labelText}
@@ -225,6 +233,8 @@ function MultiSelectComponent({
             name="dropdown"
           />
         }
+        listHeight={300}
+        listItemHeight={SELECT_DROPDOWN_LIST_ITEM_HEIGHT_PX}
         loading={loading}
         maxTagCount={"responsive"}
         maxTagPlaceholder={(e) => `+${e.length} more`}

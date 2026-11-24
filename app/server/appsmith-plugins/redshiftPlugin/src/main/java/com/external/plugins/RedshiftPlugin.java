@@ -1,5 +1,6 @@
 package com.external.plugins;
 
+import com.appsmith.external.configurations.connectionpool.ConnectionPoolConfig;
 import com.appsmith.external.exceptions.pluginExceptions.AppsmithPluginError;
 import com.appsmith.external.exceptions.pluginExceptions.AppsmithPluginException;
 import com.appsmith.external.exceptions.pluginExceptions.StaleConnectionException;
@@ -20,7 +21,7 @@ import com.zaxxer.hikari.HikariDataSource;
 import com.zaxxer.hikari.HikariPoolMXBean;
 import lombok.NonNull;
 import lombok.extern.slf4j.Slf4j;
-import org.apache.commons.lang.ObjectUtils;
+import org.apache.commons.lang3.ObjectUtils;
 import org.pf4j.Extension;
 import org.pf4j.PluginWrapper;
 import org.springframework.util.CollectionUtils;
@@ -70,6 +71,12 @@ public class RedshiftPlugin extends BasePlugin {
     public static class RedshiftPluginExecutor implements PluginExecutor<HikariDataSource> {
 
         private final Scheduler scheduler = Schedulers.boundedElastic();
+
+        private final ConnectionPoolConfig connectionPoolConfig;
+
+        public RedshiftPluginExecutor(ConnectionPoolConfig connectionPoolConfig) {
+            this.connectionPoolConfig = connectionPoolConfig;
+        }
 
         private static final String TABLES_QUERY =
                 "select a.attname                                                      as name,\n"
@@ -379,11 +386,12 @@ public class RedshiftPlugin extends BasePlugin {
                         e.getMessage()));
             }
 
-            return Mono.fromCallable(() -> {
-                        log.debug(Thread.currentThread().getName() + ": Connecting to Redshift db");
-                        return createConnectionPool(datasourceConfiguration);
-                    })
-                    .subscribeOn(scheduler);
+            return connectionPoolConfig.getSocketTimeoutSeconds().flatMap(socketTimeoutSeconds -> Mono.fromCallable(
+                            () -> {
+                                log.debug(Thread.currentThread().getName() + ": Connecting to Redshift db");
+                                return createConnectionPool(datasourceConfiguration, socketTimeoutSeconds);
+                            })
+                    .subscribeOn(scheduler));
         }
 
         @Override

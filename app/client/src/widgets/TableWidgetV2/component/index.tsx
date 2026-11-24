@@ -1,19 +1,20 @@
 import React from "react";
-import Table from "./Table";
-import type {
-  AddNewRowActions,
-  CompactMode,
-  ReactTableColumnProps,
-  ReactTableFilter,
-  StickyType,
-} from "./Constants";
 import type { Row } from "react-table";
+import {
+  CompactModeTypes,
+  type AddNewRowActions,
+  type CompactMode,
+  type ReactTableColumnProps,
+  type ReactTableFilter,
+  type StickyType,
+} from "./Constants";
+import Table from "./Table";
 
 import type { EventType } from "constants/AppsmithActionConstants/ActionConstants";
 import equal from "fast-deep-equal/es6";
-import type { EditableCell, TableVariant } from "../constants";
-import { ColumnTypes } from "../constants";
 import { useCallback } from "react";
+import type { EditableCell, RowColorStyles, TableVariant } from "../constants";
+import { ColumnTypes } from "../constants";
 
 export interface ColumnMenuOptionProps {
   content: string | JSX.Element;
@@ -37,7 +38,7 @@ export interface ColumnMenuSubOptionProps {
   isHeader?: boolean;
 }
 
-interface ReactTableComponentProps {
+interface ReactTableComponentProps extends RowColorStyles {
   widgetId: string;
   widgetName: string;
   searchKey: string;
@@ -106,6 +107,10 @@ interface ReactTableComponentProps {
   canFreezeColumn?: boolean;
   showConnectDataOverlay: boolean;
   onConnectData: () => void;
+  isInfiniteScrollEnabled: boolean;
+  isAutoHeightEnabled: boolean;
+  endOfData: boolean;
+  cachedTableData: Array<Record<string, unknown>>;
 }
 
 function ReactTableComponent(props: ReactTableComponentProps) {
@@ -117,7 +122,6 @@ function ReactTableComponent(props: ReactTableComponentProps) {
     borderColor,
     borderWidth,
     canFreezeColumn,
-    columns,
     columnWidthMap,
     compactMode,
     delimiter,
@@ -125,12 +129,20 @@ function ReactTableComponent(props: ReactTableComponentProps) {
     disableDrag,
     editableCell,
     editMode,
+    endOfData,
+    evenRowColor,
     filters,
     handleColumnFreeze,
     handleReorderColumn,
     handleResizeColumn,
+    headerFontStyle,
+    headerFontWeight,
+    headerRowColor,
+    headerTextColor,
     height,
     isAddRowInProgress,
+    isAutoHeightEnabled,
+    isInfiniteScrollEnabled,
     isLoading,
     isSortable,
     isVisibleDownload,
@@ -139,6 +151,7 @@ function ReactTableComponent(props: ReactTableComponentProps) {
     isVisibleSearch,
     multiRowSelection,
     nextPageClick,
+    oddRowColor,
     onAddNewRow,
     onAddNewRowAction,
     onBulkEditDiscard,
@@ -167,6 +180,16 @@ function ReactTableComponent(props: ReactTableComponentProps) {
     widgetName,
     width,
   } = props;
+
+  let columns = props.columns;
+
+  if (isInfiniteScrollEnabled) {
+    const regularColumns = columns.filter(
+      (col) => col.columnProperties?.columnType !== ColumnTypes.EDIT_ACTIONS,
+    );
+
+    columns = [...regularColumns];
+  }
 
   const sortTableColumn = useCallback(
     (columnIndex: number, asc: boolean) => {
@@ -229,10 +252,11 @@ function ReactTableComponent(props: ReactTableComponentProps) {
       borderRadius={props.borderRadius}
       borderWidth={borderWidth}
       boxShadow={props.boxShadow}
+      cachedTableData={props.cachedTableData}
       canFreezeColumn={canFreezeColumn}
       columnWidthMap={columnWidthMap}
       columns={columns}
-      compactMode={compactMode}
+      compactMode={compactMode || CompactModeTypes.DEFAULT}
       data={tableData}
       delimiter={delimiter}
       disableDrag={memoziedDisableDrag}
@@ -240,12 +264,20 @@ function ReactTableComponent(props: ReactTableComponentProps) {
       editMode={editMode}
       editableCell={editableCell}
       enableDrag={memoziedEnableDrag}
+      endOfData={endOfData}
+      evenRowColor={evenRowColor}
       filters={filters}
       handleColumnFreeze={handleColumnFreeze}
       handleReorderColumn={handleReorderColumn}
       handleResizeColumn={handleResizeColumn}
+      headerFontStyle={headerFontStyle}
+      headerFontWeight={headerFontWeight}
+      headerRowColor={headerRowColor}
+      headerTextColor={headerTextColor}
       height={height}
       isAddRowInProgress={isAddRowInProgress}
+      isAutoHeightEnabled={isAutoHeightEnabled}
+      isInfiniteScrollEnabled={isInfiniteScrollEnabled}
       isLoading={isLoading}
       isSortable={isSortable}
       isVisibleDownload={isVisibleDownload}
@@ -254,6 +286,7 @@ function ReactTableComponent(props: ReactTableComponentProps) {
       isVisibleSearch={isVisibleSearch}
       multiRowSelection={multiRowSelection}
       nextPageClick={nextPageClick}
+      oddRowColor={oddRowColor}
       onAddNewRow={onAddNewRow}
       onAddNewRowAction={onAddNewRowAction}
       onBulkEditDiscard={onBulkEditDiscard}
@@ -322,6 +355,13 @@ export default React.memo(ReactTableComponent, (prev, next) => {
     prev.borderWidth === next.borderWidth &&
     prev.borderColor === next.borderColor &&
     prev.accentColor === next.accentColor &&
+    prev.headerFontStyle === next.headerFontStyle &&
+    prev.headerFontWeight === next.headerFontWeight &&
+    prev.headerRowColor === next.headerRowColor &&
+    prev.headerTextColor === next.headerTextColor &&
+    prev.oddRowColor === next.oddRowColor &&
+    prev.evenRowColor === next.evenRowColor &&
+    prev.variant === next.variant &&
     //shallow equal possible
     equal(prev.columnWidthMap, next.columnWidthMap) &&
     //static reference
@@ -330,7 +370,6 @@ export default React.memo(ReactTableComponent, (prev, next) => {
     // and we are not changing the columns manually.
     prev.columns === next.columns &&
     equal(prev.editableCell, next.editableCell) &&
-    prev.variant === next.variant &&
     prev.primaryColumnId === next.primaryColumnId &&
     equal(prev.isEditableCellsValid, next.isEditableCellsValid) &&
     prev.isAddRowInProgress === next.isAddRowInProgress &&
@@ -339,6 +378,9 @@ export default React.memo(ReactTableComponent, (prev, next) => {
     prev.allowSorting === next.allowSorting &&
     prev.disabledAddNewRowSave === next.disabledAddNewRowSave &&
     prev.canFreezeColumn === next.canFreezeColumn &&
-    prev.showConnectDataOverlay === next.showConnectDataOverlay
+    prev.showConnectDataOverlay === next.showConnectDataOverlay &&
+    prev.isInfiniteScrollEnabled === next.isInfiniteScrollEnabled &&
+    prev.isAutoHeightEnabled === next.isAutoHeightEnabled &&
+    equal(prev.cachedTableData, next.cachedTableData)
   );
 });

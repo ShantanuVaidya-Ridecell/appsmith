@@ -7,14 +7,14 @@ import com.appsmith.server.configurations.EmailConfig;
 import com.appsmith.server.configurations.GoogleRecaptchaConfig;
 import com.appsmith.server.constants.EnvVariables;
 import com.appsmith.server.constants.FieldName;
-import com.appsmith.server.domains.Tenant;
-import com.appsmith.server.domains.TenantConfiguration;
+import com.appsmith.server.domains.Organization;
+import com.appsmith.server.domains.OrganizationConfiguration;
 import com.appsmith.server.domains.User;
 import com.appsmith.server.dtos.TestEmailConfigRequestDTO;
 import com.appsmith.server.exceptions.AppsmithError;
 import com.appsmith.server.exceptions.AppsmithException;
+import com.appsmith.server.helpers.BlacklistedEnvVariableHelper;
 import com.appsmith.server.helpers.CollectionUtils;
-import com.appsmith.server.helpers.FeatureFlagMigrationHelper;
 import com.appsmith.server.helpers.FileUtils;
 import com.appsmith.server.helpers.TextUtils;
 import com.appsmith.server.helpers.UserUtils;
@@ -24,10 +24,11 @@ import com.appsmith.server.repositories.UserRepository;
 import com.appsmith.server.services.AnalyticsService;
 import com.appsmith.server.services.ConfigService;
 import com.appsmith.server.services.EmailService;
+import com.appsmith.server.services.OrganizationService;
 import com.appsmith.server.services.PermissionGroupService;
 import com.appsmith.server.services.SessionUserService;
-import com.appsmith.server.services.TenantService;
 import com.appsmith.server.services.UserService;
+import com.appsmith.util.RestrictedHostFilter;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.mail.MessagingException;
@@ -46,12 +47,18 @@ import org.springframework.util.MultiValueMap;
 import org.springframework.util.StringUtils;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
 import reactor.util.function.Tuple2;
 import reactor.util.function.Tuples;
 
+import javax.net.SocketFactory;
 import java.io.IOException;
 import java.io.InputStream;
 import java.lang.reflect.Field;
+import java.net.InetAddress;
+import java.net.InetSocketAddress;
+import java.net.Socket;
+import java.net.SocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.NoSuchFileException;
@@ -60,6 +67,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Properties;
 import java.util.Set;
@@ -69,6 +77,7 @@ import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 import static com.appsmith.server.constants.EnvVariables.APPSMITH_ADMIN_EMAILS;
+import static com.appsmith.server.constants.EnvVariables.APPSMITH_ALLOWED_FRAME_ANCESTORS;
 import static com.appsmith.server.constants.EnvVariables.APPSMITH_DISABLE_TELEMETRY;
 import static com.appsmith.server.constants.EnvVariables.APPSMITH_MAIL_ENABLED;
 import static com.appsmith.server.constants.EnvVariables.APPSMITH_MAIL_FROM;
@@ -77,13 +86,14 @@ import static com.appsmith.server.constants.EnvVariables.APPSMITH_MAIL_PASSWORD;
 import static com.appsmith.server.constants.EnvVariables.APPSMITH_MAIL_PORT;
 import static com.appsmith.server.constants.EnvVariables.APPSMITH_MAIL_SMTP_AUTH;
 import static com.appsmith.server.constants.EnvVariables.APPSMITH_MAIL_USERNAME;
+import static com.appsmith.server.constants.EnvVariables.APPSMITH_MCP_INTERNAL_SECRET;
 import static com.appsmith.server.constants.EnvVariables.APPSMITH_OAUTH2_GITHUB_CLIENT_ID;
 import static com.appsmith.server.constants.EnvVariables.APPSMITH_OAUTH2_GOOGLE_CLIENT_ID;
 import static com.appsmith.server.constants.EnvVariables.APPSMITH_RECAPTCHA_SECRET_KEY;
 import static com.appsmith.server.constants.EnvVariables.APPSMITH_RECAPTCHA_SITE_KEY;
 import static com.appsmith.server.constants.EnvVariables.APPSMITH_REPLY_TO;
 import static com.appsmith.server.constants.EnvVariables.APPSMITH_SIGNUP_ALLOWED_DOMAINS;
-import static com.appsmith.server.constants.EnvVariables.APPSMITH_SIGNUP_DISABLED;
+import static com.appsmith.server.constants.ce.FieldNameCE.ORGANIZATION_ID;
 import static java.lang.Boolean.TRUE;
 
 @Slf4j
@@ -103,16 +113,13 @@ public class EnvManagerCEImpl implements EnvManagerCE {
     private final FileUtils fileUtils;
 
     private final PermissionGroupService permissionGroupService;
-
     private final ConfigService configService;
-
     private final UserUtils userUtils;
-
-    private final TenantService tenantService;
-
+    private final OrganizationService organizationService;
     private final ObjectMapper objectMapper;
-
     private final EmailService emailService;
+    private final BlacklistedEnvVariableHelper blacklistedEnvVariableHelper;
+    private final InstanceRestartPublisher instanceRestartPublisher;
 
     /**
      * This regex pattern matches environment variable declarations like `VAR_NAME=value` or `VAR_NAME="value"` or just
@@ -121,8 +128,46 @@ public class EnvManagerCEImpl implements EnvManagerCE {
      */
     private static final Pattern ENV_VARIABLE_PATTERN = Pattern.compile("^(?<name>[A-Z\\d_]+)\\s*=\\s*(?<value>.*)$");
 
+    private static final Pattern SAFE_SHELL_VALUE_PATTERN = Pattern.compile("^[A-Za-z\\d_@%+=:,./-]*$");
+
+    /**
+     * One CSP frame-ancestors source expression: the wildcard, a scheme source, or a host source with an optional
+     * scheme, wildcard label, port, and path. caddy-reconfigure.mjs applies the same rules when it writes the header.
+     */
+    private static final Pattern FRAME_ANCESTORS_SOURCE_PATTERN = Pattern.compile(
+            "^(?:\\*|[A-Za-z][A-Za-z0-9+.-]*:|(?:[A-Za-z][A-Za-z0-9+.-]*://)?(?:\\*|(?:\\*\\.)?[A-Za-z0-9-]+(?:\\.[A-Za-z0-9-]+)*\\.?)(?::(?:[0-9]+|\\*))?(?:/[A-Za-z0-9._~%+:@=&/-]*)?)$");
+
     private static final Set<String> VARIABLE_WHITELIST =
             Stream.of(EnvVariables.values()).map(Enum::name).collect(Collectors.toUnmodifiableSet());
+
+    /**
+     * Secret-bearing variables whose names don't self-describe as secrets. Everything matching
+     * the name pattern in {@link #isSecretEnvVar(String)} is masked without being listed here.
+     * The SMTP username is deliberately NOT here: admins need to see which account is
+     * configured, and a username is identifying, not authenticating.
+     */
+    private static final Set<String> EXPLICIT_SECRET_ENV_VARS =
+            Set.of(EnvVariables.APPSMITH_DB_URL.name(), EnvVariables.APPSMITH_REDIS_URL.name());
+
+    /**
+     * Derived, read-only connection summaries added to the admin settings response in place of
+     * the (masked) DB/Redis URLs. Computed from the URLs the server process actually runs with
+     * ({@code appsmith.db.url} / {@code appsmith.redis.url}), not from docker.env — which can
+     * hold generated credentials that aren't in use when the deployment overrides these via
+     * real environment variables.
+     */
+    public static final String DB_CONNECTION_INFO_KEY = "APPSMITH_DB_CONNECTION_INFO";
+
+    public static final String REDIS_CONNECTION_INFO_KEY = "APPSMITH_REDIS_CONNECTION_INFO";
+
+    /**
+     * Value reported when the connection targets the services running inside the Appsmith
+     * container. Uses the same host heuristic as the container entrypoint's {@code isUriLocal}
+     * check, which decides whether the embedded MongoDB/Redis are started at all.
+     */
+    public static final String EMBEDDED_CONNECTION = "embedded";
+
+    private static final Set<String> EMBEDDED_HOSTS = Set.of("localhost", "127.0.0.1");
 
     public EnvManagerCEImpl(
             SessionUserService sessionUserService,
@@ -135,12 +180,14 @@ public class EnvManagerCEImpl implements EnvManagerCE {
             JavaMailSender javaMailSender,
             GoogleRecaptchaConfig googleRecaptchaConfig,
             FileUtils fileUtils,
+            InstanceRestartPublisher instanceRestartPublisher,
             PermissionGroupService permissionGroupService,
             ConfigService configService,
             UserUtils userUtils,
-            TenantService tenantService,
+            OrganizationService organizationService,
             ObjectMapper objectMapper,
-            EmailService emailService) {
+            EmailService emailService,
+            BlacklistedEnvVariableHelper blacklistedEnvVariableHelper) {
 
         this.sessionUserService = sessionUserService;
         this.userService = userService;
@@ -155,9 +202,11 @@ public class EnvManagerCEImpl implements EnvManagerCE {
         this.permissionGroupService = permissionGroupService;
         this.configService = configService;
         this.userUtils = userUtils;
-        this.tenantService = tenantService;
+        this.organizationService = organizationService;
         this.objectMapper = objectMapper;
         this.emailService = emailService;
+        this.blacklistedEnvVariableHelper = blacklistedEnvVariableHelper;
+        this.instanceRestartPublisher = instanceRestartPublisher;
     }
 
     /**
@@ -170,56 +219,74 @@ public class EnvManagerCEImpl implements EnvManagerCE {
      * @return List of string lines for updated env file content.
      */
     @Override
-    public List<String> transformEnvContent(String envContent, Map<String, String> changes) {
+    public Mono<List<String>> transformEnvContent(String envContent, Map<String, String> changes) {
         final Set<String> variablesNotInWhitelist = new HashSet<>(changes.keySet());
-        final Set<String> tenantConfigWhitelist = allowedTenantConfiguration();
+        final Set<String> organizationConfigWhitelist = allowedOrganizationConfiguration();
 
-        // We remove all the variables that aren't defined in our env variable whitelist or in the TenantConfiguration
-        // class. This is because the configuration can be saved either in the .env file or the tenant collection
+        // We remove all the variables that aren't defined in our env variable whitelist or in the
+        // OrganizationConfiguration
+        // class. This is because the configuration can be saved either in the .env file or the organization collection
         variablesNotInWhitelist.removeAll(VARIABLE_WHITELIST);
-        variablesNotInWhitelist.removeAll(tenantConfigWhitelist);
-
+        variablesNotInWhitelist.removeAll(organizationConfigWhitelist);
         if (!variablesNotInWhitelist.isEmpty()) {
-            throw new AppsmithException(AppsmithError.GENERIC_BAD_REQUEST);
+            return Mono.error(new AppsmithException(AppsmithError.GENERIC_BAD_REQUEST));
         }
 
-        if (changes.containsKey(APPSMITH_MAIL_HOST.name())) {
-            changes.put(
-                    APPSMITH_MAIL_ENABLED.name(),
-                    Boolean.toString(StringUtils.hasText(changes.get(APPSMITH_MAIL_HOST.name()))));
-        }
+        return organizationService.getCurrentUserOrganizationId().map(organizationId -> {
+            // Create a copy of the changes map to avoid modifying the original map and avoiding unsupported ops
+            // exception if the map is unmodifiable
+            Map<String, String> updatedChanges = new HashMap<>(changes);
+            // Add a check to remove blacklisted envs for updates
+            Set<String> blacklistedEnvVariable =
+                    blacklistedEnvVariableHelper.getBlacklistedEnvVariableForAppsmithCloud(organizationId);
+            for (String key : updatedChanges.keySet()) {
+                if (blacklistedEnvVariable.contains(key)) {
+                    updatedChanges.remove(key);
+                }
+            }
 
-        if (changes.containsKey(APPSMITH_MAIL_USERNAME.name())) {
-            changes.put(
-                    APPSMITH_MAIL_SMTP_AUTH.name(),
-                    Boolean.toString(StringUtils.hasText(changes.get(APPSMITH_MAIL_USERNAME.name()))));
-        }
+            if (updatedChanges.containsKey(APPSMITH_MAIL_HOST.name())) {
+                updatedChanges.put(
+                        APPSMITH_MAIL_ENABLED.name(),
+                        Boolean.toString(StringUtils.hasText(updatedChanges.get(APPSMITH_MAIL_HOST.name()))));
+            }
 
-        final Set<String> remainingChangedNames = new HashSet<>(changes.keySet());
+            if (updatedChanges.containsKey(APPSMITH_MAIL_USERNAME.name())) {
+                updatedChanges.put(
+                        APPSMITH_MAIL_SMTP_AUTH.name(),
+                        Boolean.toString(StringUtils.hasText(updatedChanges.get(APPSMITH_MAIL_USERNAME.name()))));
+            }
 
-        final List<String> outLines = envContent
-                .lines()
-                .map(line -> {
-                    final Matcher matcher = ENV_VARIABLE_PATTERN.matcher(line);
-                    if (!matcher.matches()) {
-                        return line;
-                    }
-                    final String name = matcher.group("name");
-                    return remainingChangedNames.remove(name)
-                            ? String.format("%s=%s", name, escapeForShell(changes.get(name)))
-                            : line;
-                })
-                .collect(Collectors.toList());
+            final Set<String> remainingChangedNames = new HashSet<>(updatedChanges.keySet());
 
-        for (final String name : remainingChangedNames) {
-            outLines.add(name + "=" + escapeForShell(changes.get(name)));
-        }
+            final List<String> outLines = envContent
+                    .lines()
+                    .map(line -> {
+                        final Matcher matcher = ENV_VARIABLE_PATTERN.matcher(line);
+                        if (!matcher.matches()) {
+                            return line;
+                        }
+                        final String name = matcher.group("name");
+                        return remainingChangedNames.remove(name)
+                                ? String.format("%s=%s", name, escapeForShell(updatedChanges.get(name)))
+                                : line;
+                    })
+                    .collect(Collectors.toList());
 
-        return outLines;
+            for (final String name : remainingChangedNames) {
+                outLines.add(name + "=" + escapeForShell(updatedChanges.get(name)));
+            }
+
+            return outLines;
+        });
     }
 
     private String escapeForShell(String input) {
-        if (org.apache.commons.lang3.StringUtils.containsAny(input, " ?*#'")) {
+        if (input.chars().anyMatch(Character::isISOControl)) {
+            throw new AppsmithException(AppsmithError.INVALID_PARAMETER, "environment variable value");
+        }
+
+        if (!input.isEmpty() && !SAFE_SHELL_VALUE_PATTERN.matcher(input).matches()) {
             return ("'" + input.replace("'", "'\"'\"'") + "'")
                     .replaceAll("^''", "")
                     .replaceAll("''$", "");
@@ -263,9 +330,55 @@ public class EnvManagerCEImpl implements EnvManagerCE {
         return valueBuilder.toString();
     }
 
-    // Expect user object to be null when this method is getting called to run the tenant specific migrations without
+    /**
+     * Returns the value as a space-separated list of CSP frame-ancestors source expressions. Returns an empty string
+     * when the value is blank.
+     *
+     * @throws AppsmithException when any part of the value is not a source expression
+     */
+    private static String normalizeFrameAncestors(String value) {
+        // A source expression holds printable ASCII only. This check covers the whole value, including line breaks
+        // and other control characters.
+        if (value.chars().anyMatch(c -> c < 0x20 || c > 0x7E)) {
+            throw new AppsmithException(AppsmithError.INVALID_PARAMETER, "Allowed frame ancestors");
+        }
+        final List<String> tokens = new ArrayList<>();
+        for (final String token : value.split(" ")) {
+            if (!token.isEmpty()) {
+                tokens.add(token);
+            }
+        }
+        if (tokens.size() == 1 && "'none'".equals(tokens.get(0).toLowerCase(Locale.ROOT))) {
+            return "'none'";
+        }
+        final List<String> sources = new ArrayList<>();
+        for (final String token : tokens) {
+            if ("'self'".equals(token.toLowerCase(Locale.ROOT))) {
+                sources.add("'self'");
+            } else if (FRAME_ANCESTORS_SOURCE_PATTERN.matcher(token).matches()) {
+                sources.add(token);
+            } else {
+                throw new AppsmithException(AppsmithError.INVALID_PARAMETER, "Allowed frame ancestors");
+            }
+        }
+        return String.join(" ", sources);
+    }
+
+    // Expect user object to be null when this method is getting called to run the org specific migrations without
     // user context
     private Mono<Void> validateChanges(User user, Map<String, String> changes) {
+        if (changes.containsKey(APPSMITH_ALLOWED_FRAME_ANCESTORS.name())) {
+            final String frameAncestors = changes.get(APPSMITH_ALLOWED_FRAME_ANCESTORS.name());
+            if (frameAncestors == null) {
+                return Mono.error(new AppsmithException(AppsmithError.INVALID_PARAMETER, "Allowed frame ancestors"));
+            }
+            try {
+                changes.put(APPSMITH_ALLOWED_FRAME_ANCESTORS.name(), normalizeFrameAncestors(frameAncestors));
+            } catch (AppsmithException e) {
+                return Mono.error(e);
+            }
+        }
+
         if (changes.containsKey(APPSMITH_ADMIN_EMAILS.name())) {
             String emailCsv = StringUtils.trimAllWhitespace(changes.get(APPSMITH_ADMIN_EMAILS.name()));
 
@@ -284,12 +397,12 @@ public class EnvManagerCEImpl implements EnvManagerCE {
     }
 
     /**
-     * This function returns a set of String based on the JsonProperty annotations in the TenantConfiguration class
+     * This function returns a set of String based on the JsonProperty annotations in the OrganizationConfiguration class
      *
      * @return
      */
-    private Set<String> allowedTenantConfiguration() {
-        return AppsmithBeanUtils.getAllFields(TenantConfiguration.class)
+    private Set<String> allowedOrganizationConfiguration() {
+        return AppsmithBeanUtils.getAllFields(OrganizationConfiguration.class)
                 .map(field -> {
                     JsonProperty jsonProperty = field.getDeclaredAnnotation(JsonProperty.class);
                     return jsonProperty == null ? field.getName() : jsonProperty.value();
@@ -298,77 +411,93 @@ public class EnvManagerCEImpl implements EnvManagerCE {
     }
 
     /**
-     * This function sets the value in the TenantConfiguration object based on the JsonProperty annotation of the field
+     * This function sets the value in the OrganizationConfiguration object based on the JsonProperty annotation of the field
      * The key must be exactly equal to the json annotation
      *
-     * @param tenantConfiguration
+     * @param organizationConfiguration
      * @param key
      * @param value
      */
-    private void setConfigurationByKey(TenantConfiguration tenantConfiguration, String key, String value) {
-        Stream<Field> fieldStream = AppsmithBeanUtils.getAllFields(TenantConfiguration.class);
+    private void setConfigurationByKey(OrganizationConfiguration organizationConfiguration, String key, String value) {
+        Stream<Field> fieldStream = AppsmithBeanUtils.getAllFields(OrganizationConfiguration.class);
         fieldStream.forEach(field -> {
             JsonProperty jsonProperty = field.getDeclaredAnnotation(JsonProperty.class);
             if (jsonProperty != null && jsonProperty.value().equals(key)) {
                 try {
                     field.setAccessible(true);
                     Object typedValue = ConvertUtils.convert(value, field.getType());
-                    field.set(tenantConfiguration, typedValue);
+                    field.set(organizationConfiguration, typedValue);
                 } catch (IllegalAccessException e) {
                     // Catch the error, log it and then do nothing.
                     log.error(
-                            "Got error while parsing the JSON annotations from TenantConfiguration class. Cause: ", e);
+                            "Got error while parsing the JSON annotations from OrganizationConfiguration class. Cause: ",
+                            e);
                 }
             } else if (field.getName().equals(key)) {
                 try {
                     field.setAccessible(true);
                     Object typedValue = ConvertUtils.convert(value, field.getType());
-                    field.set(tenantConfiguration, typedValue);
+                    field.set(organizationConfiguration, typedValue);
                 } catch (IllegalAccessException e) {
                     // Catch the error, log it and then do nothing.
-                    log.error("Got error while attempting to save property to TenantConfiguration class. Cause: ", e);
+                    log.error(
+                            "Got error while attempting to save property to OrganizationConfiguration class. Cause: ",
+                            e);
                 }
             }
         });
     }
 
-    private Mono<Tenant> updateTenantConfiguration(String tenantId, Map<String, String> changes) {
-        TenantConfiguration tenantConfiguration = new TenantConfiguration();
-        // Write the changes to the tenant collection in configuration field
+    private Mono<Organization> updateOrganizationConfiguration(String organizationId, Map<String, String> changes) {
+        OrganizationConfiguration organizationConfiguration = new OrganizationConfiguration();
+        // Write the changes to the organization collection in configuration field
         return Flux.fromIterable(changes.entrySet())
                 .map(map -> {
                     String key = map.getKey();
                     String value = map.getValue();
-                    setConfigurationByKey(tenantConfiguration, key, value);
+                    setConfigurationByKey(organizationConfiguration, key, value);
                     return map;
                 })
-                .then(Mono.just(tenantConfiguration))
-                .flatMap(updatedTenantConfig -> tenantService.updateTenantConfiguration(tenantId, tenantConfiguration));
+                .then(Mono.just(organizationConfiguration))
+                .flatMap(updatedOrganizationConfig ->
+                        organizationService.updateOrganizationConfiguration(organizationId, organizationConfiguration));
     }
 
+    // This flow is pertinent for any variables that need to change in the .env file or be saved in the organization
+    // configuration
     @Override
     public Mono<Void> applyChanges(Map<String, String> changes, String originHeader) {
-        // This flow is pertinent for any variables that need to change in the .env file or be saved in the tenant
-        // configuration
+        // Create a copy of the changes map to avoid modifying the original map and avoiding unsupported ops exception
+        // if the map is unmodifiable
+        Map<String, String> envChanges = new HashMap<>(changes);
+        // The admin read-back API masks secret values, and clients echo untouched fields back on
+        // save — a secret-classified value carrying the mask means "leave the stored value
+        // unchanged". Matching on contains (not equals) so a part-edited masked field can never
+        // corrupt the stored value. Scoped to secret keys: non-secret values are returned raw,
+        // so a mask string in one is genuine user input and must be persisted.
+        envChanges
+                .entrySet()
+                .removeIf(entry -> isSecretEnvVar(entry.getKey())
+                        && entry.getValue() != null
+                        && entry.getValue().contains(MASKED_SECRET));
         return verifyCurrentUserIsSuper()
-                .flatMap(user -> validateChanges(user, changes).thenReturn(user))
-                .flatMap(user -> applyChangesToEnvFileWithoutAclCheck(changes)
+                .flatMap(user -> validateChanges(user, envChanges).thenReturn(user))
+                .flatMap(user -> applyChangesToEnvFileWithoutAclCheck(envChanges)
+                        // Add the organization id to the context to be able to extract the feature flags
+                        .contextWrite(ctx -> ctx.put(ORGANIZATION_ID, user.getOrganizationId()))
                         // For configuration variables, save the variables to the config collection instead of .env file
                         // We ideally want to migrate all variables from .env file to the config collection for better
                         // scalability
-                        // Write the changes to the tenant collection in configuration field
-                        .flatMap(originalVariables -> updateTenantConfiguration(user.getTenantId(), changes)
-                                .then(sendAnalyticsEvent(user, originalVariables, changes))
+                        // Write the changes to the organization collection in configuration field
+                        .flatMap(originalVariables -> updateOrganizationConfiguration(
+                                        user.getOrganizationId(), envChanges)
+                                .then(sendAnalyticsEvent(user, originalVariables, envChanges))
                                 .thenReturn(originalVariables)))
                 .flatMap(originalValues -> {
                     Mono<Void> dependentTasks = Mono.empty();
 
                     // Try and update any at runtime, that can be.
-                    final Map<String, String> changesCopy = new HashMap<>(changes);
-
-                    if (changesCopy.containsKey(APPSMITH_SIGNUP_DISABLED.name())) {
-                        commonConfig.setSignupDisabled(changesCopy.remove(APPSMITH_SIGNUP_DISABLED.name()));
-                    }
+                    final Map<String, String> changesCopy = new HashMap<>(envChanges);
 
                     if (changesCopy.containsKey(APPSMITH_SIGNUP_ALLOWED_DOMAINS.name())) {
                         commonConfig.setAllowedDomainsString(
@@ -423,8 +552,12 @@ public class EnvManagerCEImpl implements EnvManagerCE {
                     }
 
                     if (changesCopy.containsKey(APPSMITH_DISABLE_TELEMETRY.name())) {
-                        commonConfig.setTelemetryDisabled(
+                        commonConfig.setIsTelemetryDisabled(
                                 "true".equals(changesCopy.remove(APPSMITH_DISABLE_TELEMETRY.name())));
+                    }
+
+                    if (changesCopy.containsKey(APPSMITH_MCP_INTERNAL_SECRET.name())) {
+                        commonConfig.setMcpInternalSecret(changesCopy.remove(APPSMITH_MCP_INTERNAL_SECRET.name()));
                     }
 
                     return dependentTasks.then();
@@ -434,14 +567,11 @@ public class EnvManagerCEImpl implements EnvManagerCE {
     /**
      * This method applies the changes to the env file and should be called internally within the server as the ACL
      * checks are skipped. For client side calls please use {@link EnvManagerCEImpl#applyChanges(Map, String)}.
-     * Please refer {@link FeatureFlagMigrationHelper} for the use case where ACL checks
-     * should be skipped.
      *
      * @param changes       Map of changes to be applied to the env file
      * @return              Map of original variables before the changes were applied
      */
-    @Override
-    public Mono<Map<String, String>> applyChangesToEnvFileWithoutAclCheck(Map<String, String> changes) {
+    private Mono<Map<String, String>> applyChangesToEnvFileWithoutAclCheck(Map<String, String> changes) {
         final Path envFilePath = Path.of(commonConfig.getEnvFilePath());
         String originalContent;
         try {
@@ -453,21 +583,36 @@ public class EnvManagerCEImpl implements EnvManagerCE {
         Map<String, String> originalVariables = parseToMap(originalContent);
 
         final Map<String, String> envFileChanges = new HashMap<>(changes);
-        final Set<String> tenantConfigurationKeys = allowedTenantConfiguration();
+        final Set<String> organizationConfigurationKeys = allowedOrganizationConfiguration();
         for (final String key : changes.keySet()) {
-            if (tenantConfigurationKeys.contains(key)) {
+            if (organizationConfigurationKeys.contains(key)) {
                 envFileChanges.remove(key);
             }
         }
-        final List<String> changedContent = transformEnvContent(originalContent, envFileChanges);
+        return transformEnvContent(originalContent, envFileChanges)
+                .publishOn(Schedulers.boundedElastic())
+                .map(changedContent -> {
+                    try {
+                        Files.write(envFilePath, changedContent);
+                    } catch (IOException e) {
+                        log.error("Unable to write to env file " + envFilePath, e);
+                        throw new AppsmithException(AppsmithError.IO_ERROR, "Unable to write to env file");
+                    }
+                    return originalVariables;
+                });
+    }
 
-        try {
-            Files.write(envFilePath, changedContent);
-        } catch (IOException e) {
-            log.error("Unable to write to env file " + envFilePath, e);
-            return Mono.error(e);
+    @Override
+    public Mono<Void> persistMcpInternalSecret(String secret) {
+        if (!StringUtils.hasText(commonConfig.getEnvFilePath())) {
+            return Mono.empty();
         }
-        return Mono.just(originalVariables);
+        Map<String, String> changes = new HashMap<>();
+        changes.put(APPSMITH_MCP_INTERNAL_SECRET.name(), secret == null ? "" : secret);
+        return applyChangesToEnvFileWithoutAclCheck(changes).then().onErrorResume(error -> {
+            log.error("Unable to persist APPSMITH_MCP_INTERNAL_SECRET to the env file", error);
+            return Mono.empty();
+        });
     }
 
     @Override
@@ -606,7 +751,7 @@ public class EnvManagerCEImpl implements EnvManagerCE {
         Mono<Boolean> removedUsersMono = Flux.fromIterable(removedUsers)
                 .flatMap(userService::findByEmail)
                 .collectList()
-                .flatMap(userUtils::removeSuperUser);
+                .flatMap(userUtils::removeInstanceAdmin);
 
         Flux<Tuple2<User, Boolean>> usersFlux = Flux.fromIterable(newUsers)
                 .flatMap(email -> userService
@@ -639,7 +784,7 @@ public class EnvManagerCEImpl implements EnvManagerCE {
                 .map(results -> results.stream().allMatch(result -> result));
 
         Mono<Boolean> existingUsersMono = existingUsersWhichAreNotAlreadySuperUsersMono.flatMap(users -> userUtils
-                .makeSuperUser(users)
+                .makeInstanceAdministrator(users)
                 .flatMap(
                         success -> Flux.fromIterable(users)
                                 .flatMap(user -> sessionUserService
@@ -695,20 +840,106 @@ public class EnvManagerCEImpl implements EnvManagerCE {
         return Mono.just(parseToMap(originalContent));
     }
 
+    private static void putConnectionInfo(Map<String, String> map, String key, String url) {
+        List<String> hosts = extractHosts(url);
+        if (hosts.isEmpty()) {
+            return;
+        }
+        boolean embedded = hosts.stream().allMatch(host -> EMBEDDED_HOSTS.contains(host.toLowerCase()));
+        map.put(key, embedded ? EMBEDDED_CONNECTION : String.join(", ", hosts));
+    }
+
     /**
-     * A filter function on getAll that returns env variables which are having non-empty values
+     * Extracts the hostname(s) from a connection URL, and nothing else — no credentials, port,
+     * database, or query parameters. Handles the multi-host authority MongoDB replica-set URLs
+     * use ({@code host1:27017,host2:27017}), which {@link java.net.URI} cannot parse, as well as
+     * {@code mongodb+srv} and bracketed IPv6 hosts.
+     */
+    static List<String> extractHosts(String url) {
+        if (!StringUtils.hasText(url)) {
+            return List.of();
+        }
+        String rest = url;
+        final int schemeIndex = rest.indexOf("://");
+        if (schemeIndex >= 0) {
+            rest = rest.substring(schemeIndex + 3);
+        }
+        // Drop the userinfo before locating the authority end: non-conforming URLs can carry
+        // unencoded '/', '?', or '@' inside the credentials, and truncating first would cut
+        // mid-credential and surface a credential fragment as a "host". Searching the full
+        // remainder can overshoot into a query value containing '@' — that worst case shows a
+        // bogus host, never credential material, which is the failure direction this helper
+        // must guarantee.
+        final int userInfoIndex = rest.lastIndexOf('@');
+        if (userInfoIndex >= 0) {
+            rest = rest.substring(userInfoIndex + 1);
+        }
+        int authorityEnd = rest.length();
+        for (final char delimiter : new char[] {'/', '?'}) {
+            final int index = rest.indexOf(delimiter);
+            if (index >= 0 && index < authorityEnd) {
+                authorityEnd = index;
+            }
+        }
+        final String authority = rest.substring(0, authorityEnd);
+        final List<String> hosts = new ArrayList<>();
+        for (final String part : authority.split(",")) {
+            String host = part.trim();
+            if (host.startsWith("[")) {
+                final int closeIndex = host.indexOf(']');
+                host = closeIndex > 0 ? host.substring(1, closeIndex) : host.substring(1);
+            } else {
+                final int colonIndex = host.indexOf(':');
+                if (colonIndex >= 0) {
+                    host = host.substring(0, colonIndex);
+                }
+            }
+            if (!host.isEmpty()) {
+                hosts.add(host);
+            }
+        }
+        return hosts;
+    }
+
+    /**
+     * Whether an env variable's value is credential material that must never be returned to a
+     * client — not even a super-admin. Matches an explicit list plus a name pattern (contains
+     * SECRET, or ends with _PASSWORD / _TOKEN), so future secret-bearing variables are masked
+     * without anyone having to remember a list.
+     */
+    protected boolean isSecretEnvVar(String name) {
+        return EXPLICIT_SECRET_ENV_VARS.contains(name)
+                || name.contains("SECRET")
+                || name.endsWith("_PASSWORD")
+                || name.endsWith("_TOKEN");
+    }
+
+    /**
+     * A filter function on getAll that returns env variables which are having non-empty values.
+     * Values of secret-classified variables (see {@link #isSecretEnvVar(String)}) are replaced
+     * with {@link #MASKED_SECRET}: this is the read path behind the admin settings API, and
+     * credential material must never leave the server. Internal callers that need real values
+     * must use {@link #getAll()} or {@link #getAllWithoutAclCheck()}.
      */
     @Override
     public Mono<Map<String, String>> getAllNonEmpty() {
-        return getAll().flatMap(map -> {
-            Map<String, String> nonEmptyValuesMap = new HashMap<>();
-            for (Map.Entry<String, String> entry : map.entrySet()) {
-                if (StringUtils.hasText(entry.getValue())) {
-                    nonEmptyValuesMap.put(entry.getKey(), entry.getValue());
-                }
-            }
-            return Mono.just(nonEmptyValuesMap);
-        });
+        return getAll().zipWith(organizationService.getCurrentUserOrganizationId())
+                .flatMap(tuple2 -> {
+                    Map<String, String> map = tuple2.getT1();
+                    String organizationId = tuple2.getT2();
+                    Map<String, String> nonEmptyValuesMap = new HashMap<>();
+                    Set<String> blacklistedEnvVariable =
+                            blacklistedEnvVariableHelper.getBlacklistedEnvVariableForAppsmithCloud(organizationId);
+                    for (Map.Entry<String, String> entry : map.entrySet()) {
+                        if (StringUtils.hasText(entry.getValue()) && !blacklistedEnvVariable.contains(entry.getKey())) {
+                            nonEmptyValuesMap.put(
+                                    entry.getKey(), isSecretEnvVar(entry.getKey()) ? MASKED_SECRET : entry.getValue());
+                        }
+                    }
+                    putConnectionInfo(nonEmptyValuesMap, DB_CONNECTION_INFO_KEY, commonConfig.getDbUrl());
+                    putConnectionInfo(nonEmptyValuesMap, REDIS_CONNECTION_INFO_KEY, commonConfig.getRedisUrl());
+                    return Mono.just(nonEmptyValuesMap);
+                });
     }
 
     @Override
@@ -723,14 +954,26 @@ public class EnvManagerCEImpl implements EnvManagerCE {
         });
     }
 
+    /**
+     * Super-user entry point for {@code POST /restart}. Publishes a restart to every pod of this instance and
+     * completes once Redis accepts the message. Each pod that receives it restarts itself. When no subscriber
+     * receives the message, this pod restarts directly.
+     */
     @Override
     public Mono<Void> restart() {
-        return verifyCurrentUserIsSuper().flatMap(user -> restartWithoutAclCheck());
+        return verifyCurrentUserIsSuper()
+                .flatMap(user -> Mono.defer(instanceRestartPublisher::publish).flatMap(receiverCount -> {
+                    if (receiverCount > 0) {
+                        return Mono.empty();
+                    }
+                    log.warn("Instance restart reached {} subscriber(s); restarting this pod directly", receiverCount);
+                    return restartWithoutAclCheck();
+                }));
     }
 
     /**
-     * This function is used to restart the server using supervisorctl command and should be called internally within
-     * the server as the ACL checks are skipped. For client side calls we should use {@link EnvManagerCEImpl#restart()}
+     * Restarts the processes on this pod via supervisorctl. Skips ACL checks. Invoked on each pod when a restart
+     * broadcast arrives. For client side calls use {@link EnvManagerCEImpl#restart()}.
      *
      * @return  Returns a Mono<Void>
      */
@@ -738,8 +981,11 @@ public class EnvManagerCEImpl implements EnvManagerCE {
     public Mono<Void> restartWithoutAclCheck() {
         log.warn("Initiating restart via supervisor.");
         try {
+            // "mcp" is included so toggling the MCP env gates from Admin Settings takes effect on restart; its
+            // run script re-reads docker.env and parks itself when disabled. supervisorctl restarts the other
+            // programs even if one name is unknown (older images without the mcp program).
             Runtime.getRuntime().exec(new String[] {
-                "supervisorctl", "restart", "backend", "editor", "rts",
+                "supervisorctl", "restart", "backend", "editor", "rts", "mcp",
             });
         } catch (IOException e) {
             log.error("Error invoking supervisorctl to restart.", e);
@@ -748,51 +994,201 @@ public class EnvManagerCEImpl implements EnvManagerCE {
         return Mono.empty();
     }
 
-    @Override
-    public Mono<Boolean> sendTestEmail(TestEmailConfigRequestDTO requestDTO) {
-        return verifyCurrentUserIsSuper().flatMap(user -> {
-            JavaMailSenderImpl mailSender = new JavaMailSenderImpl();
-            mailSender.setHost(requestDTO.getSmtpHost());
-            mailSender.setPort(requestDTO.getSmtpPort());
+    private static final Set<Integer> DEFAULT_SMTP_PORTS = Set.of(25, 465, 587, 2525);
 
-            Properties props = mailSender.getJavaMailProperties();
-            props.put("mail.transport.protocol", "smtp");
+    private static final Set<Integer> ALLOWED_SMTP_PORTS = computeAllowedSmtpPorts();
 
+    private static Set<Integer> computeAllowedSmtpPorts() {
+        Set<Integer> ports = new HashSet<>(DEFAULT_SMTP_PORTS);
+        String extra = System.getenv("APPSMITH_MAIL_ALLOWED_PORTS");
+        if (extra != null && !extra.isBlank()) {
+            for (String token : extra.split(",")) {
+                try {
+                    int port = Integer.parseInt(token.trim());
+                    if (port > 0 && port <= 65535) {
+                        ports.add(port);
+                    }
+                } catch (NumberFormatException ignored) {
+                }
+            }
+        }
+        return Set.copyOf(ports);
+    }
+
+    private static final String SMTP_GENERIC_ERROR =
+            "Failed to connect to the SMTP server. Please verify the host, " + "port, and credentials are correct.";
+
+    /**
+     * Builds the JavaMail sender for the test email. The sender host is the user-entered
+     * hostname — not the resolved IP — because TLS (STARTTLS on 587/2525, implicit SSL on 465)
+     * performs SNI and certificate identity checks against the sender host, and server
+     * certificates carry hostnames; connecting by IP fails with
+     * "No subject alternative names matching IP address" (APP-15713).
+     *
+     * <p>The DNS-rebinding TOCTOU that {@link RestrictedHostFilter#resolveIfAllowed(String)}
+     * closes is instead prevented by pinning the TCP connection to the validated address via
+     * the {@code mail.smtp.socketFactory} property: JavaMail asks the factory for an
+     * unconnected socket and then connects it to (host, port) itself, and the pinned socket
+     * ignores the re-resolved endpoint address and connects to the validated one. The
+     * implicit-SSL path on port 465 is pinned too in Angus Mail 2.0.5: with no
+     * {@code mail.smtp.ssl.socketFactory} configured, {@code SocketFetcher} falls back to the
+     * plain {@code mail.smtp.socketFactory} for the TCP connect and layers TLS over the
+     * already-connected socket. Should that fallback ever stop applying (an Angus upgrade, or
+     * someone configuring an ssl.socketFactory), 465 still fails closed: it is
+     * handshake-first against the hostname with server identity checking on by default, so a
+     * rebound DNS answer fails certificate verification before any SMTP dialogue can occur.
+     *
+     * <p>Visible for testing.
+     */
+    public static JavaMailSenderImpl buildMailSender(
+            TestEmailConfigRequestDTO requestDTO, InetAddress resolvedAddress) {
+        JavaMailSenderImpl mailSender = new JavaMailSenderImpl();
+        mailSender.setHost(requestDTO.getSmtpHost());
+        mailSender.setPort(requestDTO.getSmtpPort());
+
+        Properties props = mailSender.getJavaMailProperties();
+        props.put("mail.transport.protocol", "smtp");
+        props.put("mail.smtp.socketFactory", pinnedSocketFactory(resolvedAddress));
+        // Never fall back to an unpinned plain socket if the factory fails — that would
+        // silently reopen the DNS-rebinding hole. (Angus 2.x defaults the fallback to true.)
+        props.put("mail.smtp.socketFactory.fallback", "false");
+        // TLS server identity checking is the lynchpin of this configuration — don't rely on
+        // the library default (it differed between JavaMail and Angus Mail generations).
+        props.put("mail.smtp.ssl.checkserveridentity", "true");
+
+        if (requestDTO.getSmtpPort() == 465) {
+            props.put("mail.smtp.ssl.enable", "true");
+            props.put("mail.smtp.starttls.enable", "false");
+        } else {
             props.put(
                     "mail.smtp.starttls.enable", requestDTO.getStarttlsEnabled().toString());
+        }
 
-            props.put("mail.smtp.timeout", 7000); // 7 seconds
+        props.put("mail.smtp.timeout", 7000); // read timeout, 7 seconds
+        props.put("mail.smtp.connectiontimeout", 7000); // 7 seconds
+        props.put("mail.smtp.writetimeout", 7000); // 7 seconds
 
-            if (StringUtils.hasLength(requestDTO.getUsername())) {
-                props.put("mail.smtp.auth", "true");
-                mailSender.setUsername(requestDTO.getUsername());
-                mailSender.setPassword(requestDTO.getPassword());
-            } else {
-                props.put("mail.smtp.auth", "false");
+        if (StringUtils.hasLength(requestDTO.getUsername())) {
+            props.put("mail.smtp.auth", "true");
+            mailSender.setUsername(requestDTO.getUsername());
+            mailSender.setPassword(requestDTO.getPassword());
+        } else {
+            props.put("mail.smtp.auth", "false");
+        }
+        // The SMTP transcript (server banners, recipient, username) shouldn't hit stdout on
+        // every call. Angus suppresses the AUTH exchange itself by default (mail.debug.auth),
+        // so this gates noise, not the password.
+        props.put("mail.debug", String.valueOf(log.isDebugEnabled()));
+
+        return mailSender;
+    }
+
+    /**
+     * A {@link SocketFactory} whose sockets always connect to {@code pinnedAddress} (keeping the
+     * endpoint's port), regardless of the host the caller passes. This is what keeps the SSRF
+     * validation and the actual connection on the same address — JavaMail never re-resolves the
+     * hostname into something the filter didn't check.
+     */
+    private static SocketFactory pinnedSocketFactory(InetAddress pinnedAddress) {
+        return new SocketFactory() {
+            @Override
+            public Socket createSocket() {
+                return new Socket() {
+                    @Override
+                    public void connect(SocketAddress endpoint, int timeout) throws IOException {
+                        if (endpoint instanceof InetSocketAddress inetEndpoint) {
+                            endpoint = new InetSocketAddress(pinnedAddress, inetEndpoint.getPort());
+                        }
+                        super.connect(endpoint, timeout);
+                    }
+                };
             }
-            props.put("mail.debug", "true");
 
-            SimpleMailMessage message = new SimpleMailMessage();
-            message.setFrom(requestDTO.getFromEmail());
-            message.setTo(user.getEmail());
-            message.setSubject("Test email from Appsmith");
-            message.setText(
-                    "This is a test email from Appsmith, initiated from Admin Settings page. If you are seeing this, your email configuration is working!\n");
-
-            try {
-                mailSender.testConnection();
-            } catch (MessagingException e) {
-                return Mono.error(new AppsmithException(
-                        AppsmithError.GENERIC_BAD_REQUEST, e.getMessage().trim()));
+            @Override
+            public Socket createSocket(String host, int port) throws IOException {
+                return connectPinned(port, null, 0);
             }
 
-            try {
-                mailSender.send(message);
-            } catch (MailException mailException) {
-                log.error("failed to send test email", mailException);
-                return Mono.error(new AppsmithException(AppsmithError.GENERIC_BAD_REQUEST, mailException.getMessage()));
+            @Override
+            public Socket createSocket(String host, int port, InetAddress localHost, int localPort) throws IOException {
+                return connectPinned(port, localHost, localPort);
             }
-            return Mono.just(TRUE);
-        });
+
+            @Override
+            public Socket createSocket(InetAddress host, int port) throws IOException {
+                return connectPinned(port, null, 0);
+            }
+
+            @Override
+            public Socket createSocket(InetAddress address, int port, InetAddress localAddress, int localPort)
+                    throws IOException {
+                return connectPinned(port, localAddress, localPort);
+            }
+
+            private Socket connectPinned(int port, InetAddress localAddress, int localPort) throws IOException {
+                Socket socket = createSocket();
+                if (localAddress != null) {
+                    socket.bind(new InetSocketAddress(localAddress, localPort));
+                }
+                socket.connect(new InetSocketAddress(pinnedAddress, port));
+                return socket;
+            }
+        };
+    }
+
+    /**
+     * The admin settings form is populated from the masked read-back API, so an untouched
+     * password field arrives here carrying {@link #MASKED_SECRET}. Resolve it to the stored
+     * value server-side; a freshly typed (unsaved) password is passed through as-is.
+     */
+    private Mono<Void> resolveMaskedTestEmailCredentials(TestEmailConfigRequestDTO requestDTO) {
+        if (!MASKED_SECRET.equals(requestDTO.getPassword())) {
+            return Mono.empty();
+        }
+        return getAllWithoutAclCheck()
+                .doOnNext(storedEnv -> requestDTO.setPassword(storedEnv.get(APPSMITH_MAIL_PASSWORD.name())))
+                .then();
+    }
+
+    @Override
+    public Mono<Boolean> sendTestEmail(TestEmailConfigRequestDTO requestDTO) {
+        return verifyCurrentUserIsSuper()
+                .flatMap(user -> resolveMaskedTestEmailCredentials(requestDTO).thenReturn(user))
+                .flatMap(user -> {
+                    if (!ALLOWED_SMTP_PORTS.contains(requestDTO.getSmtpPort())) {
+                        return Mono.error(new AppsmithException(
+                                AppsmithError.GENERIC_BAD_REQUEST, "Invalid SMTP configuration."));
+                    }
+
+                    var resolvedAddress = RestrictedHostFilter.resolveIfAllowed(requestDTO.getSmtpHost());
+                    if (resolvedAddress.isEmpty()) {
+                        return Mono.error(new AppsmithException(
+                                AppsmithError.GENERIC_BAD_REQUEST, "Invalid SMTP configuration."));
+                    }
+
+                    JavaMailSenderImpl mailSender = buildMailSender(requestDTO, resolvedAddress.get());
+
+                    SimpleMailMessage message = new SimpleMailMessage();
+                    message.setFrom(requestDTO.getFromEmail());
+                    message.setTo(user.getEmail());
+                    message.setSubject("Test email from Appsmith");
+                    message.setText(
+                            "This is a test email from Appsmith, initiated from Admin Settings page. If you are seeing this, your email configuration is working!\n");
+
+                    try {
+                        mailSender.testConnection();
+                    } catch (MessagingException e) {
+                        log.error("SMTP test-connection failed for host {}", requestDTO.getSmtpHost(), e);
+                        return Mono.error(new AppsmithException(AppsmithError.GENERIC_BAD_REQUEST, SMTP_GENERIC_ERROR));
+                    }
+
+                    try {
+                        mailSender.send(message);
+                    } catch (MailException mailException) {
+                        log.error("failed to send test email", mailException);
+                        return Mono.error(new AppsmithException(AppsmithError.GENERIC_BAD_REQUEST, SMTP_GENERIC_ERROR));
+                    }
+                    return Mono.just(TRUE);
+                });
     }
 }

@@ -1,10 +1,12 @@
 package com.appsmith.server.controllers.ce;
 
+import com.appsmith.external.dtos.UniqueSlugDTO;
 import com.appsmith.external.git.constants.ce.RefType;
 import com.appsmith.external.views.Views;
 import com.appsmith.server.constants.FieldName;
 import com.appsmith.server.constants.Url;
 import com.appsmith.server.domains.ApplicationMode;
+import com.appsmith.server.domains.NewPage;
 import com.appsmith.server.dtos.ApplicationPagesDTO;
 import com.appsmith.server.dtos.CRUDPageResourceDTO;
 import com.appsmith.server.dtos.CRUDPageResponseDTO;
@@ -15,6 +17,7 @@ import com.appsmith.server.dtos.ResponseDTO;
 import com.appsmith.server.newpages.base.NewPageService;
 import com.appsmith.server.services.ApplicationPageService;
 import com.appsmith.server.solutions.CreateDBTablePageSolution;
+import com.appsmith.server.staticurl.StaticUrlService;
 import com.fasterxml.jackson.annotation.JsonView;
 import jakarta.validation.Valid;
 import lombok.NonNull;
@@ -23,6 +26,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
@@ -44,6 +48,7 @@ public class PageControllerCE {
     private final ApplicationPageService applicationPageService;
     private final NewPageService newPageService;
     private final CreateDBTablePageSolution createDBTablePageSolution;
+    protected final StaticUrlService staticUrlService;
 
     @JsonView(Views.Public.class)
     @PostMapping
@@ -52,7 +57,7 @@ public class PageControllerCE {
         log.debug("Going to create page {}", page.name());
         return applicationPageService
                 .createPage(page.toPageDTO())
-                .map(created -> new ResponseDTO<>(HttpStatus.CREATED.value(), created, null));
+                .map(created -> new ResponseDTO<>(HttpStatus.CREATED, created));
     }
 
     @JsonView(Views.Public.class)
@@ -64,7 +69,7 @@ public class PageControllerCE {
         log.debug("Going to create crud-page in application {}", resource.getApplicationId());
         return createDBTablePageSolution
                 .createPageFromDBTable(null, resource, environmentId, null, Boolean.TRUE)
-                .map(created -> new ResponseDTO<>(HttpStatus.CREATED.value(), created, null));
+                .map(created -> new ResponseDTO<>(HttpStatus.CREATED, created));
     }
 
     @JsonView(Views.Public.class)
@@ -77,7 +82,7 @@ public class PageControllerCE {
         log.debug("Going to create CRUD page {}", branchedPageId);
         return createDBTablePageSolution
                 .createPageFromDBTable(branchedPageId, resource, environmentId, null, Boolean.TRUE)
-                .map(created -> new ResponseDTO<>(HttpStatus.CREATED.value(), created, null));
+                .map(created -> new ResponseDTO<>(HttpStatus.CREATED, created));
     }
 
     @Deprecated
@@ -87,7 +92,7 @@ public class PageControllerCE {
             @PathVariable String branchedApplicationId) {
         return newPageService
                 .findApplicationPagesByBranchedApplicationIdAndViewMode(branchedApplicationId, false, true)
-                .map(resources -> new ResponseDTO<>(HttpStatus.OK.value(), resources, null));
+                .map(resources -> new ResponseDTO<>(HttpStatus.OK, resources));
     }
 
     @JsonView(Views.Public.class)
@@ -97,7 +102,7 @@ public class PageControllerCE {
             @RequestHeader(name = FieldName.BRANCH_NAME, required = false) String branchName) {
         return newPageService
                 .findApplicationPagesByBranchedApplicationIdAndViewMode(branchedApplicationId, true, true)
-                .map(resources -> new ResponseDTO<>(HttpStatus.OK.value(), resources, null));
+                .map(resources -> new ResponseDTO<>(HttpStatus.OK, resources));
     }
 
     @JsonView(Views.Public.class)
@@ -107,7 +112,7 @@ public class PageControllerCE {
             @RequestParam(required = false, defaultValue = "false") Boolean migrateDsl) {
         return applicationPageService
                 .getPageAndMigrateDslByBranchedPageId(branchedPageId, false, migrateDsl)
-                .map(page -> new ResponseDTO<>(HttpStatus.OK.value(), page, null));
+                .map(page -> new ResponseDTO<>(HttpStatus.OK, page));
     }
 
     @JsonView(Views.Public.class)
@@ -117,7 +122,7 @@ public class PageControllerCE {
             @RequestParam(required = false, defaultValue = "false") Boolean migrateDsl) {
         return applicationPageService
                 .getPageAndMigrateDslByBranchedPageId(branchedPageId, true, migrateDsl)
-                .map(page -> new ResponseDTO<>(HttpStatus.OK.value(), page, null));
+                .map(page -> new ResponseDTO<>(HttpStatus.OK, page));
     }
 
     /**
@@ -135,7 +140,7 @@ public class PageControllerCE {
         log.debug("Going to delete page with id: {}", branchedPageId);
         return applicationPageService
                 .deleteUnpublishedPage(branchedPageId)
-                .map(deletedResource -> new ResponseDTO<>(HttpStatus.OK.value(), deletedResource, null));
+                .map(deletedResource -> new ResponseDTO<>(HttpStatus.OK, deletedResource));
     }
 
     @JsonView(Views.Public.class)
@@ -143,7 +148,7 @@ public class PageControllerCE {
     public Mono<ResponseDTO<PageDTO>> clonePage(@PathVariable String branchedPageId) {
         return applicationPageService
                 .clonePage(branchedPageId)
-                .map(page -> new ResponseDTO<>(HttpStatus.CREATED.value(), page, null));
+                .map(page -> new ResponseDTO<>(HttpStatus.CREATED, page));
     }
 
     @JsonView(Views.Public.class)
@@ -153,7 +158,7 @@ public class PageControllerCE {
         log.debug("Going to update page with id: {}", branchedPageId);
         return newPageService
                 .updatePage(branchedPageId, resource.toPageDTO())
-                .map(updatedResource -> new ResponseDTO<>(HttpStatus.OK.value(), updatedResource, null));
+                .map(updatedResource -> new ResponseDTO<>(HttpStatus.OK, updatedResource));
     }
 
     /**
@@ -180,7 +185,7 @@ public class PageControllerCE {
                 mode);
         return newPageService
                 .findApplicationPages(branchedApplicationId, branchedPageId, mode)
-                .map(resources -> new ResponseDTO<>(HttpStatus.OK.value(), resources, null));
+                .map(resources -> new ResponseDTO<>(HttpStatus.OK, resources));
     }
 
     @JsonView(Views.Public.class)
@@ -191,6 +196,21 @@ public class PageControllerCE {
             @RequestHeader(name = FieldName.BRANCH_NAME, required = false) String branchName) {
         return newPageService
                 .updateDependencyMap(defaultPageId, dependencyMap, RefType.branch, branchName)
-                .map(updatedResource -> new ResponseDTO<>(HttpStatus.OK.value(), updatedResource, null));
+                .map(updatedResource -> new ResponseDTO<>(HttpStatus.OK, updatedResource));
+    }
+
+    @JsonView(Views.Public.class)
+    @PatchMapping(value = "/static-url")
+    public Mono<ResponseDTO<NewPage>> updatePageSlug(@RequestBody UniqueSlugDTO uniqueSlugDTO) {
+        return staticUrlService.updatePageSlug(uniqueSlugDTO).map(url -> new ResponseDTO<>(HttpStatus.OK, url));
+    }
+
+    @JsonView(Views.Public.class)
+    @GetMapping(value = "/{branchedPageId}/static-url/verify/{requestedSlug}")
+    public Mono<ResponseDTO<UniqueSlugDTO>> isPageSlugUnique(
+            @PathVariable String branchedPageId, @PathVariable String requestedSlug) {
+        return staticUrlService
+                .isPageSlugUnique(branchedPageId, requestedSlug)
+                .map(url -> new ResponseDTO<>(HttpStatus.OK, url));
     }
 }

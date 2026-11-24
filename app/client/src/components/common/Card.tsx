@@ -1,13 +1,15 @@
-import React from "react";
+import React, { useCallback, useMemo } from "react";
 import styled from "styled-components";
 import { Card as BlueprintCard, Classes } from "@blueprintjs/core";
 import { omit } from "lodash";
 import { AppIcon, Size, TextType, Text } from "@appsmith/ads-old";
 import type { PropsWithChildren } from "react";
 import type { HTMLDivProps, ICardProps } from "@blueprintjs/core";
-import { Button, type MenuItemProps } from "@appsmith/ads";
+import { Button, Icon, type MenuItemProps } from "@appsmith/ads";
 
 import GitConnectedBadge from "./GitConnectedBadge";
+import { GitCardBadge } from "git";
+import { useGitModEnabled } from "pages/Editor/gitSync/hooks/modHooks";
 
 type CardProps = PropsWithChildren<{
   backgroundColor: string;
@@ -28,8 +30,11 @@ type CardProps = PropsWithChildren<{
   testId: string;
   title: string;
   titleTestId: string;
+  subtitle?: string;
   isSelected?: boolean;
   hasEditPermission?: boolean;
+  isFavorited?: boolean;
+  onToggleFavorite?: (e: React.MouseEvent) => void;
 }>;
 
 interface NameWrapperProps {
@@ -54,7 +59,19 @@ const ApplicationImage = styled.div`
   }
 `;
 
-const AppNameWrapper = styled.div<{ isFetching: boolean }>`
+const lineClamp = (lines: number) => `
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: ${lines};
+  -webkit-box-orient: vertical;
+  word-break: break-word;
+`;
+
+const AppNameWrapper = styled.div<{
+  isFetching: boolean;
+  hasSubtitle?: boolean;
+}>`
   padding: 0;
   padding-right: 12px;
   ${(props) =>
@@ -65,18 +82,28 @@ const AppNameWrapper = styled.div<{ isFetching: boolean }>`
     margin-left: 10px;
   `
       : null};
-  overflow: hidden;
-  text-overflow: ellipsis;
-  display: -webkit-box;
-  -webkit-line-clamp: 3; /* number of lines to show */
-  -webkit-box-orient: vertical;
-  word-break: break-word;
+  /* With a subtitle the title and subtitle clamp independently; without one the
+     whole block clamps to three lines. */
+  ${(props) => (props.hasSubtitle ? "overflow: hidden;" : lineClamp(3))}
   color: ${(props) => props.theme.colors.text.heading};
   flex: 1;
 
   .bp3-popover-target {
     display: inline;
   }
+`;
+
+const AppTitle = styled.div`
+  ${lineClamp(2)}
+`;
+
+const AppSubtitle = styled.div`
+  ${lineClamp(2)}
+  margin-top: 2px;
+  font-size: var(--ads-v2-font-size-2);
+  line-height: var(--ads-v2-line-height-2);
+  /* fg (not fg-muted) keeps AA contrast on every tinted card background. */
+  color: var(--ads-v2-color-fg);
 `;
 
 const Container = styled.div<{ isMobile?: boolean }>`
@@ -100,6 +127,43 @@ const CircleAppIcon = styled(AppIcon)`
     path {
       fill: var(--ads-v2-color-fg);
     }
+  }
+`;
+
+const FavoriteIconWrapper = styled.button`
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 2;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* Slightly smaller footprint so the favorite icon feels less crowded
+     next to long application names. */
+  width: 20px;
+  height: 20px;
+  background-color: rgba(255, 255, 255, 0.9);
+  border-radius: 50%;
+  transition: all 0.2s ease;
+
+  /* Reset default button styles */
+  margin: 0;
+  padding: 0;
+  border: none;
+  font: inherit;
+  color: inherit;
+  appearance: none;
+  -webkit-appearance: none;
+
+  &:hover {
+    background-color: rgba(255, 255, 255, 1);
+    transform: scale(1.1);
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--ads-v2-color-border-emphasis);
+    outline-offset: 2px;
   }
 `;
 
@@ -319,31 +383,62 @@ function Card({
   hasReadPermission,
   icon,
   isContextMenuOpen,
+  isFavorited,
   isFetching,
   isMobile,
   moreActionItems,
+  onToggleFavorite,
   primaryAction,
   setShowOverlay,
   showGitBadge,
   showOverlay,
+  subtitle,
   testId,
   title,
   titleTestId,
 }: CardProps) {
+  const hasSubtitle = Boolean(subtitle?.trim());
+  const titleNode = (
+    <Text data-testid={titleTestId} type={TextType.H4}>
+      {title}
+    </Text>
+  );
+  const isGitModEnabled = useGitModEnabled();
+
+  const gitBadge = useMemo(() => {
+    if (isGitModEnabled) {
+      return <GitCardBadge />;
+    }
+
+    return <GitConnectedBadge />;
+  }, [isGitModEnabled]);
+
+  const handleMouseLeave = useCallback(() => {
+    // If the menu is not open, then setOverlay false
+    // Set overlay false on outside click.
+    !isContextMenuOpen && setShowOverlay(false);
+  }, [isContextMenuOpen, setShowOverlay]);
+
+  const handleMouseOver = useCallback(() => {
+    !isFetching && setShowOverlay(true);
+  }, [isFetching, setShowOverlay]);
+
+  const handleFavoriteClick = useCallback(
+    (e: React.MouseEvent) => {
+      e.stopPropagation();
+      onToggleFavorite?.(e);
+    },
+    [onToggleFavorite],
+  );
+
   return (
     <Container isMobile={isMobile} onClick={primaryAction}>
       <NameWrapper
         className={testId}
         hasReadPermission={hasReadPermission}
         isContextMenuOpen={isContextMenuOpen}
-        onMouseLeave={() => {
-          // If the menu is not open, then setOverlay false
-          // Set overlay false on outside click.
-          !isContextMenuOpen && setShowOverlay(false);
-        }}
-        onMouseOver={() => {
-          !isFetching && setShowOverlay(true);
-        }}
+        onMouseLeave={handleMouseLeave}
+        onMouseOver={handleMouseOver}
         showOverlay={showOverlay}
         testId={testId}
       >
@@ -353,15 +448,33 @@ function Card({
           hasReadPermission={hasReadPermission}
           isMobile={isMobile}
         >
+          {onToggleFavorite && (
+            <FavoriteIconWrapper
+              aria-label="Toggle favorite"
+              data-testid="t--favorite-icon"
+              onClick={handleFavoriteClick}
+              type="button"
+            >
+              <Icon name={isFavorited ? "star-fill" : "star-line"} size="md" />
+            </FavoriteIconWrapper>
+          )}
           {/*@ts-expect-error fix this the next time the file is edited*/}
           <CircleAppIcon name={icon} size={Size.large} />
           <AppNameWrapper
             className={isFetching ? Classes.SKELETON : ""}
+            hasSubtitle={hasSubtitle}
             isFetching={isFetching}
           >
-            <Text data-testid={titleTestId} type={TextType.H4}>
-              {title}
-            </Text>
+            {hasSubtitle ? (
+              <>
+                <AppTitle>{titleNode}</AppTitle>
+                <AppSubtitle data-testid="t--app-card-description">
+                  {subtitle}
+                </AppSubtitle>
+              </>
+            ) : (
+              titleNode
+            )}
           </AppNameWrapper>
           {showOverlay && !isMobile && (
             <div className="overlay">
@@ -383,7 +496,7 @@ function Card({
           {Boolean(moreActionItems.length) && !isMobile && contextMenu}
         </CardFooter>
       </NameWrapper>
-      {showGitBadge && <GitConnectedBadge />}
+      {showGitBadge ? gitBadge : null}
     </Container>
   );
 }

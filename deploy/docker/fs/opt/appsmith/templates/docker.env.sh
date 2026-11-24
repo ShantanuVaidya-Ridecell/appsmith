@@ -5,7 +5,7 @@ MONGO_USER="$1"
 DB_PASSWORD="$2"
 ENCRYPTION_PASSWORD="$3"
 ENCRYPTION_SALT="$4"
-SUPERVISOR_PASSWORD="$5"
+REDIS_PASSWORD="${5:-}"
 
 cat <<EOF
 # Sentry
@@ -63,29 +63,36 @@ APPSMITH_POSTGRES_DB_URL=postgresql://appsmith:$DB_PASSWORD@localhost:5432/appsm
 APPSMITH_MONGODB_USER=$MONGO_USER
 APPSMITH_MONGODB_PASSWORD=$DB_PASSWORD
 
-APPSMITH_REDIS_URL=redis://127.0.0.1:6379
+APPSMITH_REDIS_URL=redis://:$REDIS_PASSWORD@127.0.0.1:6379
+APPSMITH_REDIS_PASSWORD=$REDIS_PASSWORD
 
 APPSMITH_ENCRYPTION_PASSWORD=$ENCRYPTION_PASSWORD
 APPSMITH_ENCRYPTION_SALT=$ENCRYPTION_SALT
 
 APPSMITH_CUSTOM_DOMAIN=
 
-# Java command line arguments, as space-delimited string. Ex: "-Xms800M -Xmx800M"
-APPSMITH_JAVA_ARGS=
-
 # APPSMITH_PLUGIN_MAX_RESPONSE_SIZE_MB=5
 # MAX PAYLOAD SIZE
 # APPSMITH_CODEC_SIZE=
 
-APPSMITH_SUPERVISOR_USER=appsmith
-APPSMITH_SUPERVISOR_PASSWORD=$SUPERVISOR_PASSWORD
-
 # Set this to a space separated list of addresses that should be allowed to load Appsmith in a frame.
 # Example: "https://mydomain.com https://another-trusted-domain.com" will allow embedding on those two domains.
-# Default value, if commented or not set, is "'none'", which disables embedding completely.
+# Default value, if commented or not set, is "'self'", which allows framing only by the Appsmith
+# instance itself (same origin) and blocks all cross-origin framing. Use "'none'" to block framing
+# entirely, or "*" to allow any origin (not recommended: exposes published apps to clickjacking).
+# Each address is a CSP frame-ancestors source: a host with an optional scheme, wildcard label, port,
+# and path, or a scheme such as "https:". A value with any other content is ignored, and "'self'" applies.
 # https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Content-Security-Policy/frame-ancestors
-APPSMITH_ALLOWED_FRAME_ANCESTORS="'self' *"
+#APPSMITH_ALLOWED_FRAME_ANCESTORS=
 
 APPSMITH_DISABLE_IFRAME_WIDGET_SANDBOX=false
+
+# Comma-separated MongoDB collection names to omit from appsmithctl backup,
+# including scheduled backups. Names are case-sensitive.
+# A name may be the collection (auditLog) or database.collection (appsmith.auditLog).
+# database.collection is used only when that database is the one in APPSMITH_DB_URL.
+# APPSMITH_DB_URL must include the database name, for example /appsmith.
+# Appsmith does not run without it.
+#APPSMITH_BACKUP_EXCLUDE_COLLECTIONS=
 
 EOF

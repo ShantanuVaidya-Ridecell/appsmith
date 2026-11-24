@@ -1,5 +1,6 @@
 package com.appsmith.server.services.ce;
 
+import com.appsmith.external.constants.PluginConstants;
 import com.appsmith.external.dtos.DslExecutableDTO;
 import com.appsmith.external.helpers.AppsmithEventContext;
 import com.appsmith.external.helpers.AppsmithEventContextType;
@@ -9,8 +10,10 @@ import com.appsmith.external.models.Datasource;
 import com.appsmith.external.models.DatasourceConfiguration;
 import com.appsmith.external.models.DatasourceStorageDTO;
 import com.appsmith.external.models.PaginationType;
+import com.appsmith.external.models.PluginType;
 import com.appsmith.external.models.Policy;
 import com.appsmith.external.models.Property;
+import com.appsmith.external.models.RunBehaviourEnum;
 import com.appsmith.external.plugins.PluginExecutor;
 import com.appsmith.server.acl.AclPermission;
 import com.appsmith.server.applications.base.ApplicationService;
@@ -284,8 +287,9 @@ public class ActionServiceCE_Test {
 
     @AfterEach
     public void cleanup() {
-        List<Application> deletedApplications = applicationService
-                .findByWorkspaceId(workspaceId, applicationPermission.getDeletePermission())
+        List<Application> deletedApplications = applicationPermission
+                .getDeletePermission()
+                .flatMapMany(permission -> applicationService.findByWorkspaceId(workspaceId, permission))
                 .flatMap(remainingApplication -> applicationPageService.deleteApplication(remainingApplication.getId()))
                 .collectList()
                 .block();
@@ -301,7 +305,7 @@ public class ActionServiceCE_Test {
         ActionDTO action = new ActionDTO();
         action.setName("findActionByBranchNameTest");
         action.setPageId(gitConnectedPage.getId());
-        action.setExecuteOnLoad(true);
+        action.setRunBehaviour(RunBehaviourEnum.ON_PAGE_LOAD);
         ActionConfiguration actionConfiguration = new ActionConfiguration();
         actionConfiguration.setHttpMethod(HttpMethod.GET);
         action.setActionConfiguration(actionConfiguration);
@@ -335,7 +339,7 @@ public class ActionServiceCE_Test {
         ActionDTO action = new ActionDTO();
         action.setName("validAction");
         action.setPageId(testPage.getId());
-        action.setExecuteOnLoad(true);
+        action.setRunBehaviour(RunBehaviourEnum.ON_PAGE_LOAD);
         ActionConfiguration actionConfiguration = new ActionConfiguration();
         actionConfiguration.setHttpMethod(HttpMethod.GET);
         action.setActionConfiguration(actionConfiguration);
@@ -348,7 +352,7 @@ public class ActionServiceCE_Test {
                     ActionDTO createdAction = tuple.getT1();
                     assertThat(createdAction.getId()).isNotEmpty();
                     assertThat(createdAction.getName()).isEqualTo(action.getName());
-                    assertThat(createdAction.getExecuteOnLoad()).isFalse();
+                    assertThat(createdAction.getRunBehaviour()).isEqualTo(RunBehaviourEnum.MANUAL);
                     assertThat(createdAction.getUserPermissions()).isNotEmpty();
 
                     List<PermissionGroup> permissionGroups = tuple.getT2();
@@ -407,7 +411,7 @@ public class ActionServiceCE_Test {
         ActionDTO action = new ActionDTO();
         action.setName("validAction");
         action.setPageId(gitConnectedPage.getId());
-        action.setExecuteOnLoad(true);
+        action.setRunBehaviour(RunBehaviourEnum.ON_PAGE_LOAD);
         ActionConfiguration actionConfiguration = new ActionConfiguration();
         actionConfiguration.setHttpMethod(HttpMethod.GET);
         action.setActionConfiguration(actionConfiguration);
@@ -418,7 +422,7 @@ public class ActionServiceCE_Test {
         StepVerifier.create(Mono.zip(actionMono, defaultPermissionGroupsMono))
                 .assertNext(tuple -> {
                     ActionDTO createdAction = tuple.getT1();
-                    assertThat(createdAction.getExecuteOnLoad()).isFalse();
+                    assertThat(createdAction.getRunBehaviour()).isEqualTo(RunBehaviourEnum.MANUAL);
                     assertThat(createdAction.getUserPermissions()).isNotEmpty();
                     assertThat(createdAction.getBaseId()).isEqualTo(createdAction.getId());
 
@@ -797,8 +801,8 @@ public class ActionServiceCE_Test {
         Mono<ActionDTO> newActionMono =
                 layoutActionService.createSingleAction(action, Boolean.FALSE).cache();
 
-        Mono<ActionDTO> setExecuteOnLoadMono =
-                newActionMono.flatMap(savedAction -> layoutActionService.setExecuteOnLoad(savedAction.getId(), true));
+        Mono<ActionDTO> setRunbehaviourMono = newActionMono.flatMap(
+                savedAction -> layoutActionService.setRunBehaviour(savedAction.getId(), RunBehaviourEnum.ON_PAGE_LOAD));
 
         Mono<ActionDTO> updateActionMono = newActionMono.flatMap(preUpdateAction -> {
             ActionDTO actionUpdate = action;
@@ -810,7 +814,7 @@ public class ActionServiceCE_Test {
                             .thenReturn(updatedAction));
         });
 
-        StepVerifier.create(setExecuteOnLoadMono.then(updateActionMono))
+        StepVerifier.create(setRunbehaviourMono.then(updateActionMono))
                 .assertNext(updatedAction -> {
                     assertThat(updatedAction).isNotNull();
                     assertThat(updatedAction.getActionConfiguration().getBody()).isEqualTo("New Body");
@@ -1147,7 +1151,7 @@ public class ActionServiceCE_Test {
         ActionDTO action = new ActionDTO();
         action.setName("testAction");
         action.setPageId(testPage.getId());
-        action.setExecuteOnLoad(true);
+        action.setRunBehaviour(RunBehaviourEnum.ON_PAGE_LOAD);
         ActionConfiguration actionConfiguration = new ActionConfiguration();
         actionConfiguration.setHttpMethod(HttpMethod.GET);
         action.setActionConfiguration(actionConfiguration);
@@ -1157,7 +1161,7 @@ public class ActionServiceCE_Test {
         StepVerifier.create(actionMono)
                 .assertNext(createdAction -> {
                     // executeOnLoad is expected to be set to false in case of default context
-                    assertThat(createdAction.getExecuteOnLoad()).isFalse();
+                    assertThat(createdAction.getRunBehaviour()).isEqualTo(RunBehaviourEnum.MANUAL);
                 })
                 .verifyComplete();
     }
@@ -1171,7 +1175,7 @@ public class ActionServiceCE_Test {
         ActionDTO action = new ActionDTO();
         action.setName("testAction");
         action.setPageId(testPage.getId());
-        action.setExecuteOnLoad(true);
+        action.setRunBehaviour(RunBehaviourEnum.ON_PAGE_LOAD);
         ActionConfiguration actionConfiguration = new ActionConfiguration();
         actionConfiguration.setHttpMethod(HttpMethod.GET);
         action.setActionConfiguration(actionConfiguration);
@@ -1185,7 +1189,118 @@ public class ActionServiceCE_Test {
         StepVerifier.create(actionMono)
                 .assertNext(createdAction -> {
                     // executeOnLoad is expected to be set to false in case of default context
-                    assertThat(createdAction.getExecuteOnLoad()).isTrue();
+                    assertThat(createdAction.getRunBehaviour()).isEqualTo(RunBehaviourEnum.ON_PAGE_LOAD);
+                })
+                .verifyComplete();
+    }
+
+    private Plugin getOrCreateAppsmithAiPlugin() {
+        Plugin aiPlugin = pluginRepository
+                .findByPackageName(PluginConstants.PackageName.APPSMITH_AI_PLUGIN)
+                .block();
+
+        if (aiPlugin == null) {
+            aiPlugin = new Plugin();
+            aiPlugin.setName(PluginConstants.PluginName.APPSMITH_AI_PLUGIN_NAME);
+            aiPlugin.setType(PluginType.AI);
+            aiPlugin.setPackageName(PluginConstants.PackageName.APPSMITH_AI_PLUGIN);
+            aiPlugin = pluginRepository.save(aiPlugin).block();
+        }
+
+        return aiPlugin;
+    }
+
+    private Datasource createSavedAppsmithAiDatasource(Plugin aiPlugin, String name) {
+        Datasource aiDatasource = new Datasource();
+        aiDatasource.setName(name);
+        aiDatasource.setWorkspaceId(workspaceId);
+        aiDatasource.setPluginId(aiPlugin.getId());
+        HashMap<String, DatasourceStorageDTO> storages = new HashMap<>();
+        storages.put(
+                defaultEnvironmentId,
+                new DatasourceStorageDTO(null, defaultEnvironmentId, new DatasourceConfiguration()));
+        aiDatasource.setDatasourceStorages(storages);
+        // Existing Appsmith AI datasources are created via the fork path, which bypasses the creation guard.
+        return datasourceService.createWithoutDeprecationCheck(aiDatasource).block();
+    }
+
+    @Test
+    @WithUserDetails(value = "api_user")
+    public void createSingleAction_onDeprecatedAppsmithAiDatasource_throwsException() {
+        Mockito.when(pluginExecutorHelper.getPluginExecutor(Mockito.any()))
+                .thenReturn(Mono.just(new MockPluginExecutor()));
+
+        Plugin aiPlugin = getOrCreateAppsmithAiPlugin();
+        Datasource savedAiDatasource = createSavedAppsmithAiDatasource(aiPlugin, "Deprecated AI DS for new query");
+
+        ActionDTO action = new ActionDTO();
+        action.setName("newQueryOnDeprecatedAiDatasource");
+        action.setPageId(testPage.getId());
+        action.setActionConfiguration(new ActionConfiguration());
+        action.setDatasource(savedAiDatasource);
+
+        StepVerifier.create(layoutActionService.createSingleAction(action, Boolean.FALSE))
+                .expectErrorMatches(throwable -> throwable instanceof AppsmithException
+                        && throwable
+                                .getMessage()
+                                .equals(AppsmithError.DEPRECATED_PLUGIN_QUERY_CREATION.getMessage(aiPlugin.getName())))
+                .verify();
+    }
+
+    @Test
+    @WithUserDetails(value = "api_user")
+    public void createSingleAction_onEmbeddedDeprecatedAppsmithAiDatasource_throwsException() {
+        Mockito.when(pluginExecutorHelper.getPluginExecutor(Mockito.any()))
+                .thenReturn(Mono.just(new MockPluginExecutor()));
+
+        Plugin aiPlugin = getOrCreateAppsmithAiPlugin();
+
+        // A crafted payload with an id-less (embedded) Appsmith AI datasource must not slip past the guard.
+        Datasource embeddedAiDatasource = new Datasource();
+        embeddedAiDatasource.setName("Embedded Appsmith AI DS");
+        embeddedAiDatasource.setWorkspaceId(workspaceId);
+        embeddedAiDatasource.setPluginId(aiPlugin.getId());
+
+        ActionDTO action = new ActionDTO();
+        action.setName("newQueryOnEmbeddedDeprecatedAiDatasource");
+        action.setPageId(testPage.getId());
+        action.setActionConfiguration(new ActionConfiguration());
+        action.setDatasource(embeddedAiDatasource);
+
+        StepVerifier.create(layoutActionService.createSingleAction(action, Boolean.FALSE))
+                .expectErrorMatches(throwable -> throwable instanceof AppsmithException
+                        && throwable
+                                .getMessage()
+                                .equals(AppsmithError.DEPRECATED_PLUGIN_QUERY_CREATION.getMessage(aiPlugin.getName())))
+                .verify();
+    }
+
+    @Test
+    @WithUserDetails(value = "api_user")
+    public void createAction_clonePageContext_onDeprecatedAppsmithAiDatasource_succeeds() {
+        Mockito.when(pluginExecutorHelper.getPluginExecutor(Mockito.any()))
+                .thenReturn(Mono.just(new MockPluginExecutor()));
+
+        Plugin aiPlugin = getOrCreateAppsmithAiPlugin();
+        Datasource savedAiDatasource = createSavedAppsmithAiDatasource(aiPlugin, "Deprecated AI DS for clone");
+
+        ActionDTO action = new ActionDTO();
+        action.setName("clonedQueryOnDeprecatedAiDatasource");
+        action.setPageId(testPage.getId());
+        action.setActionConfiguration(new ActionConfiguration());
+        action.setDatasource(savedAiDatasource);
+
+        // Internal flows (clone, fork, import) use the meta overload and must keep working for existing
+        // Appsmith AI queries.
+        AppsmithEventContext eventContext = new AppsmithEventContext(AppsmithEventContextType.CLONE_PAGE);
+        CreateActionMetaDTO createActionMetaDTO = new CreateActionMetaDTO();
+        createActionMetaDTO.setEventContext(eventContext);
+        createActionMetaDTO.setIsJsAction(Boolean.FALSE);
+
+        StepVerifier.create(layoutActionService.createAction(action, createActionMetaDTO))
+                .assertNext(createdAction -> {
+                    assertThat(createdAction.getId()).isNotEmpty();
+                    assertThat(createdAction.getDatasource().getId()).isEqualTo(savedAiDatasource.getId());
                 })
                 .verifyComplete();
     }
@@ -1272,7 +1387,7 @@ public class ActionServiceCE_Test {
         ActionDTO action = new ActionDTO();
         action.setName("validAction");
         action.setPageId(testPage.getId());
-        action.setExecuteOnLoad(true);
+        action.setRunBehaviour(RunBehaviourEnum.ON_PAGE_LOAD);
         ActionConfiguration actionConfiguration = new ActionConfiguration();
         actionConfiguration.setHttpMethod(HttpMethod.GET);
         actionConfiguration.setTimeoutInMillisecond("60001");
@@ -1304,7 +1419,7 @@ public class ActionServiceCE_Test {
         ActionDTO action = new ActionDTO();
         action.setName("validAction");
         action.setPageId(testPage.getId());
-        action.setExecuteOnLoad(true);
+        action.setRunBehaviour(RunBehaviourEnum.ON_PAGE_LOAD);
         ActionConfiguration actionConfiguration = new ActionConfiguration();
         actionConfiguration.setHttpMethod(HttpMethod.GET);
         actionConfiguration.setTimeoutInMillisecond("6000");
@@ -1414,45 +1529,6 @@ public class ActionServiceCE_Test {
                                     .map(DslExecutableDTO::getName)
                                     .collect(Collectors.toSet()))
                             .hasSameElementsAs(firstSetPageLoadActions);
-                })
-                .verifyComplete();
-    }
-
-    @Test
-    @WithUserDetails(value = "api_user")
-    public void updateAction_withoutWorkspaceId_withOrganizationId() {
-
-        Mockito.when(pluginExecutorHelper.getPluginExecutor(Mockito.any()))
-                .thenReturn(Mono.just(new MockPluginExecutor()));
-
-        ActionDTO action = new ActionDTO();
-        action.setName("validAction_nestedDatasource");
-        action.setPageId(testPage.getId());
-        action.setExecuteOnLoad(true);
-        ActionConfiguration actionConfiguration = new ActionConfiguration();
-        actionConfiguration.setHttpMethod(HttpMethod.GET);
-        action.setActionConfiguration(actionConfiguration);
-        action.setDatasource(datasource);
-
-        Mono<ActionDTO> createActionMono =
-                layoutActionService.createSingleAction(action, Boolean.FALSE).cache();
-
-        ActionDTO updateAction = new ActionDTO();
-        Datasource nestedDatasource = new Datasource();
-        nestedDatasource.setOrganizationId(workspaceId);
-        nestedDatasource.setName("DEFAULT_REST_DATASOURCE");
-        nestedDatasource.setPluginId(datasource.getPluginId());
-        nestedDatasource.setDatasourceConfiguration(new DatasourceConfiguration());
-
-        updateAction.setDatasource(nestedDatasource);
-        Mono<ActionDTO> actionMono = createActionMono.flatMap(
-                savedAction -> layoutActionService.updateAction(savedAction.getId(), updateAction));
-
-        StepVerifier.create(actionMono)
-                .assertNext(updatedAction -> {
-                    Datasource datasource1 = updatedAction.getDatasource();
-                    assertThat(datasource1.getWorkspaceId()).isNotNull();
-                    assertThat(datasource1.getInvalids()).isEmpty();
                 })
                 .verifyComplete();
     }

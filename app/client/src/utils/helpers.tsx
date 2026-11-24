@@ -16,8 +16,7 @@ import { hasCreateNewAppPermission } from "ee/utils/permissionHelpers";
 import moment from "moment";
 import { isDynamicValue } from "./DynamicBindingUtils";
 import type { ApiResponse } from "api/ApiResponses";
-import type { DSLWidget } from "WidgetProvider/constants";
-import * as Sentry from "@sentry/react";
+import type { DSLWidget } from "WidgetProvider/types";
 import { matchPath } from "react-router";
 import {
   BUILDER_CUSTOM_PATH,
@@ -26,13 +25,14 @@ import {
   VIEWER_CUSTOM_PATH,
   VIEWER_PATH,
   VIEWER_PATH_DEPRECATED,
+  VIEWER_PATH_STATIC,
 } from "constants/routes";
 import history from "./history";
 import { APPSMITH_GLOBAL_FUNCTIONS } from "components/editorComponents/ActionCreator/constants";
 import type {
   CanvasWidgetsReduxState,
   FlattenedWidgetProps,
-} from "reducers/entityReducers/canvasWidgetsReducer";
+} from "ee/reducers/entityReducers/canvasWidgetsReducer";
 import { checkContainerScrollable } from "widgets/WidgetUtils";
 import { getContainerIdForCanvas } from "sagas/WidgetOperationUtils";
 import scrollIntoView from "scroll-into-view-if-needed";
@@ -44,6 +44,8 @@ import { klona as klonaLite } from "klona/lite";
 import { klona as klonaJson } from "klona/json";
 
 import { startAndEndSpanForFn } from "instrumentation/generateTraces";
+import type { Property } from "entities/Action";
+import { appsmithTelemetry } from "instrumentation";
 
 export const snapToGrid = (
   columnWidth: number,
@@ -943,10 +945,11 @@ export const captureInvalidDynamicBindingPath = (
      * Checks if dynamicBindingPathList contains a property path that doesn't have a binding
      */
     if (!isDynamicValue(pathValue)) {
-      Sentry.captureException(
+      appsmithTelemetry.captureException(
         new Error(
           `INVALID_DynamicPathBinding_CLIENT_ERROR: Invalid dynamic path binding list: ${currentDSL.widgetName}.${dBindingPath.key}`,
         ),
+        { errorName: "InvalidDynamicPathBinding" },
       );
 
       return;
@@ -1029,6 +1032,13 @@ export const matchPath_ViewerCustomSlug = (path: string) =>
     path: trimQueryString(VIEWER_CUSTOM_PATH),
   });
 
+export const matchPath_ViewerStatic = (path: string) =>
+  matchPath<{ staticApplicationSlug: string; staticPageSlug: string }>(path, {
+    path: trimQueryString(VIEWER_PATH_STATIC),
+    strict: false,
+    exact: false,
+  });
+
 export const getUpdatedRoute = (
   path: string,
   params: Record<string, string>,
@@ -1039,6 +1049,7 @@ export const getUpdatedRoute = (
   const matchBuilderCustomPath = matchPath_BuilderCustomSlug(path);
   const matchViewerSlugPath = matchPath_ViewerSlug(path);
   const matchViewerCustomPath = matchPath_ViewerCustomSlug(path);
+  const matchViewerStaticPath = matchPath_ViewerStatic(path);
 
   /*
    * Note: When making changes to the order of these conditions
@@ -1069,6 +1080,13 @@ export const getUpdatedRoute = (
     return getUpdatedRouteForCustomSlugPath(
       path,
       matchViewerCustomPath.params.customSlug,
+      params,
+    );
+  } else if (matchViewerStaticPath?.params) {
+    return getUpdateRouteForStaticPath(
+      path,
+      matchViewerStaticPath.params.staticApplicationSlug,
+      matchViewerStaticPath.params.staticPageSlug,
       params,
     );
   }
@@ -1103,6 +1121,20 @@ const getUpdateRouteForSlugPath = (
 ) => {
   let updatedPath = path;
 
+  // If static slugs are provided, convert to static URL format (remove -basePageId)
+  if (params.staticApplicationSlug && params.staticPageSlug) {
+    // Match the pattern: applicationSlug/pageSlug-basePageId
+    // Replace with: staticApplicationSlug/staticPageSlug (no basePageId)
+    const pattern = `${applicationSlug}/${pageSlug}${params.basePageId}`;
+
+    updatedPath = updatedPath.replace(
+      pattern,
+      `${params.staticApplicationSlug}/${params.staticPageSlug}`,
+    );
+
+    return updatedPath;
+  }
+
   if (params.customSlug) {
     updatedPath = updatedPath.replace(
       `${applicationSlug}/${pageSlug}`,
@@ -1121,6 +1153,30 @@ const getUpdateRouteForSlugPath = (
   return updatedPath;
 };
 
+const getUpdateRouteForStaticPath = (
+  path: string,
+  staticApplicationSlug: string,
+  staticPageSlug: string,
+  params: Record<string, string>,
+) => {
+  let updatedPath = path;
+
+  // Update static application slug if provided
+  if (params.staticApplicationSlug) {
+    updatedPath = updatedPath.replace(
+      staticApplicationSlug,
+      params.staticApplicationSlug,
+    );
+  }
+
+  // Update static page slug if provided
+  if (params.staticPageSlug) {
+    updatedPath = updatedPath.replace(staticPageSlug, params.staticPageSlug);
+  }
+
+  return updatedPath;
+};
+
 // to split relative url into array, so specific parts can be bolded on UI preview
 export const splitPathPreview = (
   url: string,
@@ -1135,6 +1191,11 @@ export const splitPathPreview = (
     url,
     VIEWER_CUSTOM_PATH,
   );
+
+  const staticUrlMatch = matchPath<{
+    applicationSlug: string;
+    pageSlug: string;
+  }>(url, VIEWER_PATH_STATIC);
 
   if (!customSlug && slugMatch?.isExact) {
     const { pageSlug } = slugMatch.params;
@@ -1158,6 +1219,13 @@ export const splitPathPreview = (
       customSlug.slice(0, customSlug.length - 1), // to split -
       customSlug.slice(customSlug.length - 1),
     );
+
+    return splitUrl;
+  } else if (staticUrlMatch?.isExact) {
+    const { pageSlug } = staticUrlMatch.params;
+    const splitUrl = url.split(pageSlug);
+
+    splitUrl.splice(1, 0, pageSlug);
 
     return splitUrl;
   }
@@ -1300,4 +1368,16 @@ export function getDomainFromEmail(email: string) {
   const final_domain = email_string_array[domain_string_location];
 
   return final_domain;
+}
+
+export function isEmptyKeyValue(value: Property | Property[]): boolean {
+  if (Array.isArray(value)) {
+    return value.every((item) => isEmptyKeyValue(item));
+  }
+
+  if (typeof value === "object") {
+    if (value.key === "" && value.value === "") return true;
+  }
+
+  return false;
 }

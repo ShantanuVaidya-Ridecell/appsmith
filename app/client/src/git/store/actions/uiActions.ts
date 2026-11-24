@@ -1,7 +1,9 @@
 import type { GitOpsTab, GitSettingsTab } from "git/constants/enums";
 import { createArtifactAction } from "../helpers/createArtifactAction";
-import type { GitArtifactDef, GitGlobalReduxState } from "../types";
+import type { GitGlobalReduxState } from "../types";
 import type { PayloadAction } from "@reduxjs/toolkit";
+import type { GitArtifactDef } from "git/types";
+import type { GitImportRequestParams } from "git/requests/gitImportRequest.types";
 
 // connect modal
 export interface ToggleConnectModalPayload {
@@ -30,6 +32,23 @@ export const toggleConnectSuccessModalAction =
     return state;
   });
 
+// generate SSH key modal
+export interface ToggleGenerateSSHKeyModalPayload {
+  open: boolean;
+}
+
+export const toggleGenerateSSHKeyModalAction = (
+  state: GitGlobalReduxState,
+  action: PayloadAction<ToggleGenerateSSHKeyModalPayload>,
+) => {
+  const { open } = action.payload;
+
+  state.isGenerateSSHKeyModalOpen = open;
+
+  return state;
+};
+
+// import
 export interface ToggleImportModalPayload {
   open: boolean;
 }
@@ -41,6 +60,29 @@ export const toggleImportModalAction = (
   const { open } = action.payload;
 
   state.isImportModalOpen = open;
+
+  return state;
+};
+
+export const resetImportOverrideDetailsAction = (
+  state: GitGlobalReduxState,
+) => {
+  state.importOverrideDetails = null;
+
+  return state;
+};
+
+export interface SetImportOverrideDetailsPayload {
+  params: GitImportRequestParams;
+  oldArtifactName: string;
+  newArtifactName: string;
+}
+
+export const setImportOverrideDetailsAction = (
+  state: GitGlobalReduxState,
+  action: PayloadAction<SetImportOverrideDetailsPayload>,
+) => {
+  state.importOverrideDetails = { ...action.payload };
 
   return state;
 };
